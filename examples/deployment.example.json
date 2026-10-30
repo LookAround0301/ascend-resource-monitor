@@ -1,0 +1,19 @@
+{
+  "id": "lab-monitor",
+  "title": "实验室资源监控",
+  "executor_id": "operator",
+  "storage_root": "/data",
+  "central_node": "node-a",
+  "nodes": [
+    {"name":"node-a", "host":"192.0.2.10", "ssh_port":22, "ssh_user":"root", "monitor_ip":"10.10.0.10", "node_exporter":"auto"},
+    {"name":"node-b", "host":"192.0.2.11", "ssh_port":22, "ssh_user":"root", "monitor_ip":"10.10.0.11", "node_exporter":"auto"}
+  ],
+  "grafana_port": 3000,
+  "prometheus_port": 9090,
+  "local_port": 13000,
+  "anonymous_viewer": true,
+  "retention_days": 7,
+  "retention_gb": 5,
+  "shared_mounts": ["/mnt/share", "/mnt/weight"],
+  "network_regex": ".*"
+}

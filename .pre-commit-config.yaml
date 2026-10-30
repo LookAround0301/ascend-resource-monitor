@@ -1,0 +1,9 @@
+repos:
+  - repo: local
+    hooks:
+      - id: check-monitor
+        name: Validate monitor skill and runtime
+        entry: python tools/check.py
+        language: system
+        pass_filenames: false
+        always_run: true

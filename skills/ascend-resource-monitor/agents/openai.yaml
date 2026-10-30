@@ -1,0 +1,4 @@
+interface:
+  display_name: "昇腾资源监控部署"
+  short_description: "部署多机昇腾资源面板和 NPU 进程归属，并生成 Windows 向导与访问工具"
+  default_prompt: "使用 $ascend-resource-monitor 部署昇腾资源监控，收集必要连接信息并生成 Windows 一键工具。"

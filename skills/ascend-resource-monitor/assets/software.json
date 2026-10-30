@@ -1,0 +1,10 @@
+{
+  "profile": "Linux ARM64; Ascend 950/openEuler 24.03 tested",
+  "arch": "aarch64",
+  "packages": [
+    {"role":"npu", "version":"26.2.0", "name":"npu-exporter-layer.tar.gz", "sha256":"0abba0280dc0b5e9f32e44b907ce119a1166c9c693912ffbfdbaeca993913f4b", "url":"https://swr.cn-south-1.myhuaweicloud.com/v2/ascendhub/npu-exporter/blobs/sha256:0abba0280dc0b5e9f32e44b907ce119a1166c9c693912ffbfdbaeca993913f4b", "registry_auth":true},
+    {"role":"prometheus", "version":"3.15.1", "name":"prometheus-3.15.1.linux-arm64.tar.gz", "sha256":"ceb6d21493c37ca0b4513b147642797c68cf39a0f50a444d50e1e80c74f21b26", "url":"https://github.com/prometheus/prometheus/releases/download/v3.15.1/prometheus-3.15.1.linux-arm64.tar.gz"},
+    {"role":"grafana", "version":"13.2.4", "name":"grafana-13.2.4-linux-arm64.tar.gz", "sha256":"9517a0d21e2706b54521fbd720803698bba42859ca179e9905cc6b8fb05d67ab", "url":"https://dl.grafana.com/grafana/release/13.2.4/grafana_13.2.4_38252365904_linux_arm64.tar.gz"},
+    {"role":"node", "version":"1.12.1", "name":"node_exporter-1.12.1.linux-arm64.tar.gz", "sha256":"ad35b605f9954b9f1ffddf5ba054bdc5a98d790b9eae5291e1eeb83f1ecbd0e7", "url":"https://github.com/prometheus/node_exporter/releases/download/v1.12.1/node_exporter-1.12.1.linux-arm64.tar.gz"}
+  ]
+}

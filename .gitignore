@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.venv/
+dist/
+build/
+packages/
+.local/
+deployment.json
+client.json
+admin.env
+*.pem
+*.key
+id_rsa*
+*.partial*
+*.zip

@@ -1,0 +1,6 @@
+{
+  "name": "ascend-resource-monitor",
+  "owner": {"name": "LookAround0301", "url": "https://github.com/LookAround0301"},
+  "metadata": {"description": "昇腾资源监控 Skill 与 Windows 部署工具的分发源。"},
+  "plugins": [{"name": "ascend-resource-monitor", "source": "./", "description": "多机资源监控、仅 NPU 进程归属、工作目录及 Windows 部署向导。"}]
+}
