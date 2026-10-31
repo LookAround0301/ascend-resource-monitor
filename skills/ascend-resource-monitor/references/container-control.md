@@ -11,6 +11,8 @@ Use this workflow only when the user asks to add container control. This is an o
 
 Grafana 13.2.4 supports this native Actions cell and confirmation. Check the deployed version before adapting the dashboard schema. No executable JavaScript injection or secret in dashboard JSON is needed.
 
+Native actions also require the dashboard's frontend edit capability. Set the controlled dashboard's `editable` flag when enabling actions, while leaving viewer RBAC unchanged. A present but empty Actions column is not proof that the control is visible; check a real administrator session and a viewer session separately. Backend authorization remains mandatory because editors may also see native action buttons.
+
 ## Deployment shape
 
 Keep the existing externally tunneled port stable. For example, move Grafana from loopback 3000 to free loopback 3001 and put the control proxy on loopback 3000. Forward normal HTTP/WebSocket traffic to Grafana. Reserve `/a5-control/*` for the control API. Back up the previous ini and dashboard first; roll back the port change if proxy health fails.

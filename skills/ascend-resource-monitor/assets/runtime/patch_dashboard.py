@@ -7,6 +7,9 @@ from pathlib import Path
 
 def add_stop_button(dashboard):
     result=copy.deepcopy(dashboard)
+    # Native table actions are hidden when dashboard edit capability is disabled.
+    # Grafana RBAC and the control API continue to enforce the caller's rights.
+    result['editable']=True
     for panel in result['panels']:
         if panel.get('title')=='NPU 进程归属与工作目录':
             organize=next(t for t in panel['transformations'] if t['id']=='organize')['options']

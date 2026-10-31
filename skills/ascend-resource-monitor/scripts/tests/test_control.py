@@ -105,6 +105,7 @@ class ControlTests(unittest.TestCase):
     def test_button_has_confirmation_and_references_exact_container(self):
         d={'uid':'lab','panels':[{'title':'按工号与目录汇总 · 仅 NPU 进程','targets':[{'expr':'sum by(node,employee_id,attribution,container,cwd,host_cwd,directory_group) (metric)'}],'transformations':[{'id':'organize','options':{'renameByName':{}}}],'fieldConfig':{'overrides':[]}}]}
         updated=add_stop_button(d)
+        self.assertTrue(updated['editable'])
         override=updated['panels'][0]['fieldConfig']['overrides'][0]
         values={p['id']:p['value'] for p in override['properties']}
         action=values['actions'][0]
