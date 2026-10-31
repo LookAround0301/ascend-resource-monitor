@@ -11,6 +11,8 @@ Reusable monitoring skill for Linux Ascend NPU servers, with a native Windows de
 - Unknown/conflicting identities are explicit. A shared root account or matching directory does not prove who started a workload.
 - Multi-node filtering, 5-second resource refresh and 10-second process sampling by default.
 
+Optional [administrator-only Stop controls](skills/ascend-resource-monitor/references/container-control.md) add a confirmed container-stop action to the summary table. They require a separately configured control backend and Grafana authentication; the default Windows deployment remains read-only.
+
 ## Install as a skill
 
 Ask a skill-capable agent to install this repository's `skills/ascend-resource-monitor` directory, or extract the [Skill ZIP](https://github.com/LookAround0301/ascend-resource-monitor/releases/latest/download/ascend-resource-monitor-skill.zip) into the client's skill directory. Invoke `$ascend-resource-monitor` and supply the target servers when asked. The workflow gathers necessary inputs, checks the environment, deploys and verifies monitoring, then produces a Windows client installer.

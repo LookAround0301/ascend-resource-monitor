@@ -142,7 +142,7 @@ class Inventory:
             if not ids:
                 self.containers = {}
             else:
-                fmt = '{"id":{{json .Id}},"name":{{json .Name}},"pid":{{json .State.Pid}},"cwd":{{json .Config.WorkingDir}},"owner":{{json (index .Config.Labels "employee_id")}},"mounts":{{json .Mounts}}}'
+                fmt = '{"id":{{json .Id}},"name":{{json .Name}},"pid":{{json .State.Pid}},"cwd":{{json .Config.WorkingDir}},"started_at":{{json .State.StartedAt}},"owner":{{json (index .Config.Labels "employee_id")}},"mounts":{{json .Mounts}}}'
                 result = subprocess.run(["docker", "inspect", "--format", fmt, *ids[:256]],
                                         capture_output=True, text=True, timeout=6, check=True)
                 entries = [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
@@ -185,6 +185,8 @@ class Inventory:
             "name": comm, "entrypoint": entrypoint(args, comm),
             "cwd": cwd, "host_cwd": (map_host_path(cwd, container.get("mounts", [])) or "未映射（容器内部）") if container_id else cwd,
             "container_id": container_id, "container": container.get("name", ""),
+            "container_started_at": container.get("started_at", ""),
+            "control_ref": (container_id + "@" + container["started_at"]) if container_id and container.get("started_at") else "",
             "container_initial": container.get("pid") == pid,
             "service": service,
         }
@@ -233,7 +235,7 @@ class Inventory:
         rows = rows[:self.args.limit]
         labels = ["pid", "ppid", "user", "employee_id", "attribution", "container", "service",
                   "name", "entrypoint", "cwd", "host_cwd", "npu_ids", "directory_group",
-                  "started_at", "process_key"]
+                  "started_at", "process_key", "control_ref"]
         body = [
             "# HELP ascend_process_inventory_success Successful current process inventory.",
             "# TYPE ascend_process_inventory_success gauge",

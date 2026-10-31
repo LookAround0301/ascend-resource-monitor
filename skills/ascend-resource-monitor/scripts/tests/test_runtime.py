@@ -104,7 +104,7 @@ class RuntimeTests(unittest.TestCase):
         obj.args=types.SimpleNamespace(npu_url='http://test',owners='missing.json',limit=200)
         obj.previous={}; obj.last_sample=0; obj.tick_rate=100; obj.boot_id='boot'; obj.boot_time=0
         obj.containers={}; obj.last_container_success=0
-        row={'pid':123,'ppid':1,'start_ticks':100,'ticks':0,'rss':0,'user':'root','login_user':'','sudo_user':'','name':'worker','entrypoint':'python','cwd':'/job','host_cwd':'/job','container_id':'','container':'','service':''}
+        row={'pid':123,'ppid':1,'start_ticks':100,'ticks':0,'rss':0,'user':'root','login_user':'','sudo_user':'','name':'worker','entrypoint':'python','cwd':'/job','host_cwd':'/job','container_id':'','container':'','service':'','control_ref':''}
         with patch.object(obj,'refresh_containers'),patch.object(proc,'npu_processes',return_value={123:{'0'}}),patch.object(obj,'read_process',return_value=row) as read:
             out=obj.sample()
         read.assert_called_once_with(123)

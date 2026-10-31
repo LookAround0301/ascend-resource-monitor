@@ -13,6 +13,8 @@
 - 工号依据明确标注；无法识别显示“未知”，线索冲突显示“待确认”。共享 root 用户不等于真实操作者，同目录不等于同一任务。
 - 多节点筛选，资源指标默认每 5 秒刷新，进程默认每 10 秒采集。
 
+可选的 [管理员 Stop 控制](skills/ascend-resource-monitor/references/container-control.md) 可在汇总表中添加带确认框的容器停止按钮。需要单独部署受控后台并接入 Grafana 登录；默认 Windows 安装流程仍保持只读。
+
 ## 作为 Skill 使用
 
 可以把下面这句话交给支持 Skill 安装的 Agent：

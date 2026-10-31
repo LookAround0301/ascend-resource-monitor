@@ -23,6 +23,8 @@ The runtime scripts in `assets/runtime/` render the dashboard and install isolat
 
 Verify services, every expected scrape target, NPU metrics, process-source freshness, dashboard UID and datasource queries. Zero NPU processes is valid; an inaccessible process source is a failure. Missing human identity is shown as unknown; directory/container matches are labeled as clues, never proof. Keep progress, receipts and local configuration outside the reusable skill.
 
+If the user explicitly requests container Stop controls, read [references/container-control.md](references/container-control.md). Keep ordinary viewing available, but require a real Grafana administrator session and an explicit confirmation before a stop. The default installer remains read-only; enable this capability only for an authorized deployment.
+
 ## Final workflow step: deliver Windows tools
 
 After deployment verification, generate the Windows client installer and access launcher for that environment. It installs under the current Windows user's LocalAppData, creates a desktop shortcut, establishes a loopback SSH tunnel, and opens the dashboard. Also provide the deployment wizard when requested, so another operator can fill in their own servers and deploy. See [references/windows.md](references/windows.md).
