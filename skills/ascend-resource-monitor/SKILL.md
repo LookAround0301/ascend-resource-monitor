@@ -25,6 +25,8 @@ The runtime scripts in `assets/runtime/` render the dashboard and install isolat
 
 Verify services, every expected scrape target, NPU metrics, process-source freshness, dashboard UID and datasource queries. Zero NPU processes is valid; an inaccessible process source is a failure. Missing human identity is shown as unknown; directory/container matches are labeled as clues, never proof. Keep progress, receipts and local configuration outside the reusable skill.
 
+For job-origin display, read [references/job-origin.md](references/job-origin.md). The summary shows origin instead of RSS. Treat agent/manual startup markers as declarations, ancestry as a possible clue, and missing evidence as unknown. Do not infer manual execution from a terminal, SSH, username, or absence of agent hints; do not mark every process in a container from its creator's identity.
+
 If the user explicitly requests container Stop controls, read [references/container-control.md](references/container-control.md). Keep ordinary viewing available, but require a real Grafana administrator session and an explicit confirmation before a stop. Verify the visible Stop link, actual browser navigation, per-session login status and server-side authorization separately. The default installer remains read-only; enable this capability only for an authorized deployment.
 
 For an explicitly requested shared company/VPN browser entry, read [references/web-entry.md](references/web-entry.md). Add a restricted HTTPS listener without exposing the underlying services, retain Viewer access and administrator-only Stop, and verify browser proxy/certificate behavior from a real client. The default SSH-tunnel listener stays loopback-only.

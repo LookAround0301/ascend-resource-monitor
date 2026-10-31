@@ -18,7 +18,7 @@ def add_name_columns(panels):
         organize.setdefault('excludeByName', {}).pop('employee_name', None)
         for target in panel.get('targets', []):
             query = target.get('expr', '')
-            match = re.search(r'\b(?:sum|min)\s+by\s*\(([^)]*)\)', query)
+            match = re.search(r'\b(?:sum|min|max)\s+by\s*\(([^)]*)\)', query)
             if match:
                 labels = [key.strip() for key in match[1].split(',')]
                 if 'employee_id' in labels and 'employee_name' not in labels:
@@ -42,7 +42,11 @@ def add_usage_time(panels):
     for panel in panels:
         if panel.get('title') != '按工号与目录汇总 · 仅 NPU 进程':
             continue
-        rss = next(t for t in panel['targets'] if '_process_resident_memory_bytes' in t.get('expr', ''))
+        rss = next((t for t in panel['targets'] if '_process_resident_memory_bytes' in t.get('expr', '')), None)
+        if rss is None and any('_process_group_origin' in t.get('expr', '') for t in panel['targets']):
+            continue  # Origin tables already include the same duration query.
+        if rss is None:
+            raise ValueError('Missing process summary query')
         match = re.search(r'sum\s+by\s*\(([^)]*)\)\s*\(\s*([a-zA-Z_:][a-zA-Z0-9_:]*_process_)resident_memory_bytes(\{[^}]*\})\s*\)', rss['expr'])
         if not match:
             raise ValueError('Unrecognized process summary query')
@@ -73,6 +77,48 @@ def add_usage_time(panels):
                 break
         else:
             overrides.append(usage_override)
+
+
+def add_job_origin(panels):
+    """Replace RSS with one conservative origin classification per existing group."""
+    add_usage_time(panels)
+    for panel in panels:
+        if panel.get('title') != '按工号与目录汇总 · 仅 NPU 进程':
+            continue
+        usage = next(t for t in panel['targets'] if t.get('refId') == 'Usage')
+        match = re.search(r'min\s+by\s*\(([^)]*)\)\s*\(\s*([a-zA-Z_:][a-zA-Z0-9_:]*_process_)start_time_seconds(\{[^}]*\})', usage['expr'])
+        if not match:
+            raise ValueError('Unrecognized process duration query')
+        labels, prefix, selector = match.groups()
+        selector = '{' + re.sub(r'\bnpu_ids\s*!=\s*"(?:|-)"\s*,?', '', selector[1:-1]).strip(', ') + '}'
+        origin = copy.deepcopy(usage)
+        origin.update(refId='Origin', expr=f'label_replace(max by({labels}) ({prefix}group_origin{selector}), "display_metric", "job_origin", "", "")')
+        panel['targets'] = [origin, usage]
+        organize = next(t for t in panel['transformations'] if t['id'] == 'organize')['options']
+        indexes = organize['indexByName']
+        order = sorted((k for k in indexes if k not in {'Value', 'rss_bytes', 'job_origin'}), key=indexes.get)
+        order.insert(order.index('usage_seconds') + 1, 'job_origin')
+        organize['indexByName'] = {key: i for i, key in enumerate(order)}
+        organize['renameByName'].pop('rss_bytes', None)
+        organize['renameByName'].pop('Value', None)
+        organize['renameByName']['job_origin'] = '作业来源'
+        mappings = {str(code): {'text': text, 'color': color, 'index': code} for code, text, color in [
+            (0, '未知', 'text'), (1, '人工作业', 'green'), (2, '疑似 Agent', 'orange'),
+            (3, 'Agent 作业', 'blue'), (4, '混合/待确认', 'purple')]}
+        overrides = [o for o in panel['fieldConfig']['overrides'] if o.get('matcher', {}).get('options') != 'RSS 合计']
+        origin_override = {'matcher': {'id': 'byName', 'options': '作业来源'}, 'properties': [
+            {'id': 'custom.width', 'value': 155}, {'id': 'custom.cellOptions', 'value': {'type': 'color-text'}},
+            {'id': 'mappings', 'value': [{'type': 'value', 'options': mappings}]}, {'id': 'noValue', 'value': '未知'},
+            {'id': 'description', 'value': 'Agent/人工来自明确启动标记（声明，非身份认证）；疑似来自进程链或专用目录线索；未知不等于人工。组内来源不一致或证据冲突时显示混合/待确认。'}]}
+        for index, item in enumerate(overrides):
+            if item.get('matcher', {}).get('options') == '作业来源':
+                overrides[index] = origin_override
+                break
+        else:
+            overrides.append(origin_override)
+        panel['fieldConfig']['overrides'] = overrides
+        panel['options']['sortBy'] = [{'displayName': '使用时长', 'desc': True}]
+        panel['description'] = panel.get('description', '').replace('RSS 是逐进程相加，可能重复计算共享内存页。', '')
 
 
 def add_process_panels(panels, node):
@@ -115,3 +161,4 @@ def add_process_panels(panels, node):
     })
     add_name_columns(panels)
     add_usage_time(panels)
+    add_job_origin(panels)

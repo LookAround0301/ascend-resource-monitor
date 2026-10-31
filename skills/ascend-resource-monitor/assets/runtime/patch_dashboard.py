@@ -18,7 +18,7 @@ def add_stop_button(dashboard):
         if panel.get('title')!='按工号与目录汇总 · 仅 NPU 进程': continue
         for target in panel['targets']:
             query=target['expr']
-            match=re.search(r'\b(?:sum|min)\s+by\s*\(([^)]*)\)',query)
+            match=re.search(r'\b(?:sum|min|max)\s+by\s*\(([^)]*)\)',query)
             if match:
                 labels=[key.strip() for key in match[1].split(',')]
                 if 'control_ref' not in labels:

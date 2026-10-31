@@ -15,6 +15,7 @@ import subprocess
 import threading
 import time
 import urllib.request
+from job_origin import OriginClassifier, SUMMARY_LABELS, agent_hint, environment_origin, summarize_origin, temporary_script
 
 try:
     import pwd
@@ -51,7 +52,7 @@ def username(uid):
 
 def parse_stat(text):
     tail = text[text.rfind(")") + 2:].split()
-    return {"state": tail[0], "ppid": int(tail[1]),
+    return {"state": tail[0], "ppid": int(tail[1]), "tty_nr": int(tail[4]),
             "ticks": int(tail[11]) + int(tail[12]),
             "start_ticks": int(tail[19]), "rss_pages": int(tail[21])}
 
@@ -180,9 +181,12 @@ class Inventory:
         login_uid = (path / "loginuid").read_text().strip()
         login_user = username(int(login_uid)) if login_uid.isdigit() and int(login_uid) not in (0, 4294967295) else ""
         sudo_user = ""
+        origin_marker = ""
         # Read only the whitelist; no environment values are exposed as labels.
         try:
-            for value in (path / "environ").read_bytes()[:65536].split(b"\0"):
+            environment = (path / "environ").read_bytes()[:65536]
+            origin_marker = environment_origin(environment)
+            for value in environment.split(b"\0"):
                 if value.startswith(b"SUDO_USER="):
                     sudo_user = value.split(b"=", 1)[1].decode("utf-8", "replace")
         except OSError:
@@ -201,6 +205,10 @@ class Inventory:
             "control_ref": (container_id + "@" + container["started_at"]) if container_id and container.get("started_at") else "",
             "container_initial": container.get("pid") == pid,
             "service": service,
+            "origin_marker": origin_marker,
+            "agent_hint": agent_hint(args[0] if args else '', args, cwd),
+            "temporary_script": temporary_script(args[0] if args else '', args),
+            "has_tty": bool(stat['tty_nr']),
         }
 
     def sample(self):
@@ -215,6 +223,7 @@ class Inventory:
         elapsed = max(now - self.last_sample, 0.01)
         new_previous = {}
         rows = []
+        origins = OriginClassifier()
         # The device exporter is the authority for which PIDs occupy an NPU.
         # CPU usage, usernames, and container membership must not broaden this list.
         for pid in npu:
@@ -239,6 +248,7 @@ class Inventory:
                 row["process_key"] = self.boot_id + ":" + str(row["pid"]) + ":" + str(row["start_ticks"])
                 row["start_time_seconds"] = self.boot_time + row["start_ticks"] / self.tick_rate
                 row["started_at"] = datetime.fromtimestamp(row["start_time_seconds"], timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                row["job_origin"] = origins.classify(row)
                 rows.append(row)
             except (OSError, ValueError, StopIteration, IndexError, ProcessLookupError):
                 continue
@@ -269,6 +279,13 @@ class Inventory:
                 pairs = [key_name + "=" + json.dumps(str(row[key_name])[:512], ensure_ascii=False)
                          for key_name in labels]
                 body.append(metric + "{" + ",".join(pairs) + "} " + str(row[key]))
+        groups = defaultdict(list)
+        for row in rows:
+            groups[tuple(str(row.get(key, ''))[:512] for key in SUMMARY_LABELS)].append(row['job_origin'])
+        body.append('# TYPE ascend_process_group_origin gauge')
+        for values, codes in groups.items():
+            pairs = [key + '=' + json.dumps(value, ensure_ascii=False) for key, value in zip(SUMMARY_LABELS, values)]
+            body.append('ascend_process_group_origin{' + ','.join(pairs) + '} ' + str(summarize_origin(codes)))
         self.body = ("\n".join(body) + "\n").encode("utf-8")
         self.last_success = time.time()
         return {"rows": len(rows), "truncated": total > len(rows), "duration_seconds": time.monotonic() - start}

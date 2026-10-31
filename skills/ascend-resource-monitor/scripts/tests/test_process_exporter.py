@@ -40,7 +40,7 @@ class ProcessTests(unittest.TestCase):
         summary=dashboard['panels'][1]
         self.assertEqual(len(summary['targets']),2)
         a,b=summary['targets']
-        self.assertEqual(re.search(r'sum by\(([^)]*)\)',a['expr'])[1],re.search(r'min by\(([^)]*)\)',b['expr'])[1])
+        self.assertEqual(re.search(r'max by\(([^)]*)\)',a['expr'])[1],re.search(r'min by\(([^)]*)\)',b['expr'])[1])
         self.assertIn('employee_name',b['expr']);self.assertIn('control_ref',b['expr'])
         self.assertIn('time() - min by(',b['expr'])
         self.assertEqual(summary['transformations'][0]['options']['valueLabel'],'display_metric')
