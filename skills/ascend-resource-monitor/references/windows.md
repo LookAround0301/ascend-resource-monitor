@@ -16,7 +16,9 @@ The recipient extracts the ZIP and double-clicks `Setup.cmd`:
 2. Storage/access: deployment ID, title, executor ID, data directory, localhost and server ports, optional offline package folder, anonymous Viewer choice.
 3. Check/deploy: check first; review the console and NPU hardware profile. Start deployment when the inputs and hardware match. Large packages download only after every preflight passes. Deployment verification generates the final client ZIP automatically.
 
-The console remains visible for native SSH password prompts and progress. This is deliberate: no custom password storage or SSH host-key bypass. With password login, several SSH/SCP calls can ask for it; using an existing authorized key is smoother. The wizard does not install a new server key itself.
+The console remains visible for native SSH password prompts and progress. SSH passwords are not saved and host-key checks are retained. With password login, several SSH/SCP calls can ask for it; using an existing authorized key is smoother. The wizard does not install a new server key itself.
+
+Grafana's administrator credential is separate from SSH. The wizard creates a random password on this PC, saves it before bootstrap in `%LOCALAPPDATA%\AscendMonitor\credentials\<id>.json` with an operator-and-SYSTEM ACL, and passes it to the remote initializer through stdin. For an existing deployment it reuses that record or requests hidden input for the existing password; it does not reset the account. No administrator password enters server command arguments, configuration, archives or the long-running service environment. The console prints the local file path, not the password. The final client ZIP never contains that record. See [credentials.md](credentials.md).
 
 Advanced per-node ports, expected NPU counts, retention and mount filters can be set in exported `deployment.json`. Run:
 

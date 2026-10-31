@@ -62,7 +62,7 @@ Prefer the available MindIE host-binding, execution and artifact tools for agent
    python3 deploy_node.py --config deployment.json --manifest software.json --node node-a --packages . --install
    ```
 
-   The installer refuses unknown deployment directories/units, validates tar paths and systemd units, preserves existing admin credentials and owner annotations, and backs up replaced panel/config files. It enables services for reboot. It applies exact binary SELinux labels only when required; it does not disable SELinux or change the firewall.
+   On the central node add `--admin-password-stdin`, supplying the locally saved credential through SSH stdin as described in [credentials.md](credentials.md). The installer refuses unknown deployment directories/units, validates tar paths and systemd units, preserves the administrator/database and owner annotations, and backs up ordinary panel/config files. It enables services for reboot. It applies exact binary SELinux labels only when required; it does not disable SELinux or change the firewall.
 5. On the central node run:
 
    ```sh
@@ -71,7 +71,7 @@ Prefer the available MindIE host-binding, execution and artifact tools for agent
 
    Verification checks all 3 targets per node, NPU metric count when supplied, fresh process data, dashboard and datasource. Empty NPU process tables are valid. After success, deliver the Windows client package as the last step.
 
-`--render-only <directory>` renders reviewable configuration without remote installation. Generated admin credentials live only at `config/admin.env` (0600) on the central server. With anonymous viewing disabled, authorized administrators can retrieve that file through SSH to obtain the login; do not print or bundle it into reports. Panel access is always over a loopback tunnel by default. Anyone allowed through the tunnel can view the dashboard when anonymous Viewer is enabled.
+`--render-only <directory>` renders reviewable configuration without remote installation. Administrator passwords remain in the operator's protected local record. `config/admin.env` contains only Grafana's encryption key and the flag disabling automatic default-account creation; it cannot be used to retrieve the login password. Pass `--admin-password-stdin` for authenticated verification, especially when anonymous viewing is disabled. See [credentials.md](credentials.md) for bootstrap, upgrades and rotation. Panel access is always over a loopback tunnel by default. Anyone allowed through the tunnel can view the dashboard when anonymous Viewer is enabled.
 
 ## Process interpretation
 

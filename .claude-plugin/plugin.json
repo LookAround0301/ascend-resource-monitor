@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "ascend-resource-monitor",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "部署昇腾多机资源监控、NPU 进程归属与工作目录面板，生成 Windows 部署向导和访问工具。",
   "author": {"name": "LookAround0301", "url": "https://github.com/LookAround0301"},
   "homepage": "https://github.com/LookAround0301/ascend-resource-monitor#readme",

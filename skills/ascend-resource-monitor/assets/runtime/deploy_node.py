@@ -20,6 +20,8 @@ import urllib.request
 
 from configuration import load, base_path
 from dashboard import dashboard
+from admin_credentials import (administrator_exists, prepare_security,
+                               initialize_administrator, harden_owned_files, read_password)
 
 HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 FIXED = Path('/user/mind-cluster/npu-exporter-config')
@@ -128,7 +130,8 @@ def probe(c, n, manifest):
     return {'node':n['name'], 'arch':platform.machine(), 'mount':data_mount,
             'available_gib':round(available/1024**3,1), 'base':str(base),
             'roles':roles, 'node_exporter':'install' if install_node else 'reuse',
-            'selinux_enforcing':bool(enforcing), 'npu_info':device_info[:5000]}
+            'selinux_enforcing':bool(enforcing), 'npu_info':device_info[:5000],
+            'administrator_initialized':administrator_exists(base) if central else False}
 
 def safe_extract(archive, destination, selected=None):
     """Only ordinary files/directories; validate every path before any extraction."""
@@ -283,11 +286,13 @@ TasksMax=256
 WantedBy=multi-user.target
 '''
 
-def install(c, n, manifest, packages):
+def install(c, n, manifest, packages, admin_password=None):
     import pwd
     plan = probe(c,n,manifest)
     files = package_paths(manifest,packages,plan['roles'])  # All hashes checked before mutation.
     base = Path(base_path(c))
+    if n['name'] == c['central_node'] and not administrator_exists(base) and not admin_password:
+        raise ValueError('New deployments require --admin-password-stdin; save the credential on the client first')
     base.mkdir(parents=True,exist_ok=True)
     base.chmod(0o755)
     atomic(base/'.deployment-id',c['id']+'\n')
@@ -349,11 +354,10 @@ def install(c, n, manifest, packages):
                 backup.parent.mkdir(parents=True,exist_ok=True)
                 shutil.copy2(dest,backup)
             atomic(dest,text)
-        env = base/'config/admin.env'
-        if not env.exists():
-            atomic(env,'GF_SECURITY_ADMIN_PASSWORD='+secrets.token_urlsafe(24)+'\nGF_SECURITY_SECRET_KEY='+secrets.token_urlsafe(32)+'\n',0o600)
-        env.chmod(0o600)
+        env = prepare_security(base, atomic)
         prom,graf = files['prometheus'][0], files['grafana'][0]
+        initialize_administrator(base,graf,account,admin_password,atomic)
+        harden_owned_files(base,atomic)
         run(str(prom/'promtool'),'check','config',str(base/'config/prometheus.yml'))
         binaries += [prom/'prometheus',graf/'bin/grafana']
         units['prometheus'] = service(c,'prometheus',f'{prom}/prometheus --config.file={base}/config/prometheus.yml --storage.tsdb.path={base}/data/prometheus --storage.tsdb.retention.time={c["retention_days"]}d --storage.tsdb.retention.size={c["retention_gb"]}GB --web.listen-address=127.0.0.1:{c["prometheus_port"]}',account_name)
@@ -386,10 +390,11 @@ def install(c, n, manifest, packages):
     record('services-active-awaiting-central-verification')
     return receipt
 
-def verify(c):
+def verify(c, admin_password=None):
     base = Path(base_path(c))
-    env = dict(line.split('=',1) for line in (base/'config/admin.env').read_text().splitlines() if '=' in line)
-    auth = base64.b64encode(('admin:'+env['GF_SECURITY_ADMIN_PASSWORD']).encode()).decode()
+    if not admin_password and not c['anonymous_viewer']:
+        raise ValueError('Private dashboard verification requires --admin-password-stdin')
+    headers = {'Authorization':'Basic '+base64.b64encode(('admin:'+admin_password).encode()).decode()} if admin_password else {}
     graf = f'http://127.0.0.1:{c["grafana_port"]}'
     prom = f'http://127.0.0.1:{c["prometheus_port"]}'
     def query(expr):
@@ -403,7 +408,7 @@ def verify(c):
             health = json.loads(get(graf+'/api/health'))
             if health.get('database') != 'ok':
                 raise RuntimeError('Grafana database unhealthy')
-            dash = json.loads(get(graf+'/api/dashboards/uid/'+c['id'],{'Authorization':'Basic '+auth}))
+            dash = json.loads(get(graf+'/api/dashboards/uid/'+c['id'],headers))
             if len(dash['dashboard']['panels']) != 20:
                 raise RuntimeError('Expected 20 provisioned panels')
             result = query('up')
@@ -423,7 +428,7 @@ def verify(c):
                 raise RuntimeError('Non-NPU process found')
             # Exercise the same Grafana datasource proxy used by the dashboard.
             proxy = graf+'/api/datasources/proxy/uid/'+c['id']+'-prometheus/api/v1/query?query=up'
-            data = json.loads(get(proxy,{'Authorization':'Basic '+auth}))
+            data = json.loads(get(proxy,headers))
             if data.get('status') != 'success':
                 raise RuntimeError('Grafana datasource query failed')
             out = {'verified_at':time.time(),'nodes':len(c['nodes']),'targets':len(c['nodes'])*3,'panels':20,'npu_processes':len(process_rows)}
@@ -440,12 +445,14 @@ def main():
     p.add_argument('--manifest',required=True)
     p.add_argument('--node')
     p.add_argument('--packages',default='packages')
+    p.add_argument('--admin-password-stdin',action='store_true',help='Read admin password from stdin; never a command argument or server file')
     action = p.add_mutually_exclusive_group(required=True)
     action.add_argument('--probe',action='store_true')
     action.add_argument('--install',action='store_true')
     action.add_argument('--verify',action='store_true')
     action.add_argument('--render-only')
     args = p.parse_args()
+    admin_password = read_password(sys.stdin) if args.admin_password_stdin else None
     c = load(args.config)
     manifest = json.loads(Path(args.manifest).read_text(encoding='utf-8-sig'))
     if args.render_only:
@@ -454,10 +461,10 @@ def main():
         print(json.dumps({'panels':20,'rendered':args.render_only}))
         return
     if args.verify:
-        out = verify(c)
+        out = verify(c,admin_password)
     else:
         n = next(n for n in c['nodes'] if n['name'] == args.node)
-        out = probe(c,n,manifest) if args.probe else install(c,n,manifest,args.packages)
+        out = probe(c,n,manifest) if args.probe else install(c,n,manifest,args.packages,admin_password)
     print(json.dumps(out,ensure_ascii=False))
 
 if __name__ == '__main__':

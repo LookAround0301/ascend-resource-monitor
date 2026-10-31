@@ -1,6 +1,6 @@
 ---
 name: ascend-resource-monitor
-description: Deploy Grafana and Prometheus monitoring for Linux Ascend NPU servers, including NPU-only process ownership and working directories, and generate a Windows setup wizard and dashboard launcher.
+description: Deploy and maintain Grafana/Prometheus monitoring for Ascend NPU servers, with NPU process ownership, working directories, optional administrator container controls, and Windows setup/access tools.
 ---
 
 # Ascend resource monitor
@@ -9,7 +9,7 @@ Build or extend a resource dashboard for one or more Ascend servers. Collect CPU
 
 ## Gather the deployment inputs
 
-Reuse known information; ask only for missing values. Collect server names, SSH addresses/ports/users, login method, monitoring-network IPv4 addresses reachable from the central node, central Grafana/Prometheus node, an existing mounted data directory, deployment name, and local dashboard port. Ask for an executor identifier when workspace policy requires it. Do not put passwords, tokens, private keys, or current users' details into this skill or distributable templates.
+Reuse known information; ask only for missing values. Collect server names, SSH addresses/ports/users, login method, monitoring-network IPv4 addresses reachable from the central node, central Grafana/Prometheus node, an existing mounted data directory, deployment name, and local dashboard port. Establish whether administrator container Stop controls are wanted and where the operator will keep credentials locally. Ask for an executor identifier when workspace policy requires it. Do not put passwords, tokens, private keys, or current users' details into this skill or distributable templates.
 
 Offer the Windows form when the user wants to enter the information themselves. It needs Windows PowerShell 5.1, OpenSSH Client, VPN/network access, and remote Python 3.9+ with systemd. Windows Python is **not** required to run the generated wizard. The bundled software profile is Linux ARM64, tested on Ascend 950/openEuler 24.03; select a compatible NPU Exporter and verified package manifest for other hardware/OS combinations.
 
@@ -19,11 +19,11 @@ Read [references/deployment.md](references/deployment.md) for configuration, com
 
 Probe all nodes before installing. Verify storage backing mounts and space, NPU/driver visibility, Python/systemd, ports, exporter compatibility, existing service ownership, and connectivity. Reuse healthy node_exporter endpoints. Never replace an unknown exporter configuration or unit. Present an actionable conflict instead. Existing deployments may only need a client access package.
 
-The runtime scripts in `assets/runtime/` render the dashboard and install isolated services on the selected data volume. Grafana and Prometheus bind to loopback; the client connects through SSH. Do not broaden listen addresses or disable host-key, TLS, firewall, or SELinux checks to fix connectivity. New admin credentials are generated on the server and preserved on reruns.
+The runtime scripts in `assets/runtime/` render the dashboard and install isolated services on the selected data volume. Grafana and Prometheus bind to loopback; the client connects through SSH. Do not broaden listen addresses or disable host-key, TLS, firewall, or SELinux checks to fix connectivity. Read [references/credentials.md](references/credentials.md) before initialization or credential upgrades: create/reuse the password locally, send it through stdin, and leave no plaintext administrator password in server configuration, templates, archives or the long-running environment. Reinstalls preserve the existing account and encryption key.
 
 Verify services, every expected scrape target, NPU metrics, process-source freshness, dashboard UID and datasource queries. Zero NPU processes is valid; an inaccessible process source is a failure. Missing human identity is shown as unknown; directory/container matches are labeled as clues, never proof. Keep progress, receipts and local configuration outside the reusable skill.
 
-If the user explicitly requests container Stop controls, read [references/container-control.md](references/container-control.md). Keep ordinary viewing available, but require a real Grafana administrator session and an explicit confirmation before a stop. The default installer remains read-only; enable this capability only for an authorized deployment.
+If the user explicitly requests container Stop controls, read [references/container-control.md](references/container-control.md). Keep ordinary viewing available, but require a real Grafana administrator session and an explicit confirmation before a stop. Verify the visible Stop link, actual browser navigation, per-session login status and server-side authorization separately. The default installer remains read-only; enable this capability only for an authorized deployment.
 
 ## Final workflow step: deliver Windows tools
 

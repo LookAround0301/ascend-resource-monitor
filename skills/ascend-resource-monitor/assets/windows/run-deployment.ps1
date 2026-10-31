@@ -1,9 +1,15 @@
 param([string]$ConfigPath, [string]$IdentityFile, [string]$PackageDirectory, [switch]$CheckOnly, [switch]$NoPause, [switch]$FunctionsOnly)
 . (Join-Path $PSScriptRoot 'common.ps1')
+. (Join-Path $PSScriptRoot 'admin-credentials.ps1')
 
-function Invoke-Remote($Node, [string]$Command) {
+function Invoke-Remote($Node, [string]$Command, [string]$InputText) {
     $argsList=@(Get-SshOptions $Node $IdentityFile) + @('-T',"$($Node.ssh_user)@$($Node.host)",$Command)
-    $result = & ssh.exe @argsList
+    if ($PSBoundParameters.ContainsKey('InputText')) {
+        $previousEncoding=$OutputEncoding
+        try { $OutputEncoding=New-Object Text.UTF8Encoding($false); $result = $InputText | & ssh.exe @argsList }
+        finally { $OutputEncoding=$previousEncoding }
+    }
+    else { $result = & ssh.exe @argsList }
     if ($LASTEXITCODE -ne 0) { throw "SSH operation failed on $($Node.name). Check the output and receipt before retrying." }
     return ($result -join "`n")
 }
@@ -127,6 +133,8 @@ try {
     }
     if ($CheckOnly) { Write-Host 'All node checks passed. No monitoring services were installed.' -ForegroundColor Green }
     else {
+        $central=@($config.nodes | Where-Object name -eq $config.central_node)[0]
+        $adminCredential=Get-MonitorAdminCredential $config ([bool]$plans[$central.name].administrator_initialized)
         $cache=Join-Path $env:LOCALAPPDATA 'AscendMonitor\packages'
         New-Item -ItemType Directory -Path $cache -Force | Out-Null
         $artifacts=@{}
@@ -139,12 +147,15 @@ try {
             # Record the attempted install before sending it. Inspect server receipt after interruption.
             $receipts+=@{node=$node.name; host=$node.host; stage=$stage; action='install'; completed=$false}
             Write-JsonFile $receipts (Join-Path $local 'receipts.json')
-            Invoke-Remote $node "cd '$stage' && ${sudo}python3 deploy_node.py --config deployment.json --manifest software.json --node '$($node.name)' --packages . --install" | Write-Host
+            $installCommand="cd '$stage' && ${sudo}python3 deploy_node.py --config deployment.json --manifest software.json --node '$($node.name)' --packages . --install"
+            if ($node.name -eq $central.name) { Invoke-Remote $node ($installCommand+' --admin-password-stdin') -InputText $adminCredential.Password | Write-Host }
+            else { Invoke-Remote $node $installCommand | Write-Host }
             $receipts[-1].completed=$true; Write-JsonFile $receipts (Join-Path $local 'receipts.json')
         }
         $central=@($config.nodes | Where-Object name -eq $config.central_node)[0]
         $stage=$stages[$central.name]; $sudo=if ($central.ssh_user -eq 'root') { '' } else { 'sudo -n ' }
-        Invoke-Remote $central "cd '$stage' && ${sudo}python3 deploy_node.py --config deployment.json --manifest software.json --verify" | Write-Host
+        Invoke-Remote $central "cd '$stage' && ${sudo}python3 deploy_node.py --config deployment.json --manifest software.json --verify --admin-password-stdin" -InputText $adminCredential.Password | Write-Host
+        $adminCredential=$null
         $zip=New-ClientPackage $config $local $PSScriptRoot
         Write-Host "Deployment verified. Windows client installer: $zip" -ForegroundColor Green
         Start-Process explorer.exe -ArgumentList "/select,`"$zip`""

@@ -12,8 +12,10 @@
 - **仅 NPU 卡上的进程**：PID、运行用户、工号线索、容器、进程目录和宿主机映射目录。
 - 工号依据明确标注；无法识别显示“未知”，线索冲突显示“待确认”。共享 root 用户不等于真实操作者，同目录不等于同一任务。
 - 多节点筛选，资源指标默认每 5 秒刷新，进程默认每 10 秒采集。
+- 按工号、目录、主机和容器汇总 NPU 进程；容器内目录映射到宿主机挂载目录。
+- 管理员密码仅保存在操作者本机的受限目录；服务器不保留明文管理员密码，重复部署不会重置已有账号。
 
-可选的 [管理员 Stop 控制](skills/ascend-resource-monitor/references/container-control.md) 可在汇总表中添加带确认框的容器停止按钮。需要单独部署受控后台并接入 Grafana 登录；默认 Windows 安装流程仍保持只读。
+可选的 [管理员 Stop 控制](skills/ascend-resource-monitor/references/container-control.md) 在汇总表显示 Stop，点击后打开容器确认页；只有 Grafana 管理员才能提交停止。停止的是该行对应的整个容器，最多等待 30 秒正常退出。后台校验当前 NPU 进程、完整容器 ID 和启动时间，并记录操作日志；页面显示当前登录账号与管理员/只读状态。需要单独部署受控后台并接入 Grafana 登录；默认 Windows 安装流程仍保持只读。
 
 ## 作为 Skill 使用
 
@@ -43,15 +45,17 @@ Skill 目录是 skills/ascend-resource-monitor。
 
 Windows 需要 PowerShell 5.1 和 OpenSSH Client，**不需要安装 Python**。服务器需要 Python 3.9+、systemd、可用的 NPU 驱动及 root 或 `sudo -n` 权限。需要先连接相应 VPN/网络。
 
-密码在 OpenSSH 终端中输入，不保存到配置或安装包。SSH 私钥留在当前 PC。访问工具使用 SSH 隧道，Grafana 和 Prometheus 默认仅监听服务器回环地址。打开面板时需保持隧道窗口运行。
+SSH 密码在 OpenSSH 终端中输入，不保存到配置或安装包。Grafana 管理员密码在本机生成，保存于 `%LOCALAPPDATA%\AscendMonitor\credentials\<部署名称>.json`，仅当前用户与 SYSTEM 可读。已有账号复用本机记录，缺失时安全询问原密码；密码通过标准输入完成初始化，服务器只保留密码哈希和必要的加密密钥。SSH 私钥留在当前 PC，访问安装包不携带密码。详见[密码加固流程](skills/ascend-resource-monitor/references/credentials.md)。
+
+访问工具使用 SSH 隧道，Grafana 和 Prometheus 默认仅监听服务器回环地址。打开面板时需保持隧道窗口运行。其他 PC 需建立自己的隧道并独立登录管理员；服务器服务开机自启，PC 或网络断开后重新运行快捷方式即可。
 
 ## 支持范围与体积
 
 默认软件配置为 **Linux ARM64**，沿用 Ascend 950DT / openEuler 24.03 上验证过的组件组合：NPU Exporter 26.2.0、Prometheus 3.15.1、Grafana 13.2.4；需要安装系统采集器时使用 node_exporter 1.12.1。其他硬件、系统和架构需先核对兼容性并替换 `software.json`。
 
-Skill 压缩包约 **47 KiB**，Windows 向导约 **32 KiB**；具体以 Release 文件为准。仓库和 ZIP **不包含监控软件二进制、模型权重、密码、私钥或实际服务器配置**。软件包在部署时下载并校验 SHA-256，典型全量下载约 550 MB，也支持提前准备离线文件。
+Skill 与 Windows 向导压缩包均为几十 KiB，具体以构建结果和 Release 文件为准。仓库和 ZIP **不包含监控软件二进制、模型权重、密码、私钥或实际服务器配置**。软件包在部署时下载并校验 SHA-256，典型全量下载约 550 MB，也支持提前准备离线文件。
 
-现有监控验证过 20 个面板和双机 6 个采集目标。可复用工具有 19 项本地测试，覆盖 NPU 进程筛选、归属、配置、解压边界及安装/重复安装行为；Windows 语法和向导构建已检查。**没有完成对全新服务器的完整安装验收，也没有在受限代理下完成全量在线下载验收。**
+现有监控验证过 20 个面板和双机 6 个采集目标。本地测试覆盖 NPU 进程筛选、归属、配置、解压边界、安装/重复安装、凭据保护和 Stop 权限；另检查 Windows 语法、向导、本机凭据 ACL，并使用隔离 Grafana 实例验证真实初始化和登录。**没有完成对全新服务器的完整安装验收，也没有在受限代理下完成全量在线下载验收。**
 
 ## 开发与打包
 

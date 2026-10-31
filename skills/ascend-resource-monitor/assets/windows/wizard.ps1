@@ -63,7 +63,7 @@ $next2=Button $optionsPage '下一步' 814 636; $next2.Add_Click({$tabs.Selected
 
 $null=Label $deployPage '先检查所有主机，再开始部署。检查只上传小型检查脚本；部署会下载经 SHA-256 校验的软件包。' 24 24
 $null=Label $deployPage '不会修改业务容器、NPU 驱动、SSH 公钥或防火墙。已有其他监控占用端口或固定配置时会停止并说明冲突。' 24 82
-$null=Label $deployPage '部署完成后自动验证指标与面板，并生成 Windows 一键安装 / 打开面板 ZIP。' 24 140
+$null=Label $deployPage '部署后验证指标与面板，生成一键访问 ZIP。管理员密码仅保存在本机受限目录，服务器不留明文。' 24 140
 $summary=New-Object Windows.Forms.TextBox; $summary.Multiline=$true; $summary.ReadOnly=$true; $summary.ScrollBars='Vertical'; $summary.Location=New-Object Drawing.Point(24,210); $summary.Size=New-Object Drawing.Size(960,245); $deployPage.Controls.Add($summary)
 $export=Button $deployPage '导出配置' 24 480
 $check=Button $deployPage '检查环境' 214 480

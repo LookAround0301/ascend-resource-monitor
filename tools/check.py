@@ -26,6 +26,7 @@ def main():
             subprocess.run(['powershell.exe','-NoProfile','-STA','-ExecutionPolicy','Bypass','-File',str(wizard),'-SelfTest'],check=True)
             # Paths are parameters rather than interpolated PowerShell source.
             subprocess.run(['powershell.exe','-NoProfile','-ExecutionPolicy','Bypass','-File',str(ROOT/'tools/check-powershell.ps1'),'-Directory',str(wizard.parent)],check=True)
+            subprocess.run(['powershell.exe','-NoProfile','-ExecutionPolicy','Bypass','-File',str(ROOT/'tools/test-credentials.ps1'),'-WindowsAssets',str(wizard.parent)],check=True)
     print('Repository checks passed')
 
 if __name__ == '__main__':

@@ -8,6 +8,7 @@ import tempfile
 import unittest
 import hashlib
 import types
+import sqlite3
 from unittest.mock import patch
 
 SKILL=Path(__file__).resolve().parents[2]
@@ -111,7 +112,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(out['rows'],1)
         self.assertIn(b'npu_ids="0"',obj.body)
 
-    def test_install_and_reinstall_preserve_credentials_and_generate_isolated_units(self):
+    def test_install_and_reinstall_preserve_encryption_key_without_plaintext_password(self):
         with tempfile.TemporaryDirectory() as t:
             root=Path(t); base=root/'data'; packages=root/'packages'; packages.mkdir()
             c=example(); n=c['nodes'][0]
@@ -127,12 +128,22 @@ class RuntimeTests(unittest.TestCase):
             plan={'roles':['npu','process','prometheus','grafana','node'],'selinux_enforcing':False}
             account=types.SimpleNamespace(pw_dir=str(base/'data'),pw_uid=123,pw_gid=123)
             fake_pwd=types.SimpleNamespace(getpwnam=lambda name:account)
-            with patch.dict(sys.modules,{'pwd':fake_pwd}),patch.object(deploy,'probe',return_value=plan),patch.object(deploy,'base_path',return_value=base),patch.object(deploy,'SYSTEMD',root/'systemd'),patch.object(deploy,'FIXED',root/'npu-config'),patch.object(deploy.os,'chown',create=True),patch.object(deploy,'run',return_value='') as commands,patch.object(Path,'symlink_to',lambda p,target,**kw:p.write_text(str(target))):
-                first=deploy.install(c,n,manifest,packages)
+            def bootstrap(*args):
+                path=base/'data/grafana/grafana.db'
+                if not path.exists():
+                    with sqlite3.connect(path) as db:
+                        db.execute('CREATE TABLE user (login TEXT, is_admin INTEGER)')
+                        db.execute("INSERT INTO user VALUES ('admin',1)")
+                    db.close()
+            with patch.dict(sys.modules,{'pwd':fake_pwd}),patch.object(deploy,'initialize_administrator',side_effect=bootstrap),patch.object(deploy,'probe',return_value=plan),patch.object(deploy,'base_path',return_value=base),patch.object(deploy,'SYSTEMD',root/'systemd'),patch.object(deploy,'FIXED',root/'npu-config'),patch.object(deploy.os,'chown',create=True),patch.object(deploy,'run',return_value='') as commands,patch.object(Path,'symlink_to',lambda p,target,**kw:p.write_text(str(target))):
+                first=deploy.install(c,n,manifest,packages,admin_password='local-only-password')
                 secret=(base/'config/admin.env').read_text()
                 changed=copy.deepcopy(c); changed['title']='Changed'
                 second=deploy.install(changed,n,manifest,packages)
             self.assertEqual(secret,(base/'config/admin.env').read_text())
+            self.assertNotIn('GF_SECURITY_ADMIN_PASSWORD',secret)
+            self.assertIn('GF_SECURITY_DISABLE_INITIAL_ADMIN_CREATION=true',secret)
+            self.assertNotIn('local-only-password',''.join(p.read_text(errors='ignore') for p in base.rglob('*') if p.is_file()))
             self.assertEqual(len(first['services']),5)
             self.assertEqual(second['phase'],'services-active-awaiting-central-verification')
             self.assertTrue(list((base/'backups').rglob('grafana.ini')))
