@@ -7,11 +7,12 @@ Use this workflow only when the user asks to add container control. This is an o
 - `assets/runtime/control_common.py`: validation, Docker Unix-socket client, current NPU PID/container checks, audit logging and the restricted stop operation.
 - `assets/runtime/container_agent.py`: an HTTPS agent on each monitored host, requiring a client certificate issued by the deployment CA. It exposes health and stop only, not Docker's generic API.
 - `assets/runtime/control_proxy.py`: an unprivileged same-origin Grafana reverse proxy. Requires `aiohttp` (tested with 3.14.3). It verifies the caller against Grafana `/api/user` and `/api/user/orgs`; only a server administrator or an Admin in the configured organization is allowed.
-- `assets/runtime/patch_dashboard.py`: adds a native Grafana table Actions cell, Stop button, confirmation text and administrator login link. The collector's `control_ref` combines the immutable container ID and start timestamp.
+- `assets/runtime/patch_dashboard.py`: adds a visible Stop data link to the summary table. The collector's `control_ref` combines the immutable container ID and start timestamp.
+- `assets/runtime/control_ui.py`: the administrator-only confirmation page and submit handler. Viewing this page never stops a container; only explicit confirmation submits the protected POST.
 
-Grafana 13.2.4 supports this native Actions cell and confirmation. Check the deployed version before adapting the dashboard schema. No executable JavaScript injection or secret in dashboard JSON is needed.
+This implementation uses ordinary Grafana data links, which remain visible in read-only dashboards. The destination authenticates the user, fetches the actual container name through the host agent, and presents a confirmation. No executable JavaScript injection or secret in dashboard JSON is needed.
 
-Native actions also require the dashboard's frontend edit capability. Set the controlled dashboard's `editable` flag when enabling actions, while leaving viewer RBAC unchanged. A present but empty Actions column is not proof that the control is visible; check a real administrator session and a viewer session separately. Backend authorization remains mandatory because editors may also see native action buttons.
+Native Actions cells can appear empty when their frontend permission context disallows execution. Merely saving an action or checking the API does not prove the button rendered. The data-link approach avoids that UI gate while retaining backend authorization. The dashboard remains read-only. Verify the actual operation link and the confirmation page separately.
 
 ## Deployment shape
 
@@ -26,6 +27,7 @@ Example proxy configuration (adapt paths/addresses):
   "port":3000,
   "grafana_url":"http://127.0.0.1:3001",
   "org_id":1,
+  "dashboard_uid":"lab-monitor",
   "ca":"/data/operator/monitor/config/control/ca.crt",
   "cert":"/data/operator/monitor/config/control/client.crt",
   "key":"/data/operator/monitor/config/control/client.key",
@@ -54,7 +56,9 @@ The per-node names must match Prometheus's node labels. Preserve the workspace-r
 
 ## Request and safety checks
 
-The native button sends a same-origin JSON POST with a custom header, node and `control_ref`, after its confirmation dialog. The proxy checks Origin, content type, authenticated identity, current administrator role and an allowlisted node URL. Host/URL/command input is never accepted from the client.
+The Stop link first opens `/a5-control/confirm`; this GET performs no stop. The page is shown only to an administrator and displays the real node, container name and full ID. Its confirmation button sends a same-origin JSON POST with a custom header, node and `control_ref`. The proxy checks Origin, content type, authenticated identity, current administrator role and an allowlisted node URL. Host/URL/command input is never accepted from the client.
+
+The proxy personalizes the dashboard login link from the current Grafana session: an administrator sees their login name, another authenticated user sees read-only status, and an anonymous user sees the login entry. These responses use `Cache-Control: no-store` and vary by authentication headers to avoid leaking one user's state to another. A new browser tab or hostname can have a different login session.
 
 The agent requires a deployment client certificate, checks exact full container ID and unchanged start timestamp, running state, current NPU PIDs intersected with that container's host PIDs, and protected-container rules. Kubernetes-managed containers are refused; stopping managed workloads belongs to their scheduler. A Docker stop affects every process in the selected container. It allows 30 seconds for graceful exit, after which Docker may force termination.
 

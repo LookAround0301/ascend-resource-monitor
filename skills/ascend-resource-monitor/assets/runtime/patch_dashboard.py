@@ -7,9 +7,9 @@ from pathlib import Path
 
 def add_stop_button(dashboard):
     result=copy.deepcopy(dashboard)
-    # Native table actions are hidden when dashboard edit capability is disabled.
-    # Grafana RBAC and the control API continue to enforce the caller's rights.
-    result['editable']=True
+    # Data links remain visible in a read-only dashboard; the destination
+    # performs administrator authentication and presents the confirmation.
+    result['editable']=False
     for panel in result['panels']:
         if panel.get('title')=='NPU 进程归属与工作目录':
             organize=next(t for t in panel['transformations'] if t['id']=='organize')['options']
@@ -29,13 +29,9 @@ def add_stop_button(dashboard):
         overrides=[o for o in panel['fieldConfig']['overrides'] if o.get('matcher',{}).get('options')!='操作']
         overrides.append({'matcher':{'id':'byName','options':'操作'},'properties':[
             {'id':'custom.width','value':85},
-            {'id':'custom.cellOptions','value':{'type':'actions'}},
-            {'id':'actions','value':[{'type':'fetch','title':'Stop',
-                'style':{'backgroundColor':'#a82e2e'},
-                'confirmation':'确认停止主机 ${__data.fields["主机"]} 上的容器 ${__data.fields["容器"]}？容器内所有任务都将中断；最多等待 30 秒正常退出。',
-                'fetch':{'method':'POST','url':'/a5-control/stop',
-                         'headers':[['Content-Type','application/json'],['X-A5-Control','stop-v1']],
-                         'body':'{"node":"${__data.fields["主机"]}","target":"${__value.raw}","confirmed":true}'}}]}
+            {'id':'custom.cellOptions','value':{'type':'data-links'}},
+            {'id':'links','value':[{'title':'Stop','targetBlank':False,
+                'url':'/a5-control/confirm?node=${__data.fields["主机"]}&target=${__value.raw}'}]}
         ]})
         panel['fieldConfig']['overrides']=overrides
     login={'type':'link','title':'管理员登录','url':'/login?redirectTo=%2Fd%2F'+result['uid'],

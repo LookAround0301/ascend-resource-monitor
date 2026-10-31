@@ -148,6 +148,21 @@ class StopEngine:
         self.write_audit = write_audit or (lambda event: audit(config['audit_log'], event))
         self.lock = threading.Lock()
 
+    def describe(self, request):
+        """Read-only confirmation metadata, checked against the exact instance."""
+        data = validate_request(request)
+        if data['node'] != self.config['node']:
+            raise ControlError(400, '目标主机不匹配')
+        info = self.docker.inspect(data['container_id'])
+        if info.get('Id') != data['container_id']:
+            raise ControlError(409, '容器身份不匹配')
+        state = info.get('State', {})
+        if not state.get('Running') or state.get('StartedAt') != data['container_started_at']:
+            raise ControlError(409, '容器已停止或重新启动，请刷新面板')
+        return {'node':data['node'],'container_id':info['Id'],
+                'container':info.get('Name','').lstrip('/'),
+                'container_started_at':state['StartedAt']}
+
     def stop(self, request, actor):
         data = validate_request(request)
         if data['node'] != self.config['node']:

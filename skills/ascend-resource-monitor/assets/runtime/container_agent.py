@@ -4,7 +4,8 @@ import argparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import ssl
-from control_common import ControlError, StopEngine
+import urllib.parse
+from control_common import ControlError, StopEngine, parse_browser_payload
 
 
 def make_handler(engine):
@@ -20,6 +21,16 @@ def make_handler(engine):
         def do_GET(self):
             if self.path == '/healthz':
                 self.reply(200, {'status':'ok'})
+            elif self.path.startswith('/info?'):
+                try:
+                    q=urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query,strict_parsing=True)
+                    if set(q)!={'node','target'} or any(len(v)!=1 for v in q.values()):
+                        raise ControlError(400,'无效查询')
+                    request=parse_browser_payload({'node':q['node'][0],'target':q['target'][0],'confirmed':True})
+                    self.reply(200,engine.describe(request))
+                except ControlError as e:self.reply(e.status,{'message':e.message})
+                except (ValueError,TypeError,KeyError):self.reply(400,{'message':'无效查询'})
+                except Exception:self.reply(503,{'message':'容器状态暂时无法核实'})
             else:
                 self.reply(404, {'message':'Not found'})
 

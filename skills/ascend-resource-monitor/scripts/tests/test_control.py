@@ -9,6 +9,7 @@ import unittest
 
 from control_common import ControlError, StopEngine, check_browser_request, is_admin, parse_browser_payload, validate_request
 from patch_dashboard import add_stop_button
+from control_ui import confirmation
 
 CID='a'*64
 STAMP='2026-10-31T00:00:00.123456789Z'
@@ -105,15 +106,31 @@ class ControlTests(unittest.TestCase):
     def test_button_has_confirmation_and_references_exact_container(self):
         d={'uid':'lab','panels':[{'title':'按工号与目录汇总 · 仅 NPU 进程','targets':[{'expr':'sum by(node,employee_id,attribution,container,cwd,host_cwd,directory_group) (metric)'}],'transformations':[{'id':'organize','options':{'renameByName':{}}}],'fieldConfig':{'overrides':[]}}]}
         updated=add_stop_button(d)
-        self.assertTrue(updated['editable'])
+        self.assertFalse(updated['editable'])
         override=updated['panels'][0]['fieldConfig']['overrides'][0]
         values={p['id']:p['value'] for p in override['properties']}
-        action=values['actions'][0]
-        self.assertEqual(values['custom.cellOptions']['type'],'actions')
-        self.assertTrue(action['confirmation'])
-        self.assertIn('${__value.raw}',action['fetch']['body'])
-        self.assertEqual(action['fetch']['method'],'POST')
+        link=values['links'][0]
+        self.assertEqual(values['custom.cellOptions']['type'],'data-links')
+        self.assertEqual(link['title'],'Stop')
+        self.assertIn('${__value.raw}',link['url'])
+        self.assertTrue(link['url'].startswith('/a5-control/confirm?'))
         self.assertIn('control_ref',updated['panels'][0]['targets'][0]['expr'])
+
+    def test_describe_is_read_only_and_checks_instance(self):
+        info=self.engine.describe(payload())
+        self.assertEqual(info['container'],'test-workload')
+        self.assertFalse(self.docker.stops)
+        self.assertFalse(self.events)
+        with self.assertRaises(ControlError):self.engine.describe({**payload(),'container_started_at':'2026-11-01T00:00:00Z'})
+
+    def test_confirmation_page_escapes_names_and_requires_explicit_submit(self):
+        info=self.engine.describe(payload());info['container']='<script>unsafe</script>'
+        document=confirmation(ACTOR,payload(),info,'/d/lab')
+        self.assertIn('&lt;script&gt;unsafe&lt;/script&gt;',document)
+        self.assertNotIn('<script>unsafe',document)
+        self.assertIn('id="stop-form"',document)
+        self.assertIn('type="submit"',document)
+        self.assertIn('admin',document)
 
 
 if __name__=='__main__':unittest.main()
