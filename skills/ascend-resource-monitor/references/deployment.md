@@ -83,6 +83,8 @@ Persistent overrides go in `config/process-owners.json`, for example `{"containe
 
 When the user supplies a staff roster for display, add an `employee_names` object to the same private configuration, mapping the complete lowercase account ID to its name. Use exact account matches, preserve leading zeros, and omit missing or conflicting names. Both process tables show the name next to the account ID; unmatched names remain blank. This lookup does not upgrade a directory/container clue into proven ownership. Keep real rosters and mappings outside the reusable skill, public repository, and downloadable packages. For an existing dashboard, `process_panels.add_name_columns(panels)` adds the field while preserving its queries, layout and Stop controls.
 
+The summary's usage duration is the current time minus the earliest start time among that group's currently listed NPU processes. Start time comes from `/proc` boot time and process start ticks, so restarting the collector does not reset a running process. When all processes exit, the group disappears on the next collection/scrape; a later process starts a new duration without carrying over the old value. This is elapsed process lifetime, not accumulated NPU busy time or billing time. For an existing dashboard, `process_panels.add_usage_time(panels)` preserves the summary's group labels, including names and container control references, and uses instant queries only.
+
 The process source must expose `npu_chip_info_process_info_num`; missing process metrics are a compatibility failure even if utilization metrics exist. An explicit zero count is a valid empty device list.
 
 ## Local validation

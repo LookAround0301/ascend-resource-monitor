@@ -11,6 +11,7 @@ Reusable monitoring skill for Linux Ascend NPU servers. The recommended default 
 - Unknown/conflicting identities are explicit. A shared root account or matching directory does not prove who started a workload.
 - Multi-node filtering, 5-second resource refresh and 10-second process sampling by default.
 - NPU process summaries by employee, directory, node and container, with host mount mapping.
+- Current NPU process duration starts at the group's earliest running process. Once all processes exit, the row disappears; a later process starts a new duration without carrying over the previous run.
 - Optional names from a user-supplied roster, matched by account ID and blank when unmatched; rosters remain in private deployment configuration.
 - Administrator passwords stay in a protected local operator record, never server configuration; reinstalls preserve existing accounts.
 

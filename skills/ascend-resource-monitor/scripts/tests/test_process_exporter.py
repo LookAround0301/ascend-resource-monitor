@@ -5,6 +5,47 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[2]/'assets/runtime'))
 import process_exporter as p
 
 class ProcessTests(unittest.TestCase):
+    def test_process_clock_uses_start_ticks_and_does_not_carry_over_after_exit(self):
+        import copy
+        import types
+        from unittest.mock import patch
+        obj=p.Inventory.__new__(p.Inventory)
+        obj.args=types.SimpleNamespace(owners='missing.json',npu_url='http://test',limit=200)
+        obj.previous={};obj.last_sample=0;obj.tick_rate=100;obj.boot_id='test';obj.boot_time=1000
+        obj.containers={};obj.last_container_success=0
+        row={'pid':123,'ppid':1,'start_ticks':200,'ticks':0,'rss':42,'user':'root',
+             'login_user':'','sudo_user':'','name':'worker','entrypoint':'python','cwd':'/job',
+             'host_cwd':'/job','container_id':'','container':'','service':'','control_ref':''}
+        with patch.object(obj,'refresh_containers'),patch.object(p,'npu_processes',side_effect=[{123:{'0'}},{},{123:{'0'}}]),patch.object(obj,'read_process',side_effect=lambda pid:copy.deepcopy(row)):
+            obj.sample()
+            first=[line for line in obj.body.decode().splitlines() if line.startswith('ascend_process_start_time_seconds{')]
+            self.assertEqual(float(first[0].rsplit(' ',1)[1]),1002)
+            obj.sample()
+            self.assertNotIn('ascend_process_start_time_seconds{',obj.body.decode())
+            row['start_ticks']=900
+            obj.sample()
+            last=[line for line in obj.body.decode().splitlines() if line.startswith('ascend_process_start_time_seconds{')]
+            self.assertEqual(float(last[0].rsplit(' ',1)[1]),1009)
+
+    def test_usage_table_preserves_grouping_and_stop_through_repeated_patches(self):
+        import copy
+        import re
+        from process_panels import add_process_panels,add_usage_time
+        from patch_dashboard import add_stop_button
+        panels=[];add_process_panels(panels,'node=~"$node"')
+        dashboard=add_stop_button({'uid':'test','panels':panels})
+        before=copy.deepcopy(dashboard)
+        add_usage_time(dashboard['panels'])
+        self.assertEqual(before,dashboard)
+        summary=dashboard['panels'][1]
+        self.assertEqual(len(summary['targets']),2)
+        a,b=summary['targets']
+        self.assertEqual(re.search(r'sum by\(([^)]*)\)',a['expr'])[1],re.search(r'min by\(([^)]*)\)',b['expr'])[1])
+        self.assertIn('employee_name',b['expr']);self.assertIn('control_ref',b['expr'])
+        self.assertIn('time() - min by(',b['expr'])
+        self.assertEqual(summary['transformations'][0]['options']['valueLabel'],'display_metric')
+        self.assertTrue(all(t['instant'] and not t['range'] for t in summary['targets']))
+
     def test_sample_reloads_names_and_keeps_unmatched_npu_processes(self):
         import copy
         import json

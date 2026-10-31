@@ -1,4 +1,5 @@
 """Grafana tables for process attribution and comparable working directories."""
+import copy
 import re
 
 
@@ -17,7 +18,7 @@ def add_name_columns(panels):
         organize.setdefault('excludeByName', {}).pop('employee_name', None)
         for target in panel.get('targets', []):
             query = target.get('expr', '')
-            match = re.search(r'\bsum\s+by\s*\(([^)]*)\)', query)
+            match = re.search(r'\b(?:sum|min)\s+by\s*\(([^)]*)\)', query)
             if match:
                 labels = [key.strip() for key in match[1].split(',')]
                 if 'employee_id' in labels and 'employee_name' not in labels:
@@ -34,6 +35,44 @@ def add_name_columns(panels):
                 break
         else:
             overrides.append(name_override)
+
+
+def add_usage_time(panels):
+    """Show current process age without retaining completed process sessions."""
+    for panel in panels:
+        if panel.get('title') != '按工号与目录汇总 · 仅 NPU 进程':
+            continue
+        rss = next(t for t in panel['targets'] if '_process_resident_memory_bytes' in t.get('expr', ''))
+        match = re.search(r'sum\s+by\s*\(([^)]*)\)\s*\(\s*([a-zA-Z_:][a-zA-Z0-9_:]*_process_)resident_memory_bytes(\{[^}]*\})\s*\)', rss['expr'])
+        if not match:
+            raise ValueError('Unrecognized process summary query')
+        labels, prefix, selector = match.groups()
+        base_query = match[0]
+        rss.update(expr=f'label_replace({base_query}, "display_metric", "rss_bytes", "", "")', format='time_series', instant=True, range=False)
+        elapsed = copy.deepcopy(rss)
+        elapsed.update(refId='Usage', expr=f'label_replace(clamp_min(time() - min by({labels}) ({prefix}start_time_seconds{selector}), 0), "display_metric", "usage_seconds", "", "")')
+        panel['targets'] = [t for t in panel['targets'] if t.get('refId') != 'Usage'] + [elapsed]
+        labels_to_fields = next(t for t in panel['transformations'] if t['id'] == 'labelsToFields')
+        labels_to_fields['options'] = {'mode': 'columns', 'valueLabel': 'display_metric'}
+        organize = next(t for t in panel['transformations'] if t['id'] == 'organize')['options']
+        indexes = organize['indexByName']
+        ordered = sorted((k for k in indexes if k not in {'Value', 'rss_bytes', 'usage_seconds'}), key=indexes.get)
+        position = ordered.index('container') + 1
+        ordered[position:position] = ['usage_seconds', 'rss_bytes']
+        organize['indexByName'] = {name: i for i, name in enumerate(ordered)}
+        organize['renameByName'].update({'rss_bytes': 'RSS 合计', 'usage_seconds': '使用时长'})
+        usage_override = {'matcher': {'id': 'byName', 'options': '使用时长'}, 'properties': [
+            {'id': 'unit', 'value': 'dtdhms'}, {'id': 'decimals', 'value': 0},
+            {'id': 'custom.width', 'value': 150}, {'id': 'min', 'value': 0},
+            {'id': 'description', 'value': '从本组当前 NPU 进程最早的启动时间计算。全部进程结束后该行移除；新进程按新的启动时间计时，不累计上次时长。'}
+        ]}
+        overrides = panel['fieldConfig']['overrides']
+        for i, item in enumerate(overrides):
+            if item.get('matcher', {}).get('options') == '使用时长':
+                overrides[i] = usage_override
+                break
+        else:
+            overrides.append(usage_override)
 
 
 def add_process_panels(panels, node):
@@ -75,3 +114,4 @@ def add_process_panels(panels, node):
         ]}
     })
     add_name_columns(panels)
+    add_usage_time(panels)

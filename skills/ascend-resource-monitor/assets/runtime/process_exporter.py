@@ -237,7 +237,8 @@ class Inventory:
                 row["directory_group"] = hashlib.sha256(
                     (group_owner + "\0" + row["host_cwd"] + "\0" + row["entrypoint"]).encode()).hexdigest()[:10]
                 row["process_key"] = self.boot_id + ":" + str(row["pid"]) + ":" + str(row["start_ticks"])
-                row["started_at"] = datetime.fromtimestamp(self.boot_time + row["start_ticks"] / self.tick_rate, timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                row["start_time_seconds"] = self.boot_time + row["start_ticks"] / self.tick_rate
+                row["started_at"] = datetime.fromtimestamp(row["start_time_seconds"], timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
                 rows.append(row)
             except (OSError, ValueError, StopIteration, IndexError, ProcessLookupError):
                 continue
@@ -261,7 +262,8 @@ class Inventory:
             "# TYPE ascend_process_container_metadata_age_seconds gauge",
             f"ascend_process_container_metadata_age_seconds {max(0, time.time() - self.last_container_success)}",
         ]
-        for metric, key in (("ascend_process_cpu_percent", "cpu"), ("ascend_process_resident_memory_bytes", "rss")):
+        for metric, key in (("ascend_process_cpu_percent", "cpu"), ("ascend_process_resident_memory_bytes", "rss"),
+                            ("ascend_process_start_time_seconds", "start_time_seconds")):
             body.extend([f"# TYPE {metric} gauge"])
             for row in rows:
                 pairs = [key_name + "=" + json.dumps(str(row[key_name])[:512], ensure_ascii=False)
