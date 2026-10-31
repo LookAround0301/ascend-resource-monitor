@@ -15,6 +15,28 @@ Reusable monitoring skill for Linux Ascend NPU servers, with a native Windows de
 
 Optional [administrator-only Stop controls](skills/ascend-resource-monitor/references/container-control.md) add Stop links, an authenticated confirmation page and per-session login status. The backend verifies current NPU processes, full container ID and unchanged start time, then audits the stop. This stops the entire selected container with a 30-second graceful timeout. The control backend is deployed separately; the default Windows deployment remains read-only.
 
+## Shared company / VPN web entry
+
+An optional [shared HTTPS entry](skills/ascend-resource-monitor/references/web-entry.md) lets multiple PCs open the same server-hosted dashboard directly in a browser. Anonymous users can view; administrators sign in with the existing server account and confirm before stopping a container. Viewers need no server SSH account, launcher or local password file. Turning off the operator's PC does not affect other viewers while the monitoring server, services and network remain available.
+
+| Access mode | Default SSH tunnel | Optional shared HTTPS entry |
+| --- | --- | --- |
+| Example address | `http://127.0.0.1:13000` | `https://192.0.2.10:8443` |
+| Each PC | Run the launcher and keep the SSH tunnel open | Connect to the company network / VPN and open the page |
+| Accounts | SSH credentials; separate admin login for Stop | Anonymous viewing; admin login for Stop |
+
+Configure the control proxy's HTTPS interface and certificate separately. Grafana and Prometheus continue to listen on loopback. Prefer a company-trusted certificate; self-signed certificates require browser acceptance or trust configuration, and a corporate proxy may need an exact bypass rule for the monitoring host. The default Windows wizard still deploys SSH-tunnel access.
+
+With the current repository's Skill, ask:
+
+```text
+Configure a shared HTTPS monitoring entry on the company network / VPN,
+with anonymous viewing and administrator login plus confirmation for container Stop.
+Confirm the listen address, available port and certificate, then deploy and verify browser access.
+```
+
+The shared-entry update is currently available in the repository source; install the Skill from this repository to use it. Published v0.2.0 download packages do not include this update.
+
 ## Install as a skill
 
 Ask a skill-capable agent to install this repository's `skills/ascend-resource-monitor` directory, or extract the [Skill ZIP](https://github.com/LookAround0301/ascend-resource-monitor/releases/latest/download/ascend-resource-monitor-skill.zip) into the client's skill directory. Invoke `$ascend-resource-monitor` and supply the target servers when asked. The workflow gathers necessary inputs, checks the environment, deploys and verifies monitoring, then produces a Windows client installer.
