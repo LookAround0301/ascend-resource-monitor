@@ -7,6 +7,8 @@ description: Deploy and maintain Grafana/Prometheus monitoring for Ascend NPU se
 
 Build or extend a resource dashboard for one or more Ascend servers. Collect CPU, RAM, disks, network, NPU utilization/HBM/temperature/power, and **only processes reported by NPU Exporter**. Preserve existing business workloads and working monitoring installations.
 
+Recommend and deliver the local one-click SSH-tunnel launcher by default. Direct HTTPS browser access is optional: corporate proxy, port and certificate policies can differ across PCs. When both modes are available, keep the local launcher and explain how to choose; do not treat one successful browser check as proof that every PC can connect.
+
 ## Gather the deployment inputs
 
 Reuse known information; ask only for missing values. Collect server names, SSH addresses/ports/users, login method, monitoring-network IPv4 addresses reachable from the central node, central Grafana/Prometheus node, an existing mounted data directory, deployment name, and local dashboard port. Establish whether administrator container Stop controls are wanted and where the operator will keep credentials locally. Ask for an executor identifier when workspace policy requires it. Do not put passwords, tokens, private keys, or current users' details into this skill or distributable templates.
@@ -30,6 +32,8 @@ For an explicitly requested shared company/VPN browser entry, read [references/w
 ## Final workflow step: deliver Windows tools
 
 After deployment verification, generate the Windows client installer and access launcher for that environment. It installs under the current Windows user's LocalAppData, creates a desktop shortcut, establishes a loopback SSH tunnel, and opens the dashboard. Also provide the deployment wizard when requested, so another operator can fill in their own servers and deploy. See [references/windows.md](references/windows.md).
+
+If the same deployment already has a verified HTTPS entry, include the optional `Open-Web.cmd` with the client builder's `--shared-url` flag. `Open-Monitor.cmd` and the desktop shortcut remain the recommended entry. Adding a web shortcut must not deploy a listener, change proxy settings or install a certificate. When direct browser access is blocked, return to the local launcher, which still requires SSH connectivity and permission.
 
 ```powershell
 python scripts/build_windows_package.py --mode wizard --output <artifact-directory>

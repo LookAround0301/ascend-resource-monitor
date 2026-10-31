@@ -12,6 +12,10 @@ try {
         $source=Join-Path $PSScriptRoot $name; $target=Join-Path $destination $name
         if ([IO.Path]::GetFullPath($source) -ne [IO.Path]::GetFullPath($target)) { Copy-Item -LiteralPath $source -Destination $target -Force }
     }
+    foreach ($name in @('open-web.ps1','Open-Web.cmd','使用说明.txt')) {
+        $source=Join-Path $PSScriptRoot $name; $target=Join-Path $destination $name
+        if ((Test-Path -LiteralPath $source) -and [IO.Path]::GetFullPath($source) -ne [IO.Path]::GetFullPath($target)) { Copy-Item -LiteralPath $source -Destination $target -Force }
+    }
     if (-not $NoShortcut) {
         $shell = New-Object -ComObject WScript.Shell
         $shortcut=$shell.CreateShortcut((Join-Path ([Environment]::GetFolderPath('Desktop')) ('Ascend Monitor - '+$config.id+'.lnk')))

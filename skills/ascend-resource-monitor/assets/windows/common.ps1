@@ -37,6 +37,13 @@ function Assert-Client($Config) {
     }
 }
 
+function Assert-SharedUrl([string]$Value) {
+    $uri=$null
+    if ($Value -match '[\s\\"<>]' -or -not [Uri]::TryCreate($Value,[UriKind]::Absolute,[ref]$uri) -or $uri.Scheme -ne 'https' -or -not $uri.Host -or $uri.UserInfo -or $uri.Port -lt 1 -or $uri.Port -gt 65535) {
+        throw 'Shared URL must be an HTTPS address without embedded credentials.'
+    }
+}
+
 function Get-SshOptions($Node, [string]$IdentityFile, [switch]$Scp) {
     $result = @('-o', 'ConnectTimeout=15', '-o', 'StrictHostKeyChecking=accept-new', '-o', 'ServerAliveInterval=30', '-o', 'ServerAliveCountMax=3')
     if ($Scp) { $result += @('-P', [string]$Node.ssh_port) } else { $result += @('-p', [string]$Node.ssh_port) }
@@ -47,15 +54,23 @@ function Get-SshOptions($Node, [string]$IdentityFile, [switch]$Scp) {
     return $result
 }
 
-function New-ClientPackage($Config, [string]$Destination, [string]$Templates) {
+function New-ClientPackage($Config, [string]$Destination, [string]$Templates, [string]$SharedUrl) {
     Assert-Deployment $Config
+    if ($SharedUrl) { Assert-SharedUrl $SharedUrl }
     $node = @($Config.nodes | Where-Object name -eq $Config.central_node)[0]
     $client = [ordered]@{ id=$Config.id; title=$Config.title; host=$node.host; ssh_user=$node.ssh_user; ssh_port=[int]$node.ssh_port; remote_port=[int]$Config.grafana_port; local_port=[int]$Config.local_port; dashboard_uid=$Config.id; anonymous_viewer=[bool]$Config.anonymous_viewer }
+    if ($SharedUrl) { $client.shared_url=$SharedUrl }
     $folder = Join-Path $Destination ('client-' + $Config.id)
     New-Item -ItemType Directory -Force -Path $folder | Out-Null
     foreach ($name in @('common.ps1','open-monitor.ps1','install-client.ps1','Install.cmd','Open-Monitor.cmd')) {
         Copy-Item -LiteralPath (Join-Path $Templates $name) -Destination $folder -Force
     }
+    if ($SharedUrl) {
+        foreach ($name in @('open-web.ps1','Open-Web.cmd')) { Copy-Item -LiteralPath (Join-Path $Templates $name) -Destination $folder -Force }
+    }
+    $guide="推荐：双击 Open-Monitor.cmd，通过 SSH 隧道打开监控，保持窗口运行。也可运行 Install.cmd 创建桌面快捷方式。需要 VPN/网络和 SSH 登录权限。"
+    if ($SharedUrl) { $guide+="`r`n可选：Open-Web.cmd 直接打开 HTTPS 网页。若代理、端口或证书策略阻止访问，请使用 Open-Monitor.cmd。" }
+    Set-Content -LiteralPath (Join-Path $folder '使用说明.txt') -Value $guide -Encoding UTF8
     Write-JsonFile $client (Join-Path $folder 'client.json')
     $zip = Join-Path $Destination ('client-' + $Config.id + '.zip')
     Compress-Archive -Path (Join-Path $folder '*') -DestinationPath $zip -Force

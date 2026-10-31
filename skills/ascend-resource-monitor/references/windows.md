@@ -41,7 +41,15 @@ python <skill>/scripts/build_windows_package.py --mode client --config deploymen
 
 Generate this **after** verifying the specified environment. For an existing working monitor, use its actual dashboard UID, SSH target and Grafana port; a server reinstall is unnecessary.
 
-The recipient extracts `client-<id>.zip` and double-clicks `Install.cmd`. It installs into `%LOCALAPPDATA%\AscendMonitor\<id>` and creates a desktop shortcut. `Open-Monitor.cmd` also works directly without installation. `install-client.ps1 -NoLaunch -NoShortcut -DestinationRoot <temporary-folder>` supports isolated verification.
+Recommend `Open-Monitor.cmd` as the primary entry. The recipient can use it directly without installation, or run `Install.cmd` to install into `%LOCALAPPDATA%\AscendMonitor\<id>` and create a desktop shortcut to that SSH launcher. `install-client.ps1 -NoLaunch -NoShortcut -DestinationRoot <temporary-folder>` supports isolated verification.
+
+For a separately deployed and verified HTTPS entry, add an optional browser shortcut while retaining the local launcher:
+
+```powershell
+python <skill>/scripts/build_windows_package.py --mode client --config deployment.json --shared-url "https://192.0.2.10:8443/d/lab-monitor" --output <new-output-directory>
+```
+
+The resulting package contains both `Open-Monitor.cmd` (recommended) and `Open-Web.cmd` (optional). The URL goes into `client.json`; never include login credentials or tokens in it. The web shortcut only opens the configured URL and makes no proxy, certificate or server changes. If direct browser access is blocked, use the SSH launcher. The deployment wizard's normal final step keeps producing the SSH client; advanced callers of `New-ClientPackage` can supply `-SharedUrl` when the HTTPS service has already been verified. Do not invent an HTTPS address from the SSH host or assume every PC shares the same proxy policy.
 
 The launcher uses `ssh -N -T -L 127.0.0.1:<local>:127.0.0.1:<remote>` with keepalive and forward-failure detection. It reuses an existing endpoint only when its dashboard UID matches. Keep the SSH window open; the VPN/network and tunnel must be available. Linux services survive reboot through systemd, but a disconnected PC must reopen its tunnel. `127.0.0.1` always means the PC opening the link, so sharing the URL alone does not connect another PC.
 

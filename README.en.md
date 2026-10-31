@@ -1,6 +1,6 @@
 # Ascend Resource Monitor
 
-Reusable monitoring skill for Linux Ascend NPU servers, with a native Windows deployment wizard and per-environment dashboard launcher.
+Reusable monitoring skill for Linux Ascend NPU servers. The recommended default is a local one-click SSH-tunnel launcher, generated after the Windows deployment wizard verifies the environment. Direct browser access is optional.
 
 [中文](README.md) · [Windows wizard](https://github.com/LookAround0301/ascend-resource-monitor/releases/latest/download/ascend-monitor-setup.zip) · [Skill ZIP](https://github.com/LookAround0301/ascend-resource-monitor/releases/latest/download/ascend-resource-monitor-skill.zip)
 
@@ -11,31 +11,35 @@ Reusable monitoring skill for Linux Ascend NPU servers, with a native Windows de
 - Unknown/conflicting identities are explicit. A shared root account or matching directory does not prove who started a workload.
 - Multi-node filtering, 5-second resource refresh and 10-second process sampling by default.
 - NPU process summaries by employee, directory, node and container, with host mount mapping.
+- Optional names from a user-supplied roster, matched by account ID and blank when unmatched; rosters remain in private deployment configuration.
 - Administrator passwords stay in a protected local operator record, never server configuration; reinstalls preserve existing accounts.
 
 Optional [administrator-only Stop controls](skills/ascend-resource-monitor/references/container-control.md) add Stop links, an authenticated confirmation page and per-session login status. The backend verifies current NPU processes, full container ID and unchanged start time, then audits the stop. This stops the entire selected container with a 30-second graceful timeout. The control backend is deployed separately; the default Windows deployment remains read-only.
 
-## Shared company / VPN web entry
+## Access: local launcher recommended, direct browser optional
 
-An optional [shared HTTPS entry](skills/ascend-resource-monitor/references/web-entry.md) lets multiple PCs open the same server-hosted dashboard directly in a browser. Anonymous users can view; administrators sign in with the existing server account and confirm before stopping a container. Viewers need no server SSH account, launcher or local password file. Turning off the operator's PC does not affect other viewers while the monitoring server, services and network remain available.
+**Start with `Open-Monitor.cmd`**. Connect to the company network / VPN, then double-click the launcher to establish an SSH tunnel and open the dashboard. Keep its terminal open. This requires SSH connectivity and login permission from the client PC; it does not require direct access to the server's HTTPS port. `Install.cmd` creates a desktop shortcut.
 
-| Access mode | Default SSH tunnel | Optional shared HTTPS entry |
+| Access mode | Local one-click launcher (recommended) | Direct browser entry (optional) |
 | --- | --- | --- |
 | Example address | `http://127.0.0.1:13000` | `https://192.0.2.10:8443` |
 | Each PC | Run the launcher and keep the SSH tunnel open | Connect to the company network / VPN and open the page |
 | Accounts | SSH credentials; separate admin login for Stop | Anonymous viewing; admin login for Stop |
+| Constraints | SSH network access and login permission | Corporate proxy, port access and certificate policies |
 
-Configure the control proxy's HTTPS interface and certificate separately. Grafana and Prometheus continue to listen on loopback. Prefer a company-trusted certificate; self-signed certificates require browser acceptance or trust configuration, and a corporate proxy may need an exact bypass rule for the monitoring host. The default Windows wizard still deploys SSH-tunnel access.
+If a [shared HTTPS entry](skills/ascend-resource-monitor/references/web-entry.md) has already been deployed and verified, also provide `Open-Web.cmd` so users can try direct browser access. Both entry points use the same monitoring service. If direct access fails with `ERR_TUNNEL_CONNECTION_FAILED`, a timeout or certificate policy, use the local launcher first instead of requiring each user to change corporate proxy or certificate settings.
+
+Configure the HTTPS interface and certificate separately; Grafana and Prometheus continue to listen on loopback. Prefer a company-trusted certificate. Success on one PC does not prove that other PCs have the same routing or browser policies. The shared entry runs independently of the operator's PC, but requires the server, network and browser to allow access. The default Windows wizard continues to deliver the local launcher.
 
 With the current repository's Skill, ask:
 
 ```text
-Configure a shared HTTPS monitoring entry on the company network / VPN,
-with anonymous viewing and administrator login plus confirmation for container Stop.
-Confirm the listen address, available port and certificate, then deploy and verify browser access.
+Deploy monitoring and generate a Windows local one-click launcher as the recommended entry.
+If a verified HTTPS entry already exists, include Open-Web.cmd as an optional alternative.
+Keep ordinary users read-only; require administrator login and confirmation when Stop is enabled.
 ```
 
-The shared-entry update is currently available in the repository source; install the Skill from this repository to use it. Published v0.2.0 download packages do not include this update.
+Dual-entry packaging and roster names are available in the repository source; install the Skill from this repository to use them. Published v0.2.0 packages retain the original local launcher and do not include these new features.
 
 ## Install as a skill
 

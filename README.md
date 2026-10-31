@@ -4,7 +4,7 @@
 
 [English](README.en.md) · [下载 Windows 部署向导](https://github.com/LookAround0301/ascend-resource-monitor/releases/latest/download/ascend-monitor-setup.zip) · [下载 Skill](https://github.com/LookAround0301/ascend-resource-monitor/releases/latest/download/ascend-resource-monitor-skill.zip)
 
-面向 Linux 昇腾服务器的可复用 Skill，使用 Grafana、Prometheus、NPU Exporter 与轻量进程采集器。提供原生 Windows 部署向导，部署验证后生成当前环境的一键访问安装包。
+面向 Linux 昇腾服务器的可复用 Skill，使用 Grafana、Prometheus、NPU Exporter 与轻量进程采集器。默认推荐本地一键脚本访问：Windows 向导完成部署验证后，生成当前环境的 SSH 隧道启动脚本和安装包。纯网页访问作为可选方式。
 
 ## 能看到什么
 
@@ -13,31 +13,35 @@
 - 工号依据明确标注；无法识别显示“未知”，线索冲突显示“待确认”。共享 root 用户不等于真实操作者，同目录不等于同一任务。
 - 多节点筛选，资源指标默认每 5 秒刷新，进程默认每 10 秒采集。
 - 按工号、目录、主机和容器汇总 NPU 进程；容器内目录映射到宿主机挂载目录。
+- 可从用户提供的名单按工号显示姓名，未匹配时留空；名单保存在私有部署配置中。
 - 管理员密码仅保存在操作者本机的受限目录；服务器不保留明文管理员密码，重复部署不会重置已有账号。
 
 可选的 [管理员 Stop 控制](skills/ascend-resource-monitor/references/container-control.md) 在汇总表显示 Stop，点击后打开容器确认页；只有 Grafana 管理员才能提交停止。停止的是该行对应的整个容器，最多等待 30 秒正常退出。后台校验当前 NPU 进程、完整容器 ID 和启动时间，并记录操作日志；页面显示当前登录账号与管理员/只读状态。需要单独部署受控后台并接入 Grafana 登录；默认 Windows 安装流程仍保持只读。
 
-## 公司内网 / VPN 统一网页入口
+## 访问方式：推荐本地脚本，纯网页可选
 
-可选的 [HTTPS 统一入口](skills/ascend-resource-monitor/references/web-entry.md) 让多台 PC 直接用浏览器访问服务器上的同一个监控面板。普通用户免登录查看，管理员使用服务器上已有的账号登录后才能 Stop，并再次确认。查看者无需服务器 SSH 账号、启动脚本或本机密码文件；操作者的电脑关机不会影响其他人访问，只需监控服务器、服务和网络保持正常。
+**优先使用 `Open-Monitor.cmd`**：连接公司内网 / VPN 后，双击脚本建立 SSH 隧道并自动打开浏览器，使用期间保持终端窗口运行。需要该 PC 能连接服务器 SSH 并有登录权限；不用直接访问服务器的 HTTPS 端口。`Install.cmd` 可安装桌面快捷方式。
 
-| 访问方式 | 默认 SSH 隧道 | 可选统一 HTTPS 入口 |
+| 访问方式 | 本地一键脚本（推荐） | 纯网页入口（可选） |
 | --- | --- | --- |
 | 地址示例 | `http://127.0.0.1:13000` | `https://192.0.2.10:8443` |
 | 每台 PC 的操作 | 启动脚本并保持 SSH 隧道运行 | 连接公司内网 / VPN 后打开网页 |
 | 账号 | SSH 连接凭据；Stop 另需管理员登录 | 查看免登录；Stop 需管理员登录 |
+| 限制 | 需要 SSH 网络和登录权限 | 可能受公司代理、端口权限和证书策略限制 |
 
-统一入口需要单独配置受控代理的 HTTPS 监听地址和证书，底层 Grafana / Prometheus 仍仅监听回环地址。优先使用公司信任的证书；自签名证书需要浏览器接受或受信任配置，公司代理可能需要对监控地址设置精确的直连例外。默认 Windows 向导仍部署 SSH 隧道访问方式。
+如果已部署并验证 [HTTPS 统一入口](skills/ascend-resource-monitor/references/web-entry.md)，可同时提供 `Open-Web.cmd`，让用户自行尝试直接网页访问；两种方式连接同一套监控服务。纯网页出现 `ERR_TUNNEL_CONNECTION_FAILED`、连接超时或证书策略阻止时，优先回到本地脚本，不要求每位用户修改公司代理或证书设置。
+
+统一入口需要单独配置 HTTPS 监听地址和证书，底层 Grafana / Prometheus 仍仅监听回环地址。推荐公司信任的证书；一台 PC 验证成功不代表其他 PC 的网络和浏览器策略相同。网页入口不依赖操作者电脑运行，但仍依赖服务器、网络和浏览器允许访问。默认 Windows 向导继续交付本地脚本。
 
 使用当前仓库的 Skill 可以请求：
 
 ```text
-把监控配置为公司内网 / VPN 可访问的统一 HTTPS 网页入口，
-普通用户免登录查看，管理员登录并二次确认后才能停止对应容器。
-先确认监听地址、可用端口和证书，再部署并验证浏览器访问。
+部署监控并生成 Windows 本地一键访问脚本，作为推荐入口。
+如果已有验证过的 HTTPS 网页入口，也附上 Open-Web.cmd 供用户选择。
+普通用户只读查看，启用 Stop 时需管理员登录并二次确认。
 ```
 
-统一入口更新目前位于仓库源码中；从本仓库安装 Skill 即可使用。已发布的 v0.2.0 下载包不包含这次更新。
+双入口打包与姓名显示更新目前位于仓库源码中；从本仓库安装 Skill 即可使用。已发布的 v0.2.0 下载包仍提供原有本地脚本，不包含这些新增功能。
 
 ## 作为 Skill 使用
 

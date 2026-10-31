@@ -1,6 +1,6 @@
 # Optional shared intranet HTTPS entry
 
-Use this mode when the user explicitly asks for browser-only access across the company network or VPN. It changes the access boundary; keep the default SSH-tunnel mode for other deployments. It does not require SSO: anonymous users can remain Viewers while administrators use the existing Grafana login.
+Use this mode when the user explicitly asks for browser-only access across the company network or VPN. It changes the access boundary. Keep the local SSH-tunnel launcher as the recommended access method and deliver it even when an optional HTTPS entry exists. Corporate proxy, port and certificate policies can block direct access on some PCs; users can fall back to the local launcher if they have SSH connectivity and permission. It does not require SSO: anonymous users can remain Viewers while administrators use the existing Grafana login.
 
 ## Listener and certificate
 
