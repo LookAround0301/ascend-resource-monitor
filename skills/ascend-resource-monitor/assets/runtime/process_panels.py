@@ -1,4 +1,41 @@
 """Grafana tables for process attribution and comparable working directories."""
+import re
+
+
+def add_name_columns(panels):
+    """Patch existing process tables in place, preserving Stop links and IDs."""
+    titles = {'NPU 进程归属与工作目录', '按工号与目录汇总 · 仅 NPU 进程'}
+    for panel in panels:
+        if panel.get('title') not in titles:
+            continue
+        organize = next(t for t in panel['transformations'] if t['id'] == 'organize')['options']
+        indexes = organize.setdefault('indexByName', {})
+        ordered = sorted((key for key in indexes if key != 'employee_name'), key=indexes.get)
+        ordered.insert(ordered.index('employee_id') + 1, 'employee_name')
+        organize['indexByName'] = {key: i for i, key in enumerate(ordered)}
+        organize.setdefault('renameByName', {})['employee_name'] = '姓名'
+        organize.setdefault('excludeByName', {}).pop('employee_name', None)
+        for target in panel.get('targets', []):
+            query = target.get('expr', '')
+            match = re.search(r'\bsum\s+by\s*\(([^)]*)\)', query)
+            if match:
+                labels = [key.strip() for key in match[1].split(',')]
+                if 'employee_id' in labels and 'employee_name' not in labels:
+                    labels.insert(labels.index('employee_id') + 1, 'employee_name')
+                    target['expr'] = query[:match.start(1)] + ','.join(labels) + query[match.end(1):]
+        overrides = panel['fieldConfig'].setdefault('overrides', [])
+        name_override = {'matcher': {'id': 'byName', 'options': '姓名'}, 'properties': [
+            {'id': 'custom.width', 'value': 110}, {'id': 'noValue', 'value': ''},
+            {'id': 'description', 'value': '按工号匹配用户提供的名单；无明确匹配时留空。姓名不会改变原有工号归属依据。'}
+        ]}
+        for index, item in enumerate(overrides):
+            if item.get('matcher', {}).get('options') == '姓名':
+                overrides[index] = name_override
+                break
+        else:
+            overrides.append(name_override)
+
+
 def add_process_panels(panels, node):
     for existing in panels:
         if existing['gridPos']['y'] >= 4:
@@ -37,3 +74,4 @@ def add_process_panels(panels, node):
             *[{'matcher':{'id':'byName','options':name},'properties':[{'id':'custom.width','value':300}]} for name in ['进程目录','宿主机目录']]
         ]}
     })
+    add_name_columns(panels)

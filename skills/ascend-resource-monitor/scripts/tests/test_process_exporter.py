@@ -5,6 +5,58 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[2]/'assets/runtime'))
 import process_exporter as p
 
 class ProcessTests(unittest.TestCase):
+    def test_sample_reloads_names_and_keeps_unmatched_npu_processes(self):
+        import copy
+        import json
+        import tempfile
+        import types
+        from unittest.mock import patch
+        obj=p.Inventory.__new__(p.Inventory)
+        obj.previous={};obj.last_sample=0;obj.tick_rate=100;obj.boot_id='test';obj.boot_time=0
+        obj.containers={};obj.last_container_success=0
+        row={'pid':123,'ppid':1,'start_ticks':100,'ticks':0,'rss':42,'user':'a00000001',
+             'login_user':'','sudo_user':'','name':'worker','entrypoint':'python','cwd':'/job',
+             'host_cwd':'/job','container_id':'','container':'','service':'','control_ref':''}
+        with tempfile.TemporaryDirectory() as directory:
+            owners=Path(directory)/'owners.json'
+            owners.write_text(json.dumps({'employee_names':{'a00000001':'测试姓名'}},ensure_ascii=False),encoding='utf-8')
+            obj.args=types.SimpleNamespace(npu_url='http://test',owners=str(owners),limit=200)
+            with patch.object(obj,'refresh_containers'),patch.object(p,'npu_processes',return_value={123:{'0'}}),patch.object(obj,'read_process',side_effect=lambda pid:copy.deepcopy(row)) as read:
+                self.assertEqual(obj.sample()['rows'],1)
+                self.assertIn('employee_name="测试姓名"',obj.body.decode())
+                owners.write_text('{}',encoding='utf-8')
+                self.assertEqual(obj.sample()['rows'],1)
+                self.assertIn('employee_name=""',obj.body.decode())
+                self.assertEqual([call.args for call in read.call_args_list],[(123,),(123,)])
+
+    def test_roster_lookup_is_exact_and_unknown_names_are_blank(self):
+        mapping={'employee_names':{'a00000001':'测试姓名','b00000002':['one','two'],'c00000003':'bad\nname'}}
+        self.assertEqual(p.employee_name_for(' A00000001 ',mapping),'测试姓名')
+        for account in ('a00000002','00000001','未知','待确认','b00000002','c00000003'):
+            self.assertEqual(p.employee_name_for(account,mapping),'')
+        self.assertEqual(p.employee_name_for('a00000001',{'employee_names':None}),'')
+        self.assertEqual(p.owner_for({'user':'root','cwd':'/home/a00000001'},{},mapping),('a00000001','目录/容器线索'))
+
+    def test_name_columns_preserve_control_reference_and_are_idempotent(self):
+        import copy
+        from process_panels import add_process_panels, add_name_columns
+        from patch_dashboard import add_stop_button
+        panels=[]
+        add_process_panels(panels,'node=~"$node"')
+        dashboard=add_stop_button({'uid':'test','panels':panels})
+        before=copy.deepcopy(dashboard)
+        add_name_columns(dashboard['panels'])
+        self.assertEqual(before,dashboard)
+        for panel in dashboard['panels']:
+            options=next(t['options'] for t in panel['transformations'] if t['id']=='organize')
+            self.assertEqual(options['renameByName']['employee_name'],'姓名')
+            self.assertEqual(options['indexByName']['employee_name'],options['indexByName']['employee_id']+1)
+        query=dashboard['panels'][1]['targets'][0]['expr']
+        self.assertIn('employee_name',query)
+        self.assertIn('control_ref',query)
+        action=next(o for o in dashboard['panels'][1]['fieldConfig']['overrides'] if o['matcher']['options']=='操作')
+        self.assertTrue(next(v['value'] for v in action['properties'] if v['id']=='links')[0]['targetBlank'])
+
     def test_stat_name_can_contain_parentheses_and_spaces(self):
         tail = ['S'] + ['0'] * 22
         tail[1], tail[11], tail[12], tail[19], tail[21] = '20','30','40','500','600'

@@ -29,6 +29,18 @@ HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 def employee_ids(text):
     return sorted(set(x.lower() for x in EMPLOYEE.findall(text or "")))
 
+def employee_name_for(employee, mapping):
+    """Look up a roster name without changing process ownership evidence."""
+    account = str(employee).strip().lower()
+    if not re.fullmatch(r"[a-z][0-9]{8}", account):
+        return ""
+    names = mapping.get("employee_names", {})
+    value = names.get(account, "") if isinstance(names, dict) else ""
+    if not isinstance(value, str):
+        return ""
+    value = value.strip()
+    return value if len(value) <= 120 and not any(ord(c) < 32 for c in value) else ""
+
 def username(uid):
     if pwd is None:
         return str(uid)
@@ -195,7 +207,7 @@ class Inventory:
         start = time.monotonic()
         self.refresh_containers()
         try:
-            mapping = json.loads(Path(self.args.owners).read_text())
+            mapping = json.loads(Path(self.args.owners).read_text(encoding="utf-8"))
         except (OSError, ValueError):
             mapping = {}
         npu = npu_processes(self.args.npu_url)
@@ -219,7 +231,7 @@ class Inventory:
                 devices = sorted(npu.get(row["pid"], set()))
                 if not devices:
                     continue
-                row.update(employee_id=employee, attribution=evidence, cpu=cpu,
+                row.update(employee_id=employee, employee_name=employee_name_for(employee, mapping), attribution=evidence, cpu=cpu,
                            npu_ids=",".join(devices) or "-", npu_count=len(devices))
                 group_owner = employee if employee not in {"未知", "待确认"} else row["container"]
                 row["directory_group"] = hashlib.sha256(
@@ -233,7 +245,7 @@ class Inventory:
         rows.sort(key=lambda row: (row["npu_count"], row["cpu"], row["rss"]), reverse=True)
         total = len(rows)
         rows = rows[:self.args.limit]
-        labels = ["pid", "ppid", "user", "employee_id", "attribution", "container", "service",
+        labels = ["pid", "ppid", "user", "employee_id", "employee_name", "attribution", "container", "service",
                   "name", "entrypoint", "cwd", "host_cwd", "npu_ids", "directory_group",
                   "started_at", "process_key", "control_ref"]
         body = [

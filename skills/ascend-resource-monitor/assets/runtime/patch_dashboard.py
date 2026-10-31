@@ -2,6 +2,7 @@
 import argparse
 import copy
 import json
+import re
 from pathlib import Path
 
 
@@ -16,9 +17,12 @@ def add_stop_button(dashboard):
             organize['excludeByName'].update({'control_ref':True,'container_id':True,'container_started_at':True})
         if panel.get('title')!='按工号与目录汇总 · 仅 NPU 进程': continue
         query=panel['targets'][0]['expr']
-        old='sum by(node,employee_id,attribution,container,cwd,host_cwd,directory_group)'
-        new='sum by(node,employee_id,attribution,container,cwd,host_cwd,directory_group,control_ref)'
-        panel['targets'][0]['expr']=query.replace(old,new)
+        match=re.search(r'\bsum\s+by\s*\(([^)]*)\)',query)
+        if match:
+            labels=[key.strip() for key in match[1].split(',')]
+            if 'control_ref' not in labels:
+                labels.append('control_ref')
+                panel['targets'][0]['expr']=query[:match.start(1)]+','.join(labels)+query[match.end(1):]
         organize=next(t for t in panel['transformations'] if t['id']=='organize')['options']
         organize['renameByName']['control_ref']='操作'
         indexes=organize.setdefault('indexByName',{})
