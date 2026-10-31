@@ -45,7 +45,12 @@ class RuntimeTests(unittest.TestCase):
         for p in d['panels']:
             self.assertEqual(p['datasource']['uid'],'lab-prometheus')
         for p in d['panels'][-2:]:
-            self.assertIn('npu_ids!=""',p['targets'][0]['expr'])
+            for target in p['targets']:
+                if target.get('refId') == 'Origin':
+                    # This metric is already grouped from NPU-only rows by the exporter.
+                    self.assertIn('ascend_process_group_origin{node=~"$node"}', target['expr'])
+                else:
+                    self.assertIn('npu_ids!=""', target['expr'])
             self.assertEqual([t['id'] for t in p['transformations']],['labelsToFields','merge','organize'])
         files=deploy.rendered_config(c)
         self.assertIn('10.0.0.2:18083',files['prometheus.yml'])
