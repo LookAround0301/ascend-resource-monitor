@@ -3,7 +3,10 @@
 import argparse
 import asyncio
 import json
+import ipaddress
 import logging
+from http.cookies import SimpleCookie
+import signal
 import ssl
 import time
 import urllib.parse
@@ -11,6 +14,31 @@ from control_common import ControlError, audit, check_browser_request, is_admin,
 from control_ui import confirmation, notice, CONFIRM_JS
 
 HOP={'connection','keep-alive','proxy-authenticate','proxy-authorization','te','trailer','transfer-encoding','upgrade'}
+
+
+def browser_cookie(value, secure):
+    if not secure:
+        return value
+    cookie=SimpleCookie()
+    cookie.load(value)
+    if len(cookie)!=1:
+        raise ValueError('Invalid upstream cookie')
+    for morsel in cookie.values():
+        morsel['secure']=True
+    return cookie.output(header='').strip()
+
+
+def https_context(config):
+    address=ipaddress.ip_address(config['listen_ip'])
+    if address.is_unspecified or address.is_multicast:
+        raise ValueError('Choose an explicit unicast HTTPS interface')
+    port=config['port']
+    if not isinstance(port,int) or not 1024<=port<=65535:
+        raise ValueError('HTTPS port must be an unprivileged port')
+    context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version=ssl.TLSVersion.TLSv1_2
+    context.load_cert_chain(config['cert'],config['key'])
+    return context
 
 
 def create_app(config, agent_override=None, describe_override=None):
@@ -163,7 +191,9 @@ def create_app(config, agent_override=None, describe_override=None):
                                            allow_redirects=False) as upstream:
                 response=web.StreamResponse(status=upstream.status,reason=upstream.reason)
                 for k,v in upstream.headers.items():
-                    if k.lower() not in HOP: response.headers.add(k,v)
+                    if k.lower() not in HOP:
+                        if k.lower()=='set-cookie':v=browser_cookie(v,request.secure)
+                        response.headers.add(k,v)
                 await response.prepare(request)
                 async for chunk in upstream.content.iter_chunked(64*1024): await response.write(chunk)
                 await response.write_eof()
@@ -179,11 +209,30 @@ def create_app(config, agent_override=None, describe_override=None):
     return app
 
 
-def main():
+async def serve(config):
     from aiohttp import web
+    # Validate certificates before opening either listener. Internal HTTP remains
+    # loopback-only; the optional shared interface accepts TLS exclusively.
+    tls_config=config.get('https')
+    tls=https_context(tls_config) if tls_config else None
+    runner=web.AppRunner(create_app(config),access_log=None,shutdown_timeout=5)
+    await runner.setup()
+    stopped=asyncio.Event()
+    loop=asyncio.get_running_loop()
+    for sig in (signal.SIGINT,signal.SIGTERM):loop.add_signal_handler(sig,stopped.set)
+    try:
+        await web.TCPSite(runner,'127.0.0.1',config.get('port',3000)).start()
+        if tls:
+            await web.TCPSite(runner,tls_config['listen_ip'],tls_config['port'],ssl_context=tls).start()
+        await stopped.wait()
+    finally:
+        await runner.cleanup()
+
+
+def main():
     p=argparse.ArgumentParser(description=__doc__); p.add_argument('--config',required=True); a=p.parse_args()
     with open(a.config,encoding='utf-8') as f: config=json.load(f)
-    web.run_app(create_app(config),host='127.0.0.1',port=config.get('port',3000),access_log=None,print=None,shutdown_timeout=5)
+    asyncio.run(serve(config))
 
 
 if __name__=='__main__': main()

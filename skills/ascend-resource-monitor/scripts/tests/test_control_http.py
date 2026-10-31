@@ -71,6 +71,13 @@ class ProxyTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(response.status,(400,403))
         self.assertFalse(self.calls)
 
+    async def test_forwarded_proto_header_does_not_spoof_tls_origin(self):
+        headers={**self.headers('Admin'),'X-Forwarded-Proto':'https',
+                 'Origin':str(self.client.make_url('')).rstrip('/').replace('http://','https://')}
+        response=await self.client.post('/a5-control/stop',json=self.data(),headers=headers)
+        self.assertEqual(response.status,403)
+        self.assertFalse(self.calls)
+
     async def test_admin_identity_does_not_leak_to_next_anonymous_request(self):
         allowed=await self.client.post('/a5-control/stop',json=self.data(),headers=self.headers('Admin'))
         self.assertEqual(allowed.status,200)

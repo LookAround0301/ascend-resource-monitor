@@ -10,6 +10,7 @@ import unittest
 from control_common import ControlError, StopEngine, check_browser_request, is_admin, parse_browser_payload, validate_request
 from patch_dashboard import add_stop_button
 from control_ui import confirmation
+from control_proxy import browser_cookie, https_context
 
 CID='a'*64
 STAMP='2026-10-31T00:00:00.123456789Z'
@@ -35,6 +36,20 @@ class FakeDocker:
 
 
 class ControlTests(unittest.TestCase):
+    def test_tls_cookie_keeps_attributes_and_http_backup_is_unchanged(self):
+        from http.cookies import SimpleCookie
+        raw='grafana_session=opaque-token; HttpOnly; Path=/; SameSite=Lax'
+        self.assertEqual(browser_cookie(raw,False),raw)
+        cookie=SimpleCookie();cookie.load(browser_cookie(raw,True))
+        self.assertTrue(cookie['grafana_session']['secure'])
+        self.assertTrue(cookie['grafana_session']['httponly'])
+        self.assertEqual(cookie['grafana_session']['samesite'],'Lax')
+        self.assertEqual(cookie['grafana_session'].value,'opaque-token')
+
+    def test_shared_https_requires_an_explicit_interface_and_port(self):
+        for host,port in [('0.0.0.0',8443),('::',8443),('224.0.0.1',8443),('192.0.2.1',0)]:
+            with self.assertRaises(ValueError):https_context({'listen_ip':host,'port':port})
+
     def setUp(self):
         self.docker=FakeDocker(); self.events=[]
         self.engine=StopEngine({'node':'node-a'},self.docker,lambda:{101},self.events.append)

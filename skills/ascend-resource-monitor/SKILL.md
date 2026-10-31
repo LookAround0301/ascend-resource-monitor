@@ -25,6 +25,8 @@ Verify services, every expected scrape target, NPU metrics, process-source fresh
 
 If the user explicitly requests container Stop controls, read [references/container-control.md](references/container-control.md). Keep ordinary viewing available, but require a real Grafana administrator session and an explicit confirmation before a stop. Verify the visible Stop link, actual browser navigation, per-session login status and server-side authorization separately. The default installer remains read-only; enable this capability only for an authorized deployment.
 
+For an explicitly requested shared company/VPN browser entry, read [references/web-entry.md](references/web-entry.md). Add a restricted HTTPS listener without exposing the underlying services, retain Viewer access and administrator-only Stop, and verify browser proxy/certificate behavior from a real client. The default SSH-tunnel listener stays loopback-only.
+
 ## Final workflow step: deliver Windows tools
 
 After deployment verification, generate the Windows client installer and access launcher for that environment. It installs under the current Windows user's LocalAppData, creates a desktop shortcut, establishes a loopback SSH tunnel, and opens the dashboard. Also provide the deployment wizard when requested, so another operator can fill in their own servers and deploy. See [references/windows.md](references/windows.md).
