@@ -56,7 +56,7 @@ The per-node names must match Prometheus's node labels. Preserve the workspace-r
 
 ## Request and safety checks
 
-The Stop link first opens `/a5-control/confirm`; this GET performs no stop. The page is shown only to an administrator and displays the real node, container name and full ID. Its confirmation button sends a same-origin JSON POST with a custom header, node and `control_ref`. The proxy checks Origin, content type, authenticated identity, current administrator role and an allowlisted node URL. Host/URL/command input is never accepted from the client.
+The Stop link opens `/a5-control/confirm` in a new tab (`targetBlank: true`). This forces a browser HTTP request to the control proxy rather than letting Grafana's client router handle an unknown page. Keep the relative same-origin URL so the administrator cookie works with any tunnel hostname and port. This GET performs no stop. The page is shown only to an administrator and displays the real node, container name and full ID. Its confirmation button sends a same-origin JSON POST with a custom header, node and `control_ref`. The proxy checks Origin, content type, authenticated identity, current administrator role and an allowlisted node URL. Host/URL/command input is never accepted from the client.
 
 The proxy personalizes the dashboard login link from the current Grafana session: an administrator sees their login name, another authenticated user sees read-only status, and an anonymous user sees the login entry. These responses use `Cache-Control: no-store` and vary by authentication headers to avoid leaking one user's state to another. A new browser tab or hostname can have a different login session.
 

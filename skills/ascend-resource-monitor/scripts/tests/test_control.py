@@ -112,6 +112,7 @@ class ControlTests(unittest.TestCase):
         link=values['links'][0]
         self.assertEqual(values['custom.cellOptions']['type'],'data-links')
         self.assertEqual(link['title'],'Stop')
+        self.assertTrue(link['targetBlank'])
         self.assertIn('${__value.raw}',link['url'])
         self.assertTrue(link['url'].startswith('/a5-control/confirm?'))
         self.assertIn('control_ref',updated['panels'][0]['targets'][0]['expr'])

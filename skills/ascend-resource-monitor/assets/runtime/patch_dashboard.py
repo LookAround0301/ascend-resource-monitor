@@ -30,7 +30,9 @@ def add_stop_button(dashboard):
         overrides.append({'matcher':{'id':'byName','options':'操作'},'properties':[
             {'id':'custom.width','value':85},
             {'id':'custom.cellOptions','value':{'type':'data-links'}},
-            {'id':'links','value':[{'title':'Stop','targetBlank':False,
+            # A new tab forces an HTTP request to the proxy endpoint instead
+            # of letting Grafana's client router consume the relative URL.
+            {'id':'links','value':[{'title':'Stop','targetBlank':True,
                 'url':'/a5-control/confirm?node=${__data.fields["主机"]}&target=${__value.raw}'}]}
         ]})
         panel['fieldConfig']['overrides']=overrides
