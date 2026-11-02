@@ -109,7 +109,7 @@ def add_job_origin(panels):
         origin_override = {'matcher': {'id': 'byName', 'options': '作业来源'}, 'properties': [
             {'id': 'custom.width', 'value': 155}, {'id': 'custom.cellOptions', 'value': {'type': 'color-text'}},
             {'id': 'mappings', 'value': [{'type': 'value', 'options': mappings}]}, {'id': 'noValue', 'value': '未知'},
-            {'id': 'description', 'value': 'Agent/人工来自明确启动标记（声明，非身份认证）；疑似来自进程链或专用目录线索；未知不等于人工。组内来源不一致或证据冲突时显示混合/待确认。'}]}
+            {'id': 'description', 'value': 'Agent/人工来自启动标记或匹配进程生命周期的来源记录（声明，非身份认证）；疑似来自进程链、关联脚本或记录线索。定期查状态不能单独证明是 Agent；未知不等于人工。组内来源不一致或证据冲突时显示混合/待确认。'}]}
         for index, item in enumerate(overrides):
             if item.get('matcher', {}).get('options') == '作业来源':
                 overrides[index] = origin_override

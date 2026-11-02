@@ -13,6 +13,7 @@ Reusable monitoring skill for Linux Ascend NPU servers. The recommended default 
 - NPU process summaries by employee, directory, node and container, with host mount mapping.
 - Current NPU process duration starts at the group's earliest running process. Once all processes exit, the row disappears; a later process starts a new duration without carrying over the previous run.
 - The summary replaces RSS with job origin: declared agent/manual, suspected agent, unknown, or mixed/conflicting. Missing agent evidence never implies manual execution. See [origin markers](skills/ascend-resource-monitor/references/job-origin.md).
+- A bounded worker reads container scripts and records linked to current NPU jobs, including literal nested launch commands. Records must match a process lifetime; polling alone never proves agent origin. Script contents and sensitive arguments are not published.
 - Optional names from a user-supplied roster, matched by account ID and blank when unmatched; rosters remain in private deployment configuration.
 - Administrator passwords stay in a protected local operator record, never server configuration; reinstalls preserve existing accounts.
 

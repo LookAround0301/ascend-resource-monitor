@@ -16,6 +16,7 @@ import threading
 import time
 import urllib.request
 from job_origin import OriginClassifier, SUMMARY_LABELS, agent_hint, environment_origin, summarize_origin, temporary_script
+from job_evidence import EvidenceProbe, merge_evidence
 
 try:
     import pwd
@@ -256,6 +257,11 @@ class Inventory:
         rows.sort(key=lambda row: (row["npu_count"], row["cpu"], row["rss"]), reverse=True)
         total = len(rows)
         rows = rows[:self.args.limit]
+        if not hasattr(self, 'evidence_probe'):
+            self.evidence_probe = EvidenceProbe()
+        evidence = self.evidence_probe.check(rows)
+        for row in rows:
+            row['job_origin'] = merge_evidence(row['job_origin'], evidence.get(row['process_key'], {}))
         labels = ["pid", "ppid", "user", "employee_id", "employee_name", "attribution", "container", "service",
                   "name", "entrypoint", "cwd", "host_cwd", "npu_ids", "directory_group",
                   "started_at", "process_key", "control_ref"]
@@ -271,6 +277,10 @@ class Inventory:
             f"ascend_process_inventory_truncated {int(total > len(rows))}",
             "# TYPE ascend_process_container_metadata_age_seconds gauge",
             f"ascend_process_container_metadata_age_seconds {max(0, time.time() - self.last_container_success)}",
+            '# TYPE ascend_process_origin_evidence_jobs gauge',
+            f'ascend_process_origin_evidence_jobs {len(evidence)}',
+            '# TYPE ascend_process_origin_evidence_read_failures gauge',
+            f'ascend_process_origin_evidence_read_failures {int(self.evidence_probe.status in {"timeout", "failed"})}',
         ]
         for metric, key in (("ascend_process_cpu_percent", "cpu"), ("ascend_process_resident_memory_bytes", "rss"),
                             ("ascend_process_start_time_seconds", "start_time_seconds")):

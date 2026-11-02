@@ -4,9 +4,9 @@ The `作业来源` column replaces RSS in the grouped table. RSS is still collec
 
 | Display | Meaning |
 | --- | --- |
-| Agent 作业 | Every listed process in this group declares `agent` at startup. |
-| 人工作业 | Every listed process declares `manual`, without conflicting agent hints. |
-| 疑似 Agent | A known agent executable/path appears in bounded ancestry, or only part of the group declares agent origin. |
+| Agent 作业 | Every listed process has an `agent` startup declaration or a matching origin record. |
+| 人工作业 | Every listed process has a `manual` declaration/record, without conflicting agent hints. |
+| 疑似 Agent | Agent-specific ancestry, linked script or matching record clues, or only part of the group declares agent origin. |
 | 未知 | No sufficient evidence; also used for a partly manual, partly unknown group. |
 | 混合/待确认 | Manual and agent evidence coexist, or a manual marker conflicts with agent ancestry. |
 
@@ -39,4 +39,26 @@ Use `manual` when the operator is directly starting the workload. A label on a s
 
 The exporter emits one numeric `*_process_group_origin` sample per current summary group: 0 unknown, 1 manual, 2 suspected agent, 3 agent, 4 mixed/conflicting. The group includes employee name, ownership evidence, host/container directory and the container control reference. It is recomputed from the same bounded set of NPU rows as the duration query. All processes ending removes the group.
 
-For existing dashboards, `process_panels.add_job_origin(panels)` preserves Stop overrides and duration, removes RSS from this table, and maps codes to text and colors. Deploy `job_origin.py` alongside `process_exporter.py`; `launch_job.py` is the optional startup helper. Verify all category mappings with browser-only fixtures and check live queries separately. Do not manufacture NPU metrics or stop real workloads to test classification.
+For existing dashboards, `process_panels.add_job_origin(panels)` preserves Stop overrides and duration, removes RSS from this table, and maps codes to text and colors. Deploy `job_origin.py` and `job_evidence.py` alongside `process_exporter.py`; `launch_job.py` is the optional startup helper. Verify all category mappings with browser-only fixtures and check live queries separately. Do not manufacture NPU metrics or stop real workloads to test classification.
+
+## Container script and record evidence
+
+`job_evidence.py` reads the filesystem visible to the current container process through `/proc/<host-pid>/root`. This provides container paths without launching a shell or running code inside a workload. It validates PID start ticks and container identity before and after reading. It inspects only literal script paths from the NPU process and at most 12 ancestors in the same container, including `bash -c` wrappers and an open shell script at fd 255. Within scripts it follows literal shell calls and constant `subprocess` argument lists, at most two levels. Dynamic expressions and arbitrary generated code are not evaluated.
+
+The worker checks only records explicitly named by log redirections/log-file arguments, `<script>.origin.json`, and `.ascend-monitor-origin.json` beside a linked script. It does not search all of `/tmp`, read shell history, or scan unrelated agent conversations. JSON/JSONL records must match the current process or an observed ancestor by one of:
+
+- Exact `process_key` from this exporter's metric: `<boot-id-first-12>:<host-pid>:<start-ticks>`.
+- `boot_id`, `host_pid` and `start_ticks` together.
+- Full `container_id`, container-namespace `pid` and `process_start_time_seconds` within one second of the observed start.
+
+A minimal compatible record is:
+
+```json
+{"process_key":"abcdef123456:1234:56789","origin":"agent","agent_name":"codex"}
+```
+
+An exact lifetime match plus `origin: agent|manual` is an explicit declaration, not cryptographic proof. `agent_name` matching a recognized agent is a suspected-origin clue. Merely mentioning the same container, directory or PID is insufficient. Script headers explicitly stating generation by a recognized agent and literal agent-origin assignments are suspected clues. Repeated `container_status`, `health_check` or `poll` records with distinct numeric `timestamp` values, or polling loops in linked scripts, are auxiliary evidence only. An agent checking Docker from another PC may leave no usable record in the container and remain unknown.
+
+Each refresh reads at most 24 files / 512 KiB total, six scripts per process, eight candidate record paths and 12 ancestors. Scripts are capped at 32 KiB; record/log reads at 16 KiB (bounded tail for logs/JSONL). Symlinks and nonregular files below the container root are rejected. Shared script reads are cached within a worker. Refreshes run at most every 30 seconds; identity-keyed results expire after 60 seconds and are removed when the process exits. The subprocess has a two-second deadline; inspection failure leaves the basic classification available. No workload is restarted to obtain evidence.
+
+Only fixed evidence flags, counts and origin categories leave the worker, never script contents, raw command lines, tokens or record text. Exporter metrics `*_process_origin_evidence_jobs` and `*_process_origin_evidence_read_failures` show inspection coverage/status without exposing these files.
