@@ -19,6 +19,8 @@ Reusable monitoring skill for Linux Ascend NPU servers. The recommended default 
 
 Optional [administrator-only Stop controls](skills/ascend-resource-monitor/references/container-control.md) add Stop links, an authenticated confirmation page and per-session login status. The backend verifies current NPU processes, full container ID and unchanged start time, then audits the stop. This stops the entire selected container with a 30-second graceful timeout. The control backend is deployed separately; the default Windows deployment remains read-only.
 
+Optional [persistent container guard](skills/ascend-resource-monitor/references/container-guard.md): explicitly opt in to stopping NPU containers with an employee ID missing from the supplied name roster. Marks survive restarts until an administrator adds the container to the whitelist. Disabled by default; invalid or stale input pauses new marking.
+
 ## Access: local launcher recommended, direct browser optional
 
 **Start with `Open-Monitor.cmd`**. Connect to the company network / VPN, then double-click the launcher to establish an SSH tunnel and open the dashboard. Keep its terminal open. This requires SSH connectivity and login permission from the client PC; it does not require direct access to the server's HTTPS port. `Install.cmd` creates a desktop shortcut.

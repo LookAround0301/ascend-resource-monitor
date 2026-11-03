@@ -2,6 +2,8 @@
 
 Use this workflow only when the user asks to add container control. This is an optional capability, not part of the default read-only installer. Do not treat path or employee-ID clues as authorization.
 
+For the separately authorized automatic policy for unmapped employee IDs, see [container-guard.md](container-guard.md). Manual Stop keeps its administrator session and confirmation requirements; the persistent guard uses the explicitly enabled policy instead of a per-stop browser session.
+
 ## Components
 
 - `assets/runtime/control_common.py`: validation, Docker Unix-socket client, current NPU PID/container checks, audit logging and the restricted stop operation.

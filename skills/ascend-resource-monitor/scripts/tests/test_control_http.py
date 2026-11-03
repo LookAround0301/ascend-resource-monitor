@@ -15,7 +15,7 @@ from control_proxy import create_app
 
 class ProxyTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.temp=tempfile.TemporaryDirectory();self.calls=[]
+        self.temp=tempfile.TemporaryDirectory();self.calls=[];self.guard_calls=[]
         async def user(request):
             role=request.headers.get('X-Test-Role','')
             if role not in ('Viewer','Editor','Admin'):raise web.HTTPUnauthorized()
@@ -37,9 +37,12 @@ class ProxyTests(unittest.IsolatedAsyncioTestCase):
         self.grafana=TestServer(fake);await self.grafana.start_server()
         async def agent(data,actor):self.calls.append((data,actor));return {'stopped':True,'message':'test only'}
         async def describe(data):return {**data,'container':'test-workload'}
+        async def guard(node,path,data,actor):
+            self.guard_calls.append((node,path,data,actor))
+            return {'node':node,'enabled':True,'entries':[]} if path=='/guard' else {'message':'saved'}
         config={'grafana_url':str(self.grafana.make_url('')).rstrip('/'),'org_id':1,
                 'audit_log':str(Path(self.temp.name)/'audit.jsonl'),'nodes':{'node-a':{'url':'https://unused'}}}
-        self.client=TestClient(TestServer(create_app(config,agent_override=agent,describe_override=describe)));await self.client.start_server()
+        self.client=TestClient(TestServer(create_app(config,agent_override=agent,describe_override=describe,guard_override=guard)));await self.client.start_server()
 
     async def asyncTearDown(self):
         await self.client.close();await self.grafana.close();self.temp.cleanup()
@@ -110,6 +113,24 @@ class ProxyTests(unittest.IsolatedAsyncioTestCase):
     async def test_session_reports_logged_in_readonly_user(self):
         r=await self.client.get('/a5-control/session',headers=self.headers('Viewer'))
         data=await r.json();self.assertTrue(data['authenticated']);self.assertFalse(data['admin'])
+
+    async def test_guard_page_and_whitelist_require_admin_and_csrf(self):
+        body={'node':'node-a','container_id':'a'*64,'allowed':True,'confirmed':True}
+        for role,code in [(None,401),('Viewer',403),('Editor',403)]:
+            for path in ['/a5-control/guard','/a5-control/guard/status']:
+                r=await self.client.get(path,headers=self.headers(role));self.assertEqual(r.status,code)
+            r=await self.client.post('/a5-control/whitelist',json=body,headers=self.headers(role));self.assertEqual(r.status,code)
+        self.assertFalse(self.guard_calls)
+        for delta,h in [({'confirmed':False},{}),({'node':'other'},{}),({'allowed':1},{}),({}, {'Origin':'http://evil.invalid'})]:
+            r=await self.client.post('/a5-control/whitelist',json={**body,**delta},headers={**self.headers('Admin'),**h})
+            self.assertIn(r.status,(400,403))
+        self.assertFalse(self.guard_calls)
+        r=await self.client.get('/a5-control/guard',headers=self.headers('Admin'))
+        self.assertEqual(r.status,200);self.assertIn('id="allow-form"',await r.text())
+        self.assertFalse(self.guard_calls)
+        r=await self.client.post('/a5-control/whitelist',json=body,headers=self.headers('Admin'))
+        self.assertEqual(r.status,200);self.assertEqual(len(self.guard_calls),1)
+        self.assertEqual(self.guard_calls[0][3]['login'],'test-Admin')
 
 
 if __name__=='__main__':unittest.main()

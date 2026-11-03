@@ -4,11 +4,12 @@ import argparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import ssl
+import threading
 import urllib.parse
 from control_common import ControlError, StopEngine, parse_browser_payload
 
 
-def make_handler(engine):
+def make_handler(engine, guard=None):
     class Handler(BaseHTTPRequestHandler):
         def reply(self, status, body):
             encoded = json.dumps(body, ensure_ascii=False).encode()
@@ -21,6 +22,8 @@ def make_handler(engine):
         def do_GET(self):
             if self.path == '/healthz':
                 self.reply(200, {'status':'ok'})
+            elif self.path == '/guard' and guard:
+                self.reply(200, guard.snapshot())
             elif self.path.startswith('/info?'):
                 try:
                     q=urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query,strict_parsing=True)
@@ -35,7 +38,7 @@ def make_handler(engine):
                 self.reply(404, {'message':'Not found'})
 
         def do_POST(self):
-            if self.path != '/stop':
+            if self.path not in ('/stop', '/whitelist') or (self.path == '/whitelist' and not guard):
                 self.reply(404, {'message':'Not found'}); return
             try:
                 length = int(self.headers.get('Content-Length','0'))
@@ -46,7 +49,9 @@ def make_handler(engine):
                 body = json.loads(self.rfile.read(length))
                 if set(body) != {'request','actor'}:
                     raise ControlError(400, '无效请求')
-                self.reply(200, engine.stop(body['request'],body['actor']))
+                result = (guard.whitelist(body['request'], body['actor']) if self.path == '/whitelist'
+                          else engine.stop(body['request'],body['actor']))
+                self.reply(200, result)
             except ControlError as e:
                 self.reply(e.status, {'message':e.message})
             except (ValueError, TypeError, KeyError):
@@ -62,12 +67,19 @@ def make_handler(engine):
 def main():
     p=argparse.ArgumentParser(description=__doc__); p.add_argument('--config',required=True); a=p.parse_args()
     with open(a.config,encoding='utf-8') as f: config=json.load(f)
-    server=ThreadingHTTPServer((config['listen_ip'],config.get('port',18084)),make_handler(StopEngine(config)))
+    engine = StopEngine(config)
+    guard = None
+    if config.get('guard'):
+        from container_guard import ContainerGuard
+        guard = ContainerGuard(engine)
+    server=ThreadingHTTPServer((config['listen_ip'],config.get('port',18084)),make_handler(engine, guard))
     server.daemon_threads=True
     context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); context.minimum_version=ssl.TLSVersion.TLSv1_2
     context.load_cert_chain(config['cert'],config['key']); context.load_verify_locations(config['ca'])
     context.verify_mode=ssl.CERT_REQUIRED
     server.socket=context.wrap_socket(server.socket,server_side=True)
+    if guard:
+        threading.Thread(target=guard.run, daemon=True, name='container-guard').start()
     server.serve_forever()
 
 

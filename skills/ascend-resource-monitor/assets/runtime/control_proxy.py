@@ -12,6 +12,7 @@ import time
 import urllib.parse
 from control_common import ControlError, audit, check_browser_request, is_admin, parse_browser_payload
 from control_ui import confirmation, notice, CONFIRM_JS
+from guard_ui import guard_page, GUARD_JS
 
 HOP={'connection','keep-alive','proxy-authenticate','proxy-authorization','te','trailer','transfer-encoding','upgrade'}
 
@@ -41,7 +42,7 @@ def https_context(config):
     return context
 
 
-def create_app(config, agent_override=None, describe_override=None):
+def create_app(config, agent_override=None, describe_override=None, guard_override=None):
     from aiohttp import web, ClientSession, ClientTimeout, DummyCookieJar, WSMsgType
     app=web.Application(client_max_size=8*1024*1024)
 
@@ -139,6 +140,61 @@ def create_app(config, agent_override=None, describe_override=None):
     async def confirm_js(request):
         return web.Response(text=CONFIRM_JS,content_type='application/javascript',headers={'Cache-Control':'no-store'})
 
+    async def guard_call(node, path, data=None, actor=None):
+        if node not in config['nodes']: raise ControlError(400, '目标主机不在管理范围')
+        if guard_override: return await guard_override(node, path, data, actor)
+        payload = {'request': data, 'actor': actor} if data is not None else None
+        async with app['http'].request('POST' if payload else 'GET', config['nodes'][node]['url'] + path,
+                                       json=payload, ssl=app['tls'], allow_redirects=False, auto_decompress=True) as r:
+            result = await r.json()
+            if r.status != 200: raise ControlError(r.status, result.get('message', '容器管控请求失败'))
+            return result
+
+    async def guard_status(request):
+        try:
+            await identity(request)
+            async def read(node):
+                try: return await guard_call(node, '/guard')
+                except Exception: return {'node': node, 'enabled': False, 'error': '管控状态不可用', 'entries': []}
+            results = await asyncio.gather(*(read(n) for n in config['nodes']))
+            return web.json_response({'nodes': results}, headers={'Cache-Control': 'no-store', 'Vary': 'Cookie, Authorization'})
+        except ControlError as e: return web.json_response({'message': e.message}, status=e.status)
+
+    async def whitelist(request):
+        try:
+            check_browser_request(request.headers, request.host, request.scheme)
+            actor = await identity(request)
+            data = await request.json()
+            if not isinstance(data, dict) or set(data) != {'node', 'container_id', 'allowed', 'confirmed'}:
+                raise ControlError(400, '无效白名单请求')
+            from control_common import CONTAINER_ID
+            if (not isinstance(data['container_id'], str) or not CONTAINER_ID.fullmatch(data['container_id'])
+                    or not isinstance(data['node'], str) or data['node'] not in config['nodes']
+                    or type(data['allowed']) is not bool or data['confirmed'] is not True):
+                raise ControlError(400, '请确认主机、完整容器 ID 和白名单操作')
+            event = {'action': 'container.whitelist', 'actor': actor, 'node': data['node'],
+                     'container_id': data['container_id'], 'allowed': data['allowed']}
+            audit(config['audit_log'], {**event, 'result': 'authorized'})
+            result = await guard_call(data['node'], '/whitelist', data, actor)
+            audit(config['audit_log'], {**event, 'result': 'completed'})
+            return web.json_response(result, headers={'Cache-Control': 'no-store'})
+        except ControlError as e: return web.json_response({'message': e.message}, status=e.status)
+        except (ValueError, TypeError, KeyError): return web.json_response({'message': '无效白名单请求'}, status=400)
+        except Exception: return web.json_response({'message': '白名单结果未确认，请刷新状态核实，勿重复提交'}, status=503)
+
+    async def guard_view(request):
+        try:
+            actor = await identity(request)
+            body = guard_page(actor, config.get('dashboard_uid', 'a5-dual-node')); status = 200
+        except ControlError as e:
+            body = notice(e.message, '/login?redirectTo=%2Fa5-control%2Fguard', '/d/' + config.get('dashboard_uid', 'a5-dual-node')); status = e.status
+        return web.Response(text=body, status=status, content_type='text/html', headers={
+            'Cache-Control': 'no-store', 'Vary': 'Cookie, Authorization', 'X-Frame-Options': 'SAMEORIGIN',
+            'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'self'"})
+
+    async def guard_js(request):
+        return web.Response(text=GUARD_JS, content_type='application/javascript', headers={'Cache-Control': 'no-store'})
+
     async def personalized_dashboard(data,request):
         # Grafana can load either the legacy DTO or a Kubernetes-style resource.
         model=data.get('dashboard') or data.get('spec') or {}
@@ -204,6 +260,10 @@ def create_app(config, agent_override=None, describe_override=None):
     app.router.add_get('/a5-control/session',session)
     app.router.add_get('/a5-control/confirm',confirm)
     app.router.add_get('/a5-control/confirm.js',confirm_js)
+    app.router.add_get('/a5-control/guard', guard_view)
+    app.router.add_get('/a5-control/guard/status', guard_status)
+    app.router.add_get('/a5-control/guard.js', guard_js)
+    app.router.add_post('/a5-control/whitelist', whitelist)
     app.router.add_get('/a5-control/healthz',health)
     app.router.add_route('*','/{tail:.*}',forward)
     return app

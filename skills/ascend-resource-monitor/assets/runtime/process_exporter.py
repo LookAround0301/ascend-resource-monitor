@@ -28,6 +28,23 @@ CONTAINER = re.compile(r"(?:docker[-/])([0-9a-f]{64})(?:[./\n]|$)")
 ROOT = Path(__file__).resolve().parent.parent
 HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
+def guard_metrics(path):
+    if not path: return []
+    try:
+        state = json.loads(Path(path).read_text(encoding='utf-8'))
+        if state.get('version') != 1: raise ValueError('Invalid guard state')
+        result = ['# TYPE ascend_container_guard_info gauge']
+        for cid, entry in state['entries'].items():
+            if not re.fullmatch('[0-9a-f]{64}', cid): continue
+            policy = '白名单' if entry['whitelisted'] else ('持续拦截' if entry.get('marked_at') else '未标记')
+            labels = {'container_id': cid, 'container': entry['container'], 'guard_state': policy,
+                      'employee_ids': ','.join(entry.get('employee_ids', [])),
+                      'guard_result': entry.get('last_result', '')}
+            result.append('ascend_container_guard_info{' + ','.join(k+'='+json.dumps(str(v)[:512], ensure_ascii=False) for k,v in labels.items()) + '} 1')
+        return result + ['ascend_container_guard_state_read_success 1']
+    except (OSError, ValueError, KeyError, TypeError):
+        return ['ascend_container_guard_state_read_success 0']
+
 def employee_ids(text):
     return sorted(set(x.lower() for x in EMPLOYEE.findall(text or "")))
 
@@ -296,6 +313,7 @@ class Inventory:
         for values, codes in groups.items():
             pairs = [key + '=' + json.dumps(value, ensure_ascii=False) for key, value in zip(SUMMARY_LABELS, values)]
             body.append('ascend_process_group_origin{' + ','.join(pairs) + '} ' + str(summarize_origin(codes)))
+        body.extend(guard_metrics(getattr(self.args, 'guard_state', None)))
         self.body = ("\n".join(body) + "\n").encode("utf-8")
         self.last_success = time.time()
         return {"rows": len(rows), "truncated": total > len(rows), "duration_seconds": time.monotonic() - start}
@@ -316,6 +334,7 @@ def main():
     parser.add_argument("--limit", type=int, default=200)
     parser.add_argument("--npu-url", required=True)
     parser.add_argument("--owners", default=str(ROOT / "config/process-owners.json"))
+    parser.add_argument("--guard-state", help="Optional persisted state of an explicitly enabled container guard")
     args = parser.parse_args()
     inventory = Inventory(args)
     inventory.sample()

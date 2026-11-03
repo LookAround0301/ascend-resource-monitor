@@ -6,6 +6,41 @@ import re
 from pathlib import Path
 
 
+def add_guard_panel(dashboard, prefix='ascend'):
+    """Only call for an explicitly provisioned persistent container guard."""
+    result = copy.deepcopy(dashboard)
+    result['links'] = [x for x in result.get('links', []) if x.get('title') != '容器管控 / 白名单'] + [
+        {'type': 'link', 'title': '容器管控 / 白名单', 'url': '/a5-control/guard',
+         'targetBlank': True, 'includeVars': False, 'keepTime': False, 'icon': 'external link'}]
+    title = '容器管控 · 持续拦截与白名单'
+    if any(p.get('title') == title for p in result['panels']): return result
+    panel_id = max(p['id'] for p in result['panels']) + 1
+    for panel in result['panels']:
+        if panel['gridPos']['y'] >= 4: panel['gridPos']['y'] += 6
+    order = ['node', 'employee_ids', 'container', 'guard_state', 'guard_result', 'container_id']
+    result['panels'].append({'id': panel_id, 'title': title, 'type': 'table',
+        'gridPos': {'x': 0, 'y': 4, 'w': 24, 'h': 6},
+        'description': '此表保留已停止容器的标记。持续拦截绑定完整容器 ID；只有管理员加入白名单后才解除。顶部“容器管控 / 白名单”可查看实时状态和管理白名单。',
+        'datasource': {'type': 'prometheus', 'uid': 'a5-prometheus'},
+        'targets': [{'refId': 'Guard', 'expr': prefix+'_container_guard_info{node=~"$node"}', 'format': 'table', 'instant': True, 'range': False}],
+        'transformations': [{'id': 'organize', 'options': {
+            'excludeByName': {k: True for k in ['Time', 'Value', '__name__', 'job', 'instance', 'host']},
+            'indexByName': {name: i for i, name in enumerate(order)},
+            'renameByName': {'node': '主机', 'employee_ids': '工号', 'container': '容器', 'guard_state': '管控标记',
+                             'guard_result': '最近结果', 'container_id': '白名单管理'}}}],
+        'options': {'showHeader': True, 'cellHeight': 'sm', 'enablePagination': True},
+        'fieldConfig': {'defaults': {'custom': {'filterable': True}}, 'overrides': [
+            {'matcher': {'id': 'byName', 'options': '白名单管理'}, 'properties': [
+                {'id': 'custom.cellOptions', 'value': {'type': 'data-links'}}, {'id': 'custom.width', 'value': 135},
+                {'id': 'links', 'value': [{'title': '管理白名单', 'targetBlank': True,
+                    'url': '/a5-control/guard?node=${__data.fields["主机"]}&container_id=${__value.raw}'}]}]},
+            {'matcher': {'id': 'byName', 'options': '管控标记'}, 'properties': [
+                {'id': 'custom.cellOptions', 'value': {'type': 'color-text'}},
+                {'id': 'mappings', 'value': [{'type': 'value', 'options': {'持续拦截': {'text': '持续拦截', 'color': 'red'}, '白名单': {'text': '白名单', 'color': 'green'}}}]}]}]}})
+    result['version'] = result.get('version', 1) + 1
+    return result
+
+
 def add_stop_button(dashboard):
     result=copy.deepcopy(dashboard)
     # Data links remain visible in a read-only dashboard; the destination

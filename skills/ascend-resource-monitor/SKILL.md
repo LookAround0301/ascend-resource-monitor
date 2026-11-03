@@ -29,6 +29,8 @@ For job-origin display, read [references/job-origin.md](references/job-origin.md
 
 If the user explicitly requests container Stop controls, read [references/container-control.md](references/container-control.md). Keep ordinary viewing available, but require a real Grafana administrator session and an explicit confirmation before a stop. Verify the visible Stop link, actual browser navigation, per-session login status and server-side authorization separately. The default installer remains read-only; enable this capability only for an authorized deployment.
 
+If the user explicitly requests automatic stopping of NPU containers with an employee ID but no mapped name, follow [references/container-guard.md](references/container-guard.md). Clarify ambiguous selection wording before enabling it. This opt-in policy is separate from manual Stop: persist marked container IDs across restarts, permit only administrator-confirmed whitelist changes, and keep unknown/unavailable attribution data from becoming a stop decision.
+
 For an explicitly requested shared company/VPN browser entry, read [references/web-entry.md](references/web-entry.md). Add a restricted HTTPS listener without exposing the underlying services, retain Viewer access and administrator-only Stop, and verify browser proxy/certificate behavior from a real client. The default SSH-tunnel listener stays loopback-only.
 
 ## Final workflow step: deliver Windows tools

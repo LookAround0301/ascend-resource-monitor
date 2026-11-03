@@ -21,6 +21,8 @@
 
 可选的 [管理员 Stop 控制](skills/ascend-resource-monitor/references/container-control.md) 在汇总表显示 Stop，点击后打开容器确认页；只有 Grafana 管理员才能提交停止。停止的是该行对应的整个容器，最多等待 30 秒正常退出。后台校验当前 NPU 进程、完整容器 ID 和启动时间，并记录操作日志；页面显示当前登录账号与管理员/只读状态。需要单独部署受控后台并接入 Grafana 登录；默认 Windows 安装流程仍保持只读。
 
+可选的[自动容器管控](skills/ascend-resource-monitor/references/container-guard.md)：经明确启用后，对有工号但姓名为空的 NPU 作业容器自动标记、停止，并持续拦截同一容器重启；管理员可确认加入白名单解除拦截。默认关闭，姓名表/采集异常时暂停新增标记。
+
 ## 访问方式：推荐本地脚本，纯网页可选
 
 **优先使用 `Open-Monitor.cmd`**：连接公司内网 / VPN 后，双击脚本建立 SSH 隧道并自动打开浏览器，使用期间保持终端窗口运行。需要该 PC 能连接服务器 SSH 并有登录权限；不用直接访问服务器的 HTTPS 端口。`Install.cmd` 可安装桌面快捷方式。
