@@ -8,6 +8,7 @@ from control_common import ControlError, audit, parse_browser_payload
 from queue_store import QueueStore
 from queue_processes import QueueProcesses
 from queue_ui import QUEUE_HTML, QUEUE_JS
+from queue_metrics import render_queue_metrics
 
 COOKIE='a5_queue_session'
 
@@ -39,7 +40,17 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
 
     async def snapshot(row):
         from urllib.parse import urlencode
+        if not row['container_id']:
+            return {'container_id':'','container_started_at':None,'processes':[],'unbound':True}
         return await agent(row['node'],'/queue/snapshot?'+urlencode({'container_id':row['container_id'],'expected':row.get('container_started_at') or ''}))
+
+    async def selected_container(node,cid):
+        from control_common import CONTAINER_ID
+        if not isinstance(cid,str) or not CONTAINER_ID.fullmatch(cid):raise ControlError(400,'请选择有效容器')
+        items=await agent(node,'/queue/containers')
+        info=next((item for item in items if item['id']==cid),None)
+        if not info:raise ControlError(409,'该容器已不存在或不允许操作，请刷新列表')
+        return info
 
     async def reconcile():
         for row in store.cancelling():
@@ -80,18 +91,20 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
 
     async def javascript(request):return web.Response(text=QUEUE_JS,content_type='application/javascript',headers={'Cache-Control':'no-store'})
 
+    async def metrics(request):
+        return web.Response(text=render_queue_metrics(store.view(None)['tasks'],list(config['nodes']),time.time(),
+                            settings.get('metric_prefix','ascend'),settings.get('timezone','UTC')),
+                            content_type='text/plain',headers={'Cache-Control':'no-store'})
+
     async def api(request):
         try:
             operation=request.match_info['operation']
             if request.method=='GET':
                 person=await actor(request,required=False)
-                if operation=='state':return web.json_response({**store.view(person),'nodes':list(config['nodes'])},headers={'Cache-Control':'no-store','Vary':'Cookie, Authorization'})
-                if operation=='admin':
-                    await admin_identity(request)
-                    async def containers(node):
-                        try:return {'node':node,'containers':await agent(node,'/queue/containers')}
-                        except Exception:return {'node':node,'containers':[],'error':'主机容器列表暂不可用'}
-                    return web.json_response({**store.admin_data(),'hosts':await asyncio.gather(*(containers(n) for n in config['nodes']))},headers={'Cache-Control':'no-store'})
+                if operation=='state':return web.json_response({**store.view(person),'nodes':list(config['nodes']),'server_time':time.time()},headers={'Cache-Control':'no-store','Vary':'Cookie, Authorization'})
+                if operation=='containers':
+                    if not person:raise ControlError(401,'请先登录个人账号')
+                    return web.json_response(await agent(request.query['node'],'/queue/containers'),headers={'Cache-Control':'no-store'})
                 if operation=='operation':
                     await admin_identity(request)
                     return web.json_response(await agent(request.query['node'],'/queue/operation?operation_id='+request.query['id']))
@@ -130,24 +143,17 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
             if operation=='logout':
                 store.logout(request.cookies.get(COOKIE,''));response=web.json_response({'message':'个人账号已退出'})
                 response.del_cookie(COOKIE,path='/a5-queue');return response
-            if operation=='grant':
-                await admin_identity(request)
-                if data.get('confirmed') is not True:raise ControlError(400,'请确认容器授权')
-                node=data.get('node');cid=data.get('container_id');account=data.get('account')
-                containers=await agent(node,'/queue/containers')
-                info=next((c for c in containers if c['id']==cid),None)
-                if not info:raise ControlError(409,'容器不在当前可授权列表')
-                event(person,'grant',node=node,container_id=cid,account=account)
-                store.grant(node,cid,info['name'],account)
-                return web.json_response({'message':'容器授权已保存'})
             if operation=='enqueue':
                 if not person['registered']:raise ControlError(400,'提交自己的预约前，请先注册个人账号')
-                event(person,'enqueue',node=data.get('node'),container_id=data.get('container_id'))
-                job=store.enqueue(person,data.get('node'),data.get('container_id'),data.get('title'))
+                node=data.get('node');cid=data.get('container_id','')
+                if not isinstance(node,str) or node not in config['nodes']:raise ControlError(400,'未知主机')
+                info=await selected_container(node,cid) if cid else None
+                event(person,'enqueue',node=node,container_id=cid)
+                job=store.enqueue(person,node,cid,data.get('title'),info['name'] if info else '',data.get('requested_seconds',3600))
                 return web.json_response({'message':'已加入队列','job':job})
             if operation in ('preview','confirm'):
                 action=data.get('action');mode=data.get('mode','process')
-                if action not in ('claim','cancel','finish','direct') or mode not in ('process','container'):raise ControlError(400,'无效操作')
+                if action not in ('claim','cancel','finish','direct','bind') or mode not in ('process','container'):raise ControlError(400,'无效操作')
                 if action=='direct':
                     await admin_identity(request)
                     parsed=parse_browser_payload({'node':data['node'],'target':data['target'],'confirmed':True})
@@ -155,11 +161,16 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                     job='direct:'+parsed['node']+':'+parsed['container_id']
                 else:
                     job=data.get('job');row=store.own(person,job)
+                if action=='bind':
+                    if row['state']!='active' or row['container_id']:raise ControlError(409,'该任务不能重新关联容器')
+                    if data.get('ownership_confirmed') is not True:raise ControlError(400,'请确认选择的是本任务自己的容器')
+                    await selected_container(row['node'],data.get('container_id'))
+                    row={**row,'container_id':data['container_id']}
                 if action=='claim' and row['state']!='queued':raise ControlError(409,'预约状态已变化')
                 queued=action=='cancel' and row['state']=='queued'
                 current={'processes':[],'node':row['node'],'container_id':row['container_id']} if queued else await snapshot(row)
                 current.update(node=row['node'],mode=mode)
-                if action=='claim' and current.get('policy')=='持续拦截':raise ControlError(409,'此容器处于持续拦截，需管理员先加入白名单')
+                if action in ('claim','bind') and current.get('policy')=='持续拦截':raise ControlError(409,'此容器处于持续拦截，需管理员先加入白名单')
                 if operation=='preview':
                     token=store.confirmation(person,job,action,current)
                     return web.json_response({'token':token,'snapshot':current,'queued':queued})
@@ -170,8 +181,8 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                 if action=='direct':
                     store.consume_confirmation(data['token']);payload=saved;payload['operation_id']=secrets.token_hex(16)
                 else:row,payload=store.transition(person,job,action,data.get('token'))
-                if action in ('claim','finish') or payload is None:
-                    return web.json_response({'message':{'claim':'已登记使用，请自行通过 SSH 启动任务；网页不会执行命令','finish':'预约已完成，下一位可以开始','cancel':'等待中的预约已取消'}[action]})
+                if action in ('claim','finish','bind') or payload is None:
+                    return web.json_response({'message':{'claim':'已登记开始，请自行启动任务；结束后回到本队列登记','finish':'已登记结束，下一位可以开始','bind':'容器已关联，可使用 Stop','cancel':'任务记录已取消；未向服务器发送停止指令'}[action]})
                 try:
                     result=await agent(row['node'],'/queue/kill',{'request':{'operation_id':payload['operation_id'],'snapshot':saved,'mode':mode},'actor':person})
                 except ControlError as e:
@@ -186,6 +197,7 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
     app.router.add_get('/a5-queue',page)
     app.router.add_get('/a5-queue/control',page)
     app.router.add_get('/a5-queue/queue.js',javascript)
+    app.router.add_get('/a5-queue/metrics',metrics)
     app.router.add_route('GET','/a5-queue/api/{operation}',api)
     app.router.add_route('POST','/a5-queue/api/{operation}',api)
     return store

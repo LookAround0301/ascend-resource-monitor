@@ -3,6 +3,7 @@ from pathlib import Path
 import copy
 import sys
 import tempfile
+import time
 import unittest
 from urllib.parse import urlsplit
 sys.path.insert(0,str(Path(__file__).resolve().parents[2]/'assets/runtime'))
@@ -41,7 +42,7 @@ class QueueHTTPTests(unittest.IsolatedAsyncioTestCase):
             raise AssertionError(path)
         self.path=Path(self.temp.name)/'queue.db'
         cfg={'grafana_url':str(self.grafana.make_url('')).rstrip('/'),'org_id':1,'audit_log':str(Path(self.temp.name)/'audit.jsonl'),
-             'nodes':{'node-a':{'url':'https://unused'}},'task_queue':{'database':str(self.path)}}
+             'nodes':{'node-a':{'url':'https://unused'},'node-b':{'url':'https://unused'}},'task_queue':{'database':str(self.path)}}
         self.client=TestClient(TestServer(create_app(cfg,agent_override=True,queue_override=agent)))
         await self.client.start_server();self.store=QueueStore(self.path)
         self.one=await self.register('u12345678');self.two=await self.register('u12345679')
@@ -66,7 +67,6 @@ class QueueHTTPTests(unittest.IsolatedAsyncioTestCase):
         self.client.session.cookie_jar.clear();return token
 
     async def job(self):
-        await self.post('grant',{'node':'node-a','container_id':CID,'account':self.store.user(self.one)['id'],'confirmed':True},admin=True)
         result=await self.post('enqueue',{'node':'node-a','container_id':CID,'title':'test'},self.one)
         return result['job']
 
@@ -77,9 +77,11 @@ class QueueHTTPTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_anonymous_and_forged_role_cannot_control(self):
         h={**self.headers(),'X-Grafana-Role':'Admin','X-WEBAUTH-USER':'admin'}
-        await self.post('grant',{'confirmed':True,'admin':True},expected=401,headers=h)
-        await self.post('grant',{'confirmed':True,'admin':True},self.one,expected=401)
-        await self.post('enqueue',{'node':'node-a','container_id':CID,'title':'test','owner':self.store.user(self.one)['id']},self.two,expected=403)
+        await self.post('enqueue',{'node':'node-a','title':'test','admin':True},expected=401,headers=h)
+        await self.post('grant',{'confirmed':True,'admin':True},self.one,expected=404)
+        result=await self.post('enqueue',{'node':'node-a','title':'test','owner':self.store.user(self.one)['id']},self.two)
+        with self.assertRaises(Exception):self.store.own(self.store.user(self.one),result['job'])
+        self.assertEqual(self.store.own(self.store.user(self.two),result['job'])['account'],self.store.user(self.two)['id'])
         self.assertEqual(self.calls,[])
 
     async def test_only_owner_or_real_admin_and_waiting_cancel_never_kills(self):
@@ -124,12 +126,13 @@ class QueueHTTPTests(unittest.IsolatedAsyncioTestCase):
         await self.post('confirm',{**data,'token':preview['token'],'confirmed':True},admin=True,expected=409)
         self.assertEqual(len([c for c in self.calls if c[1]=='/queue/kill']),1)
 
-    async def test_public_view_and_protected_admin_list(self):
+    async def test_public_view_and_signed_in_container_list(self):
         await self.job()
         r=await self.client.get('/a5-queue/api/state');data=await r.json()
-        self.assertIsNone(data['user']);self.assertEqual(data['grants'],[]);self.assertFalse(data['tasks'][0]['mine'])
+        self.assertIsNone(data['user']);self.assertFalse(data['tasks'][0]['mine'])
         self.assertNotIn('digest',str(data));self.assertNotIn('fixture-password-only',str(data))
-        r=await self.client.get('/a5-queue/api/admin',headers=self.headers(self.one));self.assertEqual(r.status,401)
+        r=await self.client.get('/a5-queue/api/containers?node=node-a');self.assertEqual(r.status,401)
+        r=await self.client.get('/a5-queue/api/containers?node=node-a',headers=self.headers(self.one));self.assertEqual(r.status,200)
         r=await self.client.get('/a5-queue');self.assertEqual(r.status,200);self.assertIn("frame-ancestors 'none'",r.headers['Content-Security-Policy'])
 
     async def test_dashboard_control_routes_to_owner_reservation(self):
@@ -139,6 +142,41 @@ class QueueHTTPTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(r.status,200);self.assertEqual(await r.json(),{'job':job,'direct':False})
         r=await self.client.get('/a5-queue/api/control-context',params={'node':'node-a','target':CID+'@'+START},headers=self.headers(self.two))
         self.assertEqual(r.status,403)
+
+    async def test_register_join_start_end_without_admin_or_container(self):
+        a=(await self.post('enqueue',{'node':'node-a','title':'a'},self.one))['job']
+        b=(await self.post('enqueue',{'node':'node-b','title':'b'},self.two))['job']
+        waiting=(await self.post('enqueue',{'node':'node-a','title':'waiting'},self.two))['job']
+        await self.act(a,'claim',self.one);await self.act(b,'claim',self.two)
+        preview=await self.post('preview',{'job':waiting,'action':'claim'},self.two)
+        await self.post('confirm',{'job':waiting,'action':'claim','confirmed':True,'token':preview['token']},self.two,expected=409)
+        await self.act(a,'finish',self.one);await self.act(waiting,'claim',self.two)
+        self.assertEqual(self.calls,[])
+        await self.post('enqueue',{'node':'unknown','title':'invalid'},self.one,expected=400)
+
+    async def test_optional_binding_requires_owner_confirmation_and_no_rebind(self):
+        job=(await self.post('enqueue',{'node':'node-a','title':'unbound'},self.one))['job']
+        await self.act(job,'claim',self.one)
+        data={'job':job,'action':'bind','container_id':CID,'ownership_confirmed':True}
+        await self.post('preview',data,self.two,expected=403)
+        await self.post('preview',{**data,'ownership_confirmed':False},self.one,expected=400)
+        preview=await self.post('preview',data,self.one)
+        await self.post('confirm',{**data,'confirmed':True,'token':preview['token']},self.one)
+        self.assertEqual(self.store.own(self.store.user(self.one),job)['container_id'],CID)
+        await self.post('preview',data,self.one,expected=409)
+        await self.act(job,'cancel',self.one)
+        self.assertEqual(len([c for c in self.calls if c[1]=='/queue/kill']),1)
+
+    async def test_public_metrics_show_requested_and_elapsed_without_auto_stop(self):
+        job=(await self.post('enqueue',{'node':'node-a','title':'metrics fixture','requested_seconds':60},self.one))['job']
+        await self.act(job,'claim',self.one)
+        with self.store.db() as db:db.execute('UPDATE reservations SET activated=? WHERE id=?',(time.time()-3600,job))
+        response=await self.client.get('/a5-queue/metrics');self.assertEqual(response.status,200)
+        text=await response.text();self.assertIn('requested_at=',text);self.assertIn('started_at=',text)
+        self.assertIn('queue_status="使用中"',text);self.assertIn('queue_status="当前空闲"',text)
+        self.assertNotIn('fixture-password-only',text);self.assertNotIn(self.one,text)
+        self.assertEqual(self.store.own(self.store.user(self.one),job)['state'],'active')
+        self.assertEqual(self.calls,[])
 
 
 if __name__=='__main__':unittest.main()

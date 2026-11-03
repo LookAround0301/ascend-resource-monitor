@@ -23,8 +23,6 @@ class QueueStore:
                 CREATE TABLE IF NOT EXISTS accounts(id TEXT PRIMARY KEY, employee TEXT UNIQUE NOT NULL,
                     name TEXT NOT NULL, salt TEXT NOT NULL, digest TEXT NOT NULL, created REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY, account TEXT NOT NULL, expires REAL NOT NULL);
-                CREATE TABLE IF NOT EXISTS grants(node TEXT NOT NULL, container_id TEXT NOT NULL,
-                    container TEXT NOT NULL, account TEXT NOT NULL, PRIMARY KEY(node,container_id));
                 CREATE TABLE IF NOT EXISTS reservations(id TEXT PRIMARY KEY, account TEXT NOT NULL,
                     node TEXT NOT NULL, container_id TEXT NOT NULL, container TEXT NOT NULL,
                     title TEXT NOT NULL, state TEXT NOT NULL, created REAL NOT NULL, activated REAL,
@@ -32,13 +30,15 @@ class QueueStore:
                     cancel_operation TEXT, cancel_since REAL);
                 CREATE UNIQUE INDEX IF NOT EXISTS node_active ON reservations(node)
                     WHERE state IN ('active','cancelling');
-                CREATE UNIQUE INDEX IF NOT EXISTS container_pending ON reservations(node,container_id)
-                    WHERE state IN ('queued','active','cancelling');
+                CREATE UNIQUE INDEX IF NOT EXISTS container_pending_bound ON reservations(node,container_id)
+                    WHERE container_id<>'' AND state IN ('queued','active','cancelling');
+                DROP INDEX IF EXISTS container_pending;
                 CREATE TABLE IF NOT EXISTS confirmations(token TEXT PRIMARY KEY, account TEXT NOT NULL,
                     job TEXT NOT NULL, action TEXT NOT NULL, payload TEXT NOT NULL, expires REAL NOT NULL);
             ''')
             columns={r['name'] for r in db.execute('PRAGMA table_info(reservations)')}
             if 'cancel_since' not in columns: db.execute('ALTER TABLE reservations ADD COLUMN cancel_since REAL')
+            if 'requested_seconds' not in columns:db.execute('ALTER TABLE reservations ADD COLUMN requested_seconds INTEGER NOT NULL DEFAULT 0')
         os.chmod(self.path, 0o600)
 
     @contextmanager
@@ -96,27 +96,11 @@ class QueueStore:
     def logout(self, token):
         with self.db() as db: db.execute('DELETE FROM sessions WHERE token=?', (hashlib.sha256(token.encode()).hexdigest(),))
 
-    def admin_data(self):
-        with self.db() as db:
-            return {'accounts': [dict(r) for r in db.execute('SELECT id,employee,name FROM accounts ORDER BY employee')],
-                    'grants': [dict(r) for r in db.execute('SELECT * FROM grants ORDER BY node,container')]}
-
-    def grant(self, node, cid, container, account):
-        if not CONTAINER_ID.fullmatch(cid): raise ControlError(400, '需要完整容器 ID')
-        with self.db() as db:
-            if db.execute("SELECT 1 FROM reservations WHERE node=? AND container_id=? AND state IN ('queued','active','cancelling')", (node,cid)).fetchone():
-                raise ControlError(409, '该容器仍有预约，请先由预约人结束或取消任务')
-            if account is None: db.execute('DELETE FROM grants WHERE node=? AND container_id=?', (node,cid))
-            else:
-                if not db.execute('SELECT 1 FROM accounts WHERE id=?', (account,)).fetchone(): raise ControlError(400, '账号不存在')
-                db.execute('INSERT OR REPLACE INTO grants VALUES(?,?,?,?)', (node,cid,container,account))
-
     def view(self, user):
         account = user['id'] if user else ''
         with self.db() as db:
             rows = [dict(r) for r in db.execute('''SELECT r.*,a.employee,a.name FROM reservations r JOIN accounts a ON a.id=r.account
-                WHERE r.state IN ('queued','active','cancelling') OR (r.account=? AND r.finished>?) ORDER BY r.created,r.id''', (account,time.time()-7*86400))]
-            grants = [dict(r) for r in db.execute('SELECT * FROM grants WHERE account=? ORDER BY node,container', (account,))]
+                WHERE r.state IN ('queued','active','cancelling') OR ((r.account=? OR ?) AND r.finished>?) ORDER BY r.created,r.id''', (account,bool(user and user.get('admin')),time.time()-7*86400))]
         busy = {r['node'] for r in rows if r['state'] in ('active','cancelling')}
         positions = {}
         for row in rows:
@@ -125,18 +109,18 @@ class QueueStore:
             row['position'] = positions.get(row['node'],0) if row['state']=='queued' else None
             row['can_claim'] = row['mine'] and row['state']=='queued' and row['position']==1 and row['node'] not in busy
             row.pop('cancel_operation',None)
-        return {'user':user, 'tasks':rows, 'grants':grants}
+        return {'user':user, 'tasks':rows}
 
-    def enqueue(self, user, node, cid, title):
+    def enqueue(self, user, node, cid, title, container='',requested_seconds=3600):
         if not isinstance(title,str) or not 1 <= len(title.strip()) <= 120 or any(ord(c)<32 for c in title): raise ControlError(400,'任务说明需为 1–120 个字符')
+        if not isinstance(cid,str) or (cid and not CONTAINER_ID.fullmatch(cid)):raise ControlError(400,'需要完整容器 ID')
+        if type(requested_seconds) is not int or not 60<=requested_seconds<=30*86400:raise ControlError(400,'预计占用时长需为 1 分钟至 30 天')
         with self.db() as db:
-            grant = db.execute('SELECT * FROM grants WHERE node=? AND container_id=? AND account=?',(node,cid,user['id'])).fetchone()
-            if not grant: raise ControlError(403,'请先由管理员将该容器授权给你的账号')
             if db.execute("SELECT COUNT(*) FROM reservations WHERE account=? AND state IN ('queued','active','cancelling')",(user['id'],)).fetchone()[0]>=5:
                 raise ControlError(409,'每人最多保留 5 个未结束预约')
             job = secrets.token_hex(16)
-            try: db.execute('INSERT INTO reservations(id,account,node,container_id,container,title,state,created) VALUES(?,?,?,?,?,?,?,?)',
-                            (job,user['id'],node,cid,grant['container'],title.strip(),'queued',time.time()))
+            try: db.execute('INSERT INTO reservations(id,account,node,container_id,container,title,state,created,requested_seconds) VALUES(?,?,?,?,?,?,?,?,?)',
+                            (job,user['id'],node,cid,container,title.strip(),'queued',time.time(),requested_seconds))
             except sqlite3.IntegrityError: raise ControlError(409,'该容器已有未结束预约')
         return job
 
@@ -152,7 +136,7 @@ class QueueStore:
         with self.db() as db:
             row=db.execute("SELECT * FROM reservations WHERE node=? AND container_id=? AND state='active'",(node,cid)).fetchone()
         if not row or (row['account']!=user['id'] and not user.get('admin')):
-            raise ControlError(403,'请先在任务队列中为自己的授权容器登记并开始使用')
+            raise ControlError(403,'请先登记自己的任务、开始使用并关联对应容器')
         return dict(row)
 
     def confirmation(self,user,job,action,payload):
@@ -191,14 +175,22 @@ class QueueStore:
                 head = db.execute("SELECT id FROM reservations WHERE node=? AND state='queued' ORDER BY created,id LIMIT 1",(row['node'],)).fetchone()
                 busy = db.execute("SELECT 1 FROM reservations WHERE node=? AND state IN ('active','cancelling')",(row['node'],)).fetchone()
                 if row['state']!='queued' or busy or not head or head['id']!=job: raise ControlError(409,'还没有轮到该预约')
-                if not db.execute('SELECT 1 FROM grants WHERE node=? AND container_id=? AND account=?',(row['node'],row['container_id'],row['account'])).fetchone():
-                    raise ControlError(403,'容器授权已变更')
                 db.execute("UPDATE reservations SET state='active',activated=?,container_started_at=?,message='' WHERE id=?",(time.time(),payload['container_started_at'],job))
+            elif action=='bind':
+                if row['state']!='active' or row['container_id']:raise ControlError(409,'只能为使用中且未关联容器的任务添加关联')
+                cid=payload['container_id']
+                if not CONTAINER_ID.fullmatch(cid):raise ControlError(400,'需要完整容器 ID')
+                try:db.execute('UPDATE reservations SET container_id=?,container=?,container_started_at=? WHERE id=?',
+                               (cid,payload['container'],payload['container_started_at'],job))
+                except sqlite3.IntegrityError:raise ControlError(409,'该容器已关联其他未结束的任务')
             elif action in ('cancel','finish'):
                 if row['state']!='active': raise ControlError(409,'任务当前不可执行此操作')
                 if action=='finish':
                     if payload['processes']: raise ControlError(409,'仍有 NPU 进程，请先自行停止或使用取消任务')
                     db.execute("UPDATE reservations SET state='completed',finished=? WHERE id=?",(time.time(),job))
+                elif not row['container_id']:
+                    db.execute("UPDATE reservations SET state='cancelled',finished=? WHERE id=?",(time.time(),job))
+                    payload=None
                 else:
                     operation=secrets.token_hex(16);payload['operation_id']=operation
                     db.execute("UPDATE reservations SET state='cancelling',cancel_operation=?,cancel_since=?,message='' WHERE id=?",(operation,time.time(),job))

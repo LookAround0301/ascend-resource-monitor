@@ -14,7 +14,8 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[2]/'assets/runtime'))
 from control_common import ControlError
 from queue_store import QueueStore
 from queue_processes import QueueProcesses
-from patch_dashboard import add_queue_link,add_stop_button
+from patch_dashboard import add_queue_link,add_stop_button,add_queue_panels
+from queue_metrics import render_queue_metrics
 
 CID='a'*64
 START='2026-11-03T00:00:00.000000000Z'
@@ -31,8 +32,7 @@ class StoreTests(unittest.TestCase):
 
     def grant_job(self,user=None,cid=CID,node='a'):
         user=user or self.one
-        self.store.grant(node,cid,'test-container',user['id'])
-        return self.store.enqueue(user,node,cid,'test')
+        return self.store.enqueue(user,node,cid,'test','test-container' if cid else '')
 
     def transition(self,user,job,action,processes=None):
         payload={'container_started_at':START,'processes':processes or []}
@@ -48,11 +48,55 @@ class StoreTests(unittest.TestCase):
         with self.assertRaises(ControlError):self.store.login('u12345678','wrong-password')
         self.store.logout(self.token);self.assertIsNone(self.store.user(self.token))
 
-    def test_grant_required_and_cannot_transfer_unfinished(self):
-        with self.assertRaises(ControlError):self.store.enqueue(self.one,'a',CID,'test')
+    def test_self_service_container_cannot_be_taken_from_unfinished_task(self):
         self.grant_job()
-        with self.assertRaises(ControlError):self.store.grant('a',CID,'test',self.two['id'])
         with self.assertRaises(ControlError):self.store.enqueue(self.two,'a',CID,'test')
+
+    def test_unbound_registration_start_finish_and_separate_queues(self):
+        first=self.grant_job(cid='');second=self.grant_job(self.two,cid='');other=self.grant_job(cid='',node='b')
+        self.transition(self.one,first,'claim');self.transition(self.one,other,'claim')
+        with self.assertRaises(ControlError):self.transition(self.two,second,'claim')
+        self.transition(self.one,first,'finish');self.transition(self.two,second,'claim')
+        self.assertIsNotNone(self.store.own(self.one,first)['finished'])
+        self.assertEqual(self.store.own(self.one,other)['state'],'active')
+
+    def test_late_binding_is_immutable_and_owner_scoped(self):
+        job=self.grant_job(cid='');self.transition(self.one,job,'claim')
+        payload={'container_id':CID,'container':'fixture','container_started_at':START,'processes':[]}
+        with self.assertRaises(ControlError):self.store.confirmation(self.two,job,'bind',payload)
+        token=self.store.confirmation(self.one,job,'bind',payload)
+        self.store.transition(self.one,job,'bind',token)
+        self.assertEqual(self.store.own(self.one,job)['container_id'],CID)
+        token=self.store.confirmation(self.one,job,'bind',payload)
+        with self.assertRaises(ControlError):self.store.transition(self.one,job,'bind',token)
+
+    def test_old_database_index_migration_preserves_existing_reservation(self):
+        job=self.grant_job()
+        with self.store.db() as db:
+            db.execute("CREATE UNIQUE INDEX container_pending ON reservations(node,container_id) WHERE state IN ('queued','active','cancelling')")
+        migrated=QueueStore(self.store.path)
+        self.assertEqual(migrated.own(self.one,job)['container_id'],CID)
+        migrated.enqueue(self.one,'a','','first unbound');migrated.enqueue(self.two,'a','','second unbound')
+
+    def test_requested_time_and_display_elapsed(self):
+        job=self.store.enqueue(self.one,'a','','fixture',requested_seconds=5400)
+        self.assertEqual(self.store.own(self.one,job)['requested_seconds'],5400)
+        with self.assertRaises(ControlError):self.store.enqueue(self.one,'a','','fixture',requested_seconds=-1)
+        row={'id':job,'node':'a','state':'active','employee':'u12345678','name':'Name','title':'test"\\\nvalue',
+             'created':1000,'activated':2000,'requested_seconds':5400,'position':None}
+        metrics=render_queue_metrics([row],['a','b'],2065)
+        self.assertIn('} 65',metrics);self.assertIn('requested_duration="1.5 小时"',metrics)
+        self.assertIn('queue_status="当前空闲"',metrics);self.assertNotIn('test"\\\nvalue',metrics)
+        row['state']='queued';self.assertNotIn('} 65',render_queue_metrics([row],['a'],2065))
+        row['state']='completed';self.assertNotIn('task_id="'+job+'"',render_queue_metrics([row],['a'],2065))
+        self.assertNotIn('password',metrics)
+
+    def test_queue_panels_are_separate_and_idempotent(self):
+        dashboard={'uid':'lab','panels':[{'id':1,'title':'existing','gridPos':{'x':0,'y':4,'w':24,'h':6}}]}
+        once=add_queue_panels(dashboard,['node-a','node-b']);twice=add_queue_panels(once,['node-a','node-b'])
+        self.assertEqual(once['panels'],twice['panels']);self.assertEqual(len(twice['panels']),3)
+        self.assertIn('node="node-a"',twice['panels'][1]['targets'][0]['expr'])
+        self.assertIn('node="node-b"',twice['panels'][2]['targets'][0]['expr'])
 
     def test_fifo_per_node_and_single_active(self):
         first=self.grant_job();second=self.grant_job(self.two,'b'*64);other=self.grant_job(self.two,'c'*64,'b')

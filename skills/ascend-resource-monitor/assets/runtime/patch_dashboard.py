@@ -14,8 +14,45 @@ def add_queue_link(dashboard):
          'includeVars':False,'keepTime':False,'icon':'external link'}]
     for panel in result['panels']:
         if panel.get('title')=='按工号与目录汇总 · 仅 NPU 进程':
-            panel['description']='Stop 可选择停止 NPU 进程或整个容器，并需再次确认。个人账号只能操作已授权且登记使用的任务，管理员可操作全部。顶部“任务排队 / 我的任务”可注册、排队和管理授权。'
+            panel['description']='Stop 可选择停止 NPU 进程或整个容器，并需再次确认。个人账号只能操作自己登记使用并关联容器的任务，管理员可操作全部。顶部“任务排队 / 我的任务”可直接注册，在每台服务器的独立队列登记开始和结束，无需管理员审批。'
     result['version']=result.get('version',1)+1
+    return result
+
+
+def add_queue_panels(dashboard,nodes,prefix='ascend'):
+    """One public queue table per server, preserving all other panels."""
+    result=add_queue_link(dashboard)
+    titles={node:node+' 排队情况' for node in nodes}
+    existing={p['title']:p for p in result['panels'] if p.get('title') in titles.values()}
+    missing=[node for node in nodes if titles[node] not in existing]
+    anchor=next((p['gridPos']['y']+p['gridPos']['h'] for p in result['panels'] if p.get('title')=='容器管控 · 持续拦截与白名单'),4)
+    for panel in result['panels']:
+        if panel['gridPos']['y']>=anchor:panel['gridPos']['y']+=len(missing)*7
+    next_id=max((p['id'] for p in result['panels']),default=0)+1
+    order=['queue_position','queue_status','employee_id','employee_name','requested_duration','Value','started_at','requested_at','task_title']
+    names={'queue_position':'顺序','queue_status':'状态','employee_id':'工号','employee_name':'姓名','task_title':'任务',
+           'requested_at':'申请时间','requested_duration':'预计占用','started_at':'开始时间','Value':'已使用时长','container':'关联容器','task_id':'任务操作'}
+    for node in nodes:
+        previous=existing.get(titles[node])
+        position=previous['gridPos'] if previous else {'x':0,'y':anchor+missing.index(node)*7,'w':24,'h':7}
+        panel={'id':previous['id'] if previous else next_id,'title':titles[node],'type':'table','gridPos':position,
+               'description':'本服务器独立队列。已使用时长从“开始使用”计时，排队期间为零；预计占用仅作展示，不会超时自动停止。顶部“任务排队 / 我的任务”可登记。',
+               'datasource':{'type':'prometheus','uid':'a5-prometheus'},
+               'targets':[{'refId':'Queue','expr':prefix+'_queue_task_usage_seconds{node='+json.dumps(node)+'}',
+                           'format':'table','instant':True,'range':False}],
+               'transformations':[
+                   {'id':'convertFieldType','options':{'conversions':[{'targetField':'queue_position','destinationType':'number'}]}},
+                   {'id':'organize','options':{
+                       'excludeByName':{k:True for k in ['Time','__name__','job','instance','node','container','task_id']},
+                       'indexByName':{name:i for i,name in enumerate(order)},'renameByName':names}}],
+               'options':{'showHeader':True,'cellHeight':'sm','enablePagination':True,'sortBy':[{'displayName':'顺序','desc':False}]},
+               'fieldConfig':{'defaults':{'custom':{'filterable':True,'minWidth':50}},'overrides':[
+                   {'matcher':{'id':'byName','options':'已使用时长'},'properties':[{'id':'unit','value':'dthms'},{'id':'decimals','value':0}]},
+                   {'matcher':{'id':'byName','options':'顺序'},'properties':[{'id':'mappings','value':[{'type':'value','options':{'0':{'text':'—'}}}]}]}]}}
+        for field,width in [('顺序',60),('状态',80),('工号',110),('姓名',80),('预计占用',95),('已使用时长',130),('开始时间',155),('申请时间',155),('任务',150)]:
+            panel['fieldConfig']['overrides'].append({'matcher':{'id':'byName','options':field},'properties':[{'id':'custom.width','value':width}]})
+        if previous:result['panels'][result['panels'].index(previous)]=panel
+        else:result['panels'].append(panel);next_id+=1
     return result
 
 
