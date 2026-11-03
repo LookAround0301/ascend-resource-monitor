@@ -39,6 +39,8 @@ class QueueStore:
             columns={r['name'] for r in db.execute('PRAGMA table_info(reservations)')}
             if 'cancel_since' not in columns: db.execute('ALTER TABLE reservations ADD COLUMN cancel_since REAL')
             if 'requested_seconds' not in columns:db.execute('ALTER TABLE reservations ADD COLUMN requested_seconds INTEGER NOT NULL DEFAULT 0')
+            for name,default in [('auto_targets','[]'),('auto_error',''),('cancel_batch','[]')]:
+                if name not in columns:db.execute("ALTER TABLE reservations ADD COLUMN "+name+" TEXT NOT NULL DEFAULT '"+default+"'")
         os.chmod(self.path, 0o600)
 
     @contextmanager
@@ -109,6 +111,8 @@ class QueueStore:
             row['position'] = positions.get(row['node'],0) if row['state']=='queued' else None
             row['can_claim'] = row['mine'] and row['state']=='queued' and row['position']==1 and row['node'] not in busy
             row.pop('cancel_operation',None)
+            row.pop('cancel_batch',None)
+            row['auto_targets']=json.loads(row['auto_targets'])
         return {'user':user, 'tasks':rows}
 
     def enqueue(self, user, node, cid, title, container='',requested_seconds=3600):
@@ -127,10 +131,36 @@ class QueueStore:
     def own(self, user, job, db=None):
         if db is None:
             with self.db() as connection: return self.own(user,job,connection)
-        row = db.execute('SELECT * FROM reservations WHERE id=?',(job,)).fetchone()
+        row = db.execute('SELECT r.*,a.employee FROM reservations r JOIN accounts a ON a.id=r.account WHERE r.id=?',(job,)).fetchone()
         if not row: raise ControlError(404,'任务不存在')
         if row['account'] != user['id'] and not user.get('admin'): raise ControlError(403,'只能操作自己账号提交的任务')
         return dict(row)
+
+    def active_on_node(self,user,node):
+        with self.db() as db:
+            row=db.execute("SELECT id FROM reservations WHERE node=? AND state='active'",(node,)).fetchone()
+            if not row:raise ControlError(403,'请先在此服务器队列登记并开始使用')
+            return self.own(user,row['id'],db)
+
+    def active(self):
+        with self.db() as db:
+            return [dict(r) for r in db.execute("SELECT r.*,a.employee FROM reservations r JOIN accounts a ON a.id=r.account WHERE r.state='active'")]
+
+    def update_auto(self,job,targets=None,error=''):
+        with self.db() as db:
+            if targets is None:db.execute("UPDATE reservations SET auto_error=? WHERE id=? AND state='active'",(error,job))
+            else:
+                summary=[{k:s[k] for k in ('container_id','container_started_at','container')} for s in targets]
+                db.execute("UPDATE reservations SET auto_targets=?,auto_error=? WHERE id=? AND state='active'",(json.dumps(summary),error,job))
+
+    def batch_result(self,job,operation,state,message):
+        with self.db() as db:
+            row=db.execute("SELECT cancel_batch FROM reservations WHERE id=? AND state='cancelling'",(job,)).fetchone()
+            if not row:return
+            entries=json.loads(row[0])
+            for entry in entries:
+                if entry['operation_id']==operation:entry.update(state=state,message=message)
+            db.execute('UPDATE reservations SET cancel_batch=? WHERE id=?',(json.dumps(entries),job))
 
     def active_for(self,user,node,cid):
         with self.db() as db:
@@ -188,7 +218,11 @@ class QueueStore:
                 if action=='finish':
                     if payload['processes']: raise ControlError(409,'仍有 NPU 进程，请先自行停止或使用取消任务')
                     db.execute("UPDATE reservations SET state='completed',finished=? WHERE id=?",(time.time(),job))
-                elif not row['container_id']:
+                elif payload.get('targets'):
+                    payload['operations']=[{'operation_id':secrets.token_hex(16),'snapshot':target} for target in payload['targets']]
+                    batch=[{'operation_id':op['operation_id'],'state':'pending','message':''} for op in payload['operations']]
+                    db.execute("UPDATE reservations SET state='cancelling',cancel_batch=?,cancel_since=?,message='' WHERE id=?",(json.dumps(batch),time.time(),job))
+                elif 'targets' in payload or not row['container_id']:
                     db.execute("UPDATE reservations SET state='cancelled',finished=? WHERE id=?",(time.time(),job))
                     payload=None
                 else:
@@ -204,4 +238,4 @@ class QueueStore:
                        ('cancelled' if success else 'active',message,time.time() if success else None,job))
 
     def cancelling(self):
-        with self.db() as db: return [dict(r) for r in db.execute("SELECT * FROM reservations WHERE state='cancelling'")]
+        with self.db() as db: return [dict(r) for r in db.execute("SELECT r.*,a.employee FROM reservations r JOIN accounts a ON a.id=r.account WHERE r.state='cancelling'")]

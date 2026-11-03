@@ -9,6 +9,7 @@ from queue_store import QueueStore
 from queue_processes import QueueProcesses
 from queue_ui import QUEUE_HTML, QUEUE_JS
 from queue_metrics import render_queue_metrics
+from queue_auto import AutoQueue
 
 COOKIE='a5_queue_session'
 
@@ -26,6 +27,8 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
             result=await response.json()
             if response.status!=200: raise ControlError(response.status,result.get('message','主机状态暂不可用'))
             return result
+
+    auto=AutoQueue(store,agent) if settings.get('auto_match_employee') else None
 
     async def actor(request,required=True):
         person=store.user(request.cookies.get(COOKIE))
@@ -55,6 +58,9 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
     async def reconcile():
         for row in store.cancelling():
             try:
+                if row['cancel_batch']!='[]':
+                    await AutoQueue(store,agent).reconcile(row)
+                    continue
                 result=await agent(row['node'],'/queue/operation?operation_id='+row['cancel_operation'])
                 if result['state']!='pending':store.resolve_cancel(row['id'],result['state']=='succeeded',result['message'])
             except ControlError as e:
@@ -67,7 +73,10 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
             while True:
                 try: await reconcile()
                 except Exception: pass
-                await asyncio.sleep(2)
+                if auto:
+                    try:await auto.refresh()
+                    except Exception:pass
+                await asyncio.sleep(3)
         task=asyncio.create_task(poll())
         yield
         task.cancel()
@@ -101,7 +110,7 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
             operation=request.match_info['operation']
             if request.method=='GET':
                 person=await actor(request,required=False)
-                if operation=='state':return web.json_response({**store.view(person),'nodes':list(config['nodes']),'server_time':time.time()},headers={'Cache-Control':'no-store','Vary':'Cookie, Authorization'})
+                if operation=='state':return web.json_response({**store.view(person),'nodes':list(config['nodes']),'server_time':time.time(),'auto_match_employee':auto is not None},headers={'Cache-Control':'no-store','Vary':'Cookie, Authorization'})
                 if operation=='containers':
                     if not person:raise ControlError(401,'请先登录个人账号')
                     return web.json_response(await agent(request.query['node'],'/queue/containers'),headers={'Cache-Control':'no-store'})
@@ -112,6 +121,13 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                     if not person:raise ControlError(401,'请登录个人账号或管理员账号')
                     data=parse_browser_payload({'node':request.query['node'],'target':request.query['target'],'confirmed':True})
                     if data['node'] not in config['nodes']:raise ControlError(400,'未知主机')
+                    if auto:
+                        if person['admin']:return web.json_response({'direct':True,'node':data['node'],'target':request.query['target']})
+                        row=store.active_on_node(person,data['node'])
+                        matched=await auto.fetch(row)
+                        if not any(t['container_id']==data['container_id'] and t['container_started_at']==data['container_started_at'] for t in matched['targets']):
+                            raise ControlError(403,'此容器未匹配到当前账号的工号')
+                        return web.json_response({'job':row['id'],'direct':False})
                     try:row=store.active_for(person,data['node'],data['container_id'])
                     except ControlError:
                         if not person['admin']:raise
@@ -147,6 +163,7 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                 if not person['registered']:raise ControlError(400,'提交自己的预约前，请先注册个人账号')
                 node=data.get('node');cid=data.get('container_id','')
                 if not isinstance(node,str) or node not in config['nodes']:raise ControlError(400,'未知主机')
+                if auto and cid:raise ControlError(400,'当前按工号自动匹配，无需指定容器')
                 info=await selected_container(node,cid) if cid else None
                 event(person,'enqueue',node=node,container_id=cid)
                 job=store.enqueue(person,node,cid,data.get('title'),info['name'] if info else '',data.get('requested_seconds',3600))
@@ -162,13 +179,15 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                 else:
                     job=data.get('job');row=store.own(person,job)
                 if action=='bind':
+                    if auto:raise ControlError(400,'当前按工号自动匹配，无需手动关联')
                     if row['state']!='active' or row['container_id']:raise ControlError(409,'该任务不能重新关联容器')
                     if data.get('ownership_confirmed') is not True:raise ControlError(400,'请确认选择的是本任务自己的容器')
                     await selected_container(row['node'],data.get('container_id'))
                     row={**row,'container_id':data['container_id']}
                 if action=='claim' and row['state']!='queued':raise ControlError(409,'预约状态已变化')
                 queued=action=='cancel' and row['state']=='queued'
-                current={'processes':[],'node':row['node'],'container_id':row['container_id']} if queued else await snapshot(row)
+                if auto and action in ('cancel','finish') and row['state']=='active':current=await auto.fetch(row)
+                else:current={'processes':[],'node':row['node'],'container_id':row['container_id']} if queued else await snapshot(row)
                 current.update(node=row['node'],mode=mode)
                 if action in ('claim','bind') and current.get('policy')=='持续拦截':raise ControlError(409,'此容器处于持续拦截，需管理员先加入白名单')
                 if operation=='preview':
@@ -183,6 +202,9 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                 else:row,payload=store.transition(person,job,action,data.get('token'))
                 if action in ('claim','finish','bind') or payload is None:
                     return web.json_response({'message':{'claim':'已登记开始，请自行启动任务；结束后回到本队列登记','finish':'已登记结束，下一位可以开始','bind':'容器已关联，可使用 Stop','cancel':'任务记录已取消；未向服务器发送停止指令'}[action]})
+                if 'operations' in payload:
+                    await AutoQueue(store,agent).submit(row,payload,person,mode)
+                    return web.json_response({'message':'已提交 '+str(len(payload['operations']))+' 个匹配目标，正在核实停止结果','state':'pending'})
                 try:
                     result=await agent(row['node'],'/queue/kill',{'request':{'operation_id':payload['operation_id'],'snapshot':saved,'mode':mode},'actor':person})
                 except ControlError as e:

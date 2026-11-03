@@ -25,6 +25,7 @@ def make_handler(engine, guard=None, queue=None):
                     path=urllib.parse.urlsplit(self.path);q=urllib.parse.parse_qs(path.query,keep_blank_values=True)
                     if any(len(v)!=1 for v in q.values()):raise ControlError(400,'重复查询参数')
                     if path.path=='/queue/containers' and not q:result=queue.containers()
+                    elif path.path=='/queue/owned' and set(q)=={'employee'}:result=queue.owned(q['employee'][0])
                     elif path.path=='/queue/snapshot' and set(q)=={'container_id','expected'}:
                         result=queue.snapshot(q['container_id'][0],q['expected'][0] or None)
                     elif path.path=='/queue/operation' and set(q)=={'operation_id'}:result=queue.status(q['operation_id'][0])

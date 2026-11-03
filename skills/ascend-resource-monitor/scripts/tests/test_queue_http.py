@@ -32,17 +32,24 @@ class QueueHTTPTests(unittest.IsolatedAsyncioTestCase):
         self.grafana=TestServer(fake);await self.grafana.start_server()
         self.snap={'container_id':CID,'container_started_at':START,'container_changed':False,'container':'fixture','policy':'未标记',
                    'processes':[{'pid':123,'start_ticks':456,'name':'fixture'}]}
+        self.owned_targets=[{**copy.deepcopy(self.snap),'owner_employee':'u12345678'}];self.blocked=0;self.fail_operations=False
         async def agent(node,path,data=None):
             self.calls.append((node,path,copy.deepcopy(data)))
             route=urlsplit(path).path
             if route=='/queue/containers':return [{'id':CID,'name':'fixture','state':'running'}]
             if route=='/queue/snapshot':return copy.deepcopy(self.snap)
+            if route=='/queue/owned':
+                if getattr(self,'source_failed',False):
+                    from control_common import ControlError
+                    raise ControlError(503,'fixture source failed')
+                return {'targets':copy.deepcopy(self.owned_targets),'blocked':self.blocked}
             if route=='/queue/kill':return {'state':'pending'}
-            if route=='/queue/operation':return {'state':'succeeded','message':'fixture ended'}
+            if route=='/queue/operation':return {'state':'failed' if self.fail_operations else 'succeeded','message':'fixture ended'}
             raise AssertionError(path)
         self.path=Path(self.temp.name)/'queue.db'
         cfg={'grafana_url':str(self.grafana.make_url('')).rstrip('/'),'org_id':1,'audit_log':str(Path(self.temp.name)/'audit.jsonl'),
              'nodes':{'node-a':{'url':'https://unused'},'node-b':{'url':'https://unused'}},'task_queue':{'database':str(self.path)}}
+        cfg['task_queue']['auto_match_employee']=getattr(self,'auto_match',False)
         self.client=TestClient(TestServer(create_app(cfg,agent_override=True,queue_override=agent)))
         await self.client.start_server();self.store=QueueStore(self.path)
         self.one=await self.register('u12345678');self.two=await self.register('u12345679')

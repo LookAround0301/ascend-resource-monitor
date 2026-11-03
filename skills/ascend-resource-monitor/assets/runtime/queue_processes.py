@@ -18,6 +18,14 @@ class QueueProcesses:
         self.root=Path(engine.config['task_queue']['operations_dir'])
         self.root.mkdir(parents=True,exist_ok=True,mode=0o700)
         self.live=set(); self.lock=threading.Lock()
+        self.ownership=None
+        if engine.config['task_queue'].get('auto_match_employee'):
+            from queue_ownership import QueueOwnership
+            self.ownership=QueueOwnership(self)
+
+    def owned(self,employee):
+        if not self.ownership:raise ControlError(503,'未启用工号自动匹配')
+        return self.ownership.owned(employee)
 
     def container(self,cid):
         if not isinstance(cid,str) or not CONTAINER_ID.fullmatch(cid): raise ControlError(400,'无效容器 ID')
@@ -61,10 +69,14 @@ class QueueProcesses:
         rows=[row for pid in sorted(pids) if (row:=self.read_process(pid,cid)) is not None]
         policy=self.guard.policy(cid) if self.guard else '未标记'
         return {'container_id':cid,'container_started_at':started,'container_changed':False,
-                'container':info.get('Name','').lstrip('/'),'policy':policy,'processes':rows}
+                'container':info.get('Name','').lstrip('/'),'policy':policy,'processes':rows,'inventory_complete':len(rows)==len(pids)}
 
     @staticmethod
     def same(a,b):
+        if 'targets' in a or 'targets' in b:
+            aa=a.get('targets',[]);bb=b.get('targets',[])
+            return ('targets' in a and 'targets' in b and len(aa)==len(bb)
+                    and all(QueueProcesses.same(x,y) and x.get('owner_employee')==y.get('owner_employee') for x,y in zip(aa,bb)))
         return (a.get('container_id'),a.get('container_started_at'),bool(a.get('container_changed')),
                 [(x['pid'],x['start_ticks']) for x in a['processes']]) == (
                 b.get('container_id'),b.get('container_started_at'),bool(b.get('container_changed')),
@@ -96,6 +108,7 @@ class QueueProcesses:
                 if existing['request']!=data or existing['actor']!=actor: raise ControlError(409,'操作 ID 已被其他请求使用')
                 return {'operation_id':op,'state':existing['state']}
             snapshot=data['snapshot']
+            if self.ownership:self.ownership.verify(snapshot,actor)
             current=self.snapshot(snapshot['container_id'],snapshot['container_started_at'])
             if not self.same(snapshot,current): raise ControlError(409,'NPU 进程已变化，请重新查看并确认')
             self.engine.write_audit({'action':'queue.stop','mode':data['mode'],'operation_id':op,'actor':actor,
@@ -109,6 +122,7 @@ class QueueProcesses:
         snapshot=record['request']['snapshot']; handles=[]
         try:
             with self.engine.lock:
+                if self.ownership:self.ownership.verify(snapshot,record['actor'])
                 current=self.snapshot(snapshot['container_id'],snapshot['container_started_at'])
                 if not self.same(snapshot,current): raise ControlError(409,'NPU 进程已变化，取消操作未执行')
                 if record['request']['mode']=='container':

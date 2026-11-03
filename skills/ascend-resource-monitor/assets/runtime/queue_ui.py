@@ -8,8 +8,8 @@ QUEUE_HTML = '''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><m
 <p id="account-help">首次注册填写工号、姓名和个人密码，注册后即可加入任一服务器队列，无需管理员审批。</p><button id="logout" class="secondary hidden">退出个人账号</button><p id="admin-tools" class="hidden">管理员可操作全部队列任务。<a href="/a5-control/guard" target="_blank">容器管控 / 白名单</a></p></section>
 <section id="direct" class="hidden"><h2>当前容器操作</h2><p id="direct-info"></p><button id="direct-stop" class="danger">Stop：选择停止方式</button></section>
 <div id="queues"></div>
-<p>两台服务器分别排队，互不占用对方名额。网页只登记使用顺序，服务由用户自行启动。需要网页 Stop 时，在使用中的任务上关联自己的容器；无需关联也可以登记开始和结束。</p>
-<p><small>个人密码保护自己的任务记录。容器由用户自行选择，请勿关联他人或共用容器；关联后才能停止该容器实例的 NPU 进程或整个容器。既有自动拦截和白名单规则仍然有效。</small></p><p id="message" role="status"></p>
+<p id="workflow-note">两台服务器分别排队，互不占用对方名额。网页只登记使用顺序，服务由用户自行启动。需要网页 Stop 时，在使用中的任务上关联自己的容器；无需关联也可以登记开始和结束。</p>
+<p><small id="ownership-note">个人密码保护自己的任务记录。容器由用户自行选择，请勿关联他人或共用容器；关联后才能停止该容器实例的 NPU 进程或整个容器。既有自动拦截和白名单规则仍然有效。</small></p><p id="message" role="status"></p>
 </main>
 <dialog id="bind-dialog"><h2>关联本任务的容器（可选）</h2><p id="bind-node"></p><p>只在需要网页 Stop 时关联。请确认容器内只运行本任务，关联后不能改绑到其他容器。</p><label>搜索容器<input id="bind-search" placeholder="容器名或 ID"></label><select id="bind-container" aria-label="选择容器"></select><label class="check"><input id="bind-owner" type="checkbox">我确认这是本任务自己的容器</label><p id="bind-error" class="error"></p><div class="row"><button id="bind-next">查看关联信息</button><button id="bind-dismiss" class="secondary">返回</button></div></dialog>
 <dialog id="confirm-dialog"><h2 id="confirm-title"></h2><p id="confirm-description"></p><fieldset id="stop-modes"><legend>停止方式</legend><label><input type="radio" name="mode" value="process" checked>仅停止 NPU 进程，保留容器</label><label><input type="radio" name="mode" value="container">停止整个容器，影响其中全部任务</label></fieldset><pre id="confirm-target"></pre><p id="confirm-warning" class="error"></p><div class="row"><button id="confirm-button" class="danger">确认</button><button id="dismiss" class="secondary">返回</button></div></dialog>
@@ -50,7 +50,9 @@ function renderQueues(){
   view.join.disabled=!(user&&user.registered);view.body.replaceChildren();
   for(const row of rows){
    const tr=document.createElement('tr');tr.dataset.job=row.id;tr.append(element('td',statusText(row)),element('td',row.employee+' / '+row.name));
-   const detail=element('td',row.title);detail.append(document.createElement('br'),element('small',row.container||'未关联容器（不影响登记）'));
+   const containerText=state.auto_match_employee?((row.auto_targets||[]).map(s=>s.container).join('、')||'等待检测到同工号 NPU 作业'):row.container||'未关联容器（不影响登记）';
+   const detail=element('td',row.title);detail.append(document.createElement('br'),element('small',containerText));
+   if(state.auto_match_employee&&row.auto_error)detail.append(document.createElement('br'),element('small',row.auto_error));
    if(row.message)detail.append(document.createElement('br'),element('small',row.message));
    const requested=element('td',date(row.created));requested.append(document.createElement('br'),element('small','预计：'+(row.requested_seconds?duration(row.requested_seconds):'未填写')));
    const times=element('td','开始：'+date(row.activated));times.append(document.createElement('br'),element('small','结束：'+date(row.finished)));
@@ -63,7 +65,7 @@ function renderQueues(){
     if(row.state==='queued')button('取消排队',()=>show({job:row.id,action:'cancel'},row));
     if(row.state==='active'){
      button('结束登记',()=>show({job:row.id,action:'finish'},row));
-     if(row.container_id)button('Stop',()=>show({job:row.id,action:'cancel'},row),true);
+     if(state.auto_match_employee||row.container_id)button('Stop',()=>show({job:row.id,action:'cancel'},row),true);
      else button('关联容器（可选）',()=>openBind(row));
     }
    }
@@ -76,6 +78,10 @@ async function refresh(){
  if(polling)return;polling=true;
  try{
   state=await api('state');const user=state.user,registered=user&&user.registered;
+  if(state.auto_match_employee){
+   $('workflow-note').textContent='两台服务器分别排队。点击开始使用后，自行启动服务，系统按登录工号持续匹配该服务器上的 NPU 作业容器，无需手动关联。';
+   $('ownership-note').textContent='匹配依据是监控采集到的工号归属。多个匹配容器会在 Stop 确认页全部列出；未知或混合归属不自动处理。既有自动拦截和白名单规则保持不变。';
+  }
   $('account-status').textContent=user?'已登录：'+(user.employee||'')+' '+user.name+(user.admin?'（管理员）':'（个人账号）'):'未登录：可以查看队列，登记需登录';
   $('admin-login').textContent=user&&user.admin?'管理员已登录':'管理员登录';
   $('account-form').classList.toggle('hidden',!!registered);$('account-help').classList.toggle('hidden',!!registered);$('logout').classList.toggle('hidden',!registered);$('admin-tools').classList.toggle('hidden',!(user&&user.admin));
@@ -103,13 +109,14 @@ async function loadPreview(){
  const version=++previewVersion,request={...operation};token=null;$('confirm-button').disabled=true;$('confirm-warning').textContent='正在核实…';
  try{
   const preview=await api('preview',request);if(version!==previewVersion)return;token=preview.token;const s=preview.snapshot;
-  $('stop-modes').classList.toggle('hidden',!!(!['cancel','direct'].includes(operation.action)||preview.queued||s.unbound));
-  $('confirm-target').textContent=s.node+'\\n'+(s.unbound?'未关联容器':(s.container||s.container_id))+(s.container_changed?'\\n原容器实例已结束，不会操作新实例。':'')+(s.unbound?'':'\\nNPU 进程：'+(s.processes.length?s.processes.map(p=>p.pid+' ('+p.name+')').join(', '):'无'));
+  const noMatches=s.auto_match&&s.targets.length===0;
+  $('stop-modes').classList.toggle('hidden',!!(!['cancel','direct'].includes(operation.action)||preview.queued||s.unbound||noMatches));
+  $('confirm-target').textContent=s.auto_match?s.node+'\\n'+(noMatches?'未检测到该工号的 NPU 作业':s.targets.map(t=>t.container+' ['+t.container_id.slice(0,12)+']\\n工号：'+t.owner_employee+'\\nNPU PID：'+t.processes.map(p=>p.pid).join(', ')).join('\\n\\n')):s.node+'\\n'+(s.unbound?'未关联容器':(s.container||s.container_id))+(s.container_changed?'\\n原容器实例已结束，不会操作新实例。':'')+(s.unbound?'':'\\nNPU 进程：'+(s.processes.length?s.processes.map(p=>p.pid+' ('+p.name+')').join(', '):'无'));
   let warning;
   if(operation.action==='claim')warning='仅登记开始使用，服务由你自行启动；结束后请回到该队列登记。';
   else if(operation.action==='bind')warning='确认关联此容器及其中的 NPU 进程。容器归属由你自行确认；请勿关联他人或共用容器。';
   else if(operation.action==='finish')warning=s.unbound?'仅登记结束并释放排队名额，不会停止服务器上的任何进程。请确认你的任务已结束。':s.processes.length?'仍有 NPU 进程，请先自行停止或使用 Stop。':'确认登记结束并让下一位开始。';
-  else warning=preview.queued||s.unbound?'只取消队列记录，不操作容器或进程。':operation.mode==='container'?'将停止整个容器，容器内所有进程都会中断。':'将结束上面列出的 NPU 进程，必要时强制终止；容器会保留。';
+  else warning=preview.queued||s.unbound||noMatches?'只取消队列记录，不操作容器或进程。':operation.mode==='container'?(s.auto_match?'将停止上面列出的全部 '+s.targets.length+' 个容器，容器内所有进程都会中断。':'将停止整个容器，容器内所有进程都会中断。'):'将结束上面列出的 NPU 进程，必要时强制终止；容器会保留。';
   $('confirm-warning').textContent=warning;$('confirm-button').disabled=operation.action==='finish'&&s.processes.length>0;
  }catch(e){if(version===previewVersion)$('confirm-warning').textContent=e.message;}
 }

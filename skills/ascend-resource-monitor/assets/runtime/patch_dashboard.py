@@ -14,7 +14,7 @@ def add_queue_link(dashboard):
          'includeVars':False,'keepTime':False,'icon':'external link'}]
     for panel in result['panels']:
         if panel.get('title')=='按工号与目录汇总 · 仅 NPU 进程':
-            panel['description']='Stop 可选择停止 NPU 进程或整个容器，并需再次确认。个人账号只能操作自己登记使用并关联容器的任务，管理员可操作全部。顶部“任务排队 / 我的任务”可直接注册，在每台服务器的独立队列登记开始和结束，无需管理员审批。'
+            panel['description']='Stop 可选择停止 NPU 进程或整个容器，并需再次确认。个人账号只能操作自己登记使用且归属匹配的任务，管理员可操作全部。顶部“任务排队 / 我的任务”可直接注册，在每台服务器的独立队列登记开始和结束，无需管理员审批。'
     result['version']=result.get('version',1)+1
     return result
 
