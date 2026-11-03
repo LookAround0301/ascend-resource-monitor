@@ -39,7 +39,7 @@ class QueueStore:
             columns={r['name'] for r in db.execute('PRAGMA table_info(reservations)')}
             if 'cancel_since' not in columns: db.execute('ALTER TABLE reservations ADD COLUMN cancel_since REAL')
             if 'requested_seconds' not in columns:db.execute('ALTER TABLE reservations ADD COLUMN requested_seconds INTEGER NOT NULL DEFAULT 0')
-            for name,default in [('auto_targets','[]'),('auto_error',''),('cancel_batch','[]')]:
+            for name,default in [('auto_targets','[]'),('auto_error',''),('cancel_batch','[]'),('cancel_final_state','cancelled')]:
                 if name not in columns:db.execute("ALTER TABLE reservations ADD COLUMN "+name+" TEXT NOT NULL DEFAULT '"+default+"'")
         os.chmod(self.path, 0o600)
 
@@ -112,6 +112,7 @@ class QueueStore:
             row['can_claim'] = row['mine'] and row['state']=='queued' and row['position']==1 and row['node'] not in busy
             row.pop('cancel_operation',None)
             row.pop('cancel_batch',None)
+            row.pop('cancel_final_state',None)
             row['auto_targets']=json.loads(row['auto_targets'])
         return {'user':user, 'tasks':rows}
 
@@ -215,27 +216,34 @@ class QueueStore:
                 except sqlite3.IntegrityError:raise ControlError(409,'该容器已关联其他未结束的任务')
             elif action in ('cancel','finish'):
                 if row['state']!='active': raise ControlError(409,'任务当前不可执行此操作')
-                if action=='finish':
-                    if payload['processes']: raise ControlError(409,'仍有 NPU 进程，请先自行停止或使用取消任务')
+                finish_stops=action=='finish' and payload.get('finish_stop') is True and (
+                    bool(payload['processes']) or (payload.get('mode')=='container'
+                    and bool(payload.get('container_id')) and not payload.get('container_changed')))
+                final_state='completed' if action=='finish' else 'cancelled'
+                if action=='finish' and not finish_stops:
+                    if payload['processes']: raise ControlError(409,'仍有 NPU 进程，请选择停止方式并重新确认结束登记')
                     db.execute("UPDATE reservations SET state='completed',finished=? WHERE id=?",(time.time(),job))
+                    payload=None
                 elif payload.get('targets'):
                     payload['operations']=[{'operation_id':secrets.token_hex(16),'snapshot':target} for target in payload['targets']]
                     batch=[{'operation_id':op['operation_id'],'state':'pending','message':''} for op in payload['operations']]
-                    db.execute("UPDATE reservations SET state='cancelling',cancel_batch=?,cancel_since=?,message='' WHERE id=?",(json.dumps(batch),time.time(),job))
+                    db.execute("UPDATE reservations SET state='cancelling',cancel_batch=?,cancel_since=?,cancel_final_state=?,message='' WHERE id=?",(json.dumps(batch),time.time(),final_state,job))
                 elif 'targets' in payload or not row['container_id']:
                     db.execute("UPDATE reservations SET state='cancelled',finished=? WHERE id=?",(time.time(),job))
                     payload=None
                 else:
                     operation=secrets.token_hex(16);payload['operation_id']=operation
-                    db.execute("UPDATE reservations SET state='cancelling',cancel_operation=?,cancel_since=?,message='' WHERE id=?",(operation,time.time(),job))
+                    db.execute("UPDATE reservations SET state='cancelling',cancel_operation=?,cancel_batch='[]',cancel_since=?,cancel_final_state=?,message='' WHERE id=?",(operation,time.time(),final_state,job))
             else: raise ControlError(400,'无效任务操作')
             db.execute('DELETE FROM confirmations WHERE token=?',(token,))
             return row,payload
 
     def resolve_cancel(self,job,success,message):
         with self.db() as db:
-            db.execute("UPDATE reservations SET state=?,message=?,finished=? WHERE id=? AND state='cancelling'",
-                       ('cancelled' if success else 'active',message,time.time() if success else None,job))
+            db.execute("""UPDATE reservations SET state=CASE WHEN ? THEN cancel_final_state ELSE 'active' END,
+                       message=CASE WHEN ? AND cancel_final_state='completed' THEN '已确认停止成功，结束登记已完成，队列已释放' ELSE ? END,
+                       finished=? WHERE id=? AND state='cancelling'""",
+                       (bool(success),bool(success),message,time.time() if success else None,job))
 
     def cancelling(self):
         with self.db() as db: return [dict(r) for r in db.execute("SELECT r.*,a.employee FROM reservations r JOIN accounts a ON a.id=r.account WHERE r.state='cancelling'")]

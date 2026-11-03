@@ -122,6 +122,21 @@ class QueueHTTPTests(unittest.IsolatedAsyncioTestCase):
         await self.post('confirm',confirm,self.one,expected=409)
         self.assertFalse(any(c[1]=='/queue/kill' for c in self.calls))
 
+    async def test_bound_finish_stops_then_marks_completed_in_both_modes(self):
+        for mode in ('process','container'):
+            job=await self.job();await self.act(job,'claim',self.one)
+            data={'job':job,'action':'finish','stop':True,'mode':mode}
+            preview=await self.post('preview',data,self.one)
+            await self.post('confirm',{**data,'token':preview['token'],'confirmed':True},self.one)
+            self.assertEqual(self.store.own(self.store.user(self.one),job)['state'],'cancelling')
+            calls=[c for c in self.calls if c[1]=='/queue/kill']
+            self.assertEqual(len(calls),1);self.assertEqual(calls[0][2]['request']['mode'],mode)
+            # A reloaded store retains finish-vs-cancel semantics.
+            from queue_store import QueueStore
+            reloaded=QueueStore(self.path);reloaded.resolve_cancel(job,True,'fixture ended')
+            self.assertEqual(reloaded.own(self.store.user(self.one),job)['state'],'completed')
+            self.calls.clear()
+
     async def test_admin_direct_stop_and_legacy_redirect(self):
         query={'node':'node-a','target':CID+'@'+START}
         r=await self.client.get('/a5-control/confirm',params=query,allow_redirects=False)

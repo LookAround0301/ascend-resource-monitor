@@ -171,6 +171,7 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
             if operation in ('preview','confirm'):
                 action=data.get('action');mode=data.get('mode','process')
                 if action not in ('claim','cancel','finish','direct','bind') or mode not in ('process','container'):raise ControlError(400,'无效操作')
+                if 'stop' in data and (action!='finish' or type(data['stop']) is not bool):raise ControlError(400,'无效停止选项')
                 if action=='direct':
                     await admin_identity(request)
                     parsed=parse_browser_payload({'node':data['node'],'target':data['target'],'confirmed':True})
@@ -189,28 +190,30 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                 if auto and action in ('cancel','finish') and row['state']=='active':current=await auto.fetch(row)
                 else:current={'processes':[],'node':row['node'],'container_id':row['container_id']} if queued else await snapshot(row)
                 current.update(node=row['node'],mode=mode)
+                if action=='finish':current['finish_stop']=data.get('stop',False)
                 if action in ('claim','bind') and current.get('policy')=='持续拦截':raise ControlError(409,'此容器处于持续拦截，需管理员先加入白名单')
                 if operation=='preview':
                     token=store.confirmation(person,job,action,current)
                     return web.json_response({'token':token,'snapshot':current,'queued':queued})
                 if data.get('confirmed') is not True:raise ControlError(400,'请先确认操作')
                 saved=store.confirm_payload(person,job,action,data.get('token'))
-                if saved.get('mode')!=mode or not QueueProcesses.same(saved,current):raise ControlError(409,'进程或容器状态已变化，请重新查看并确认')
-                event(person,action,job=job,node=row['node'],mode=mode,pids=[p['pid'] for p in current['processes']])
+                if (saved.get('mode')!=mode or saved.get('finish_stop',False)!=current.get('finish_stop',False)
+                        or not QueueProcesses.same(saved,current)):raise ControlError(409,'停止选项、进程或容器状态已变化，请重新查看并确认')
+                event(person,action,job=job,node=row['node'],mode=mode,finish_stop=current.get('finish_stop',False),pids=[p['pid'] for p in current['processes']])
                 if action=='direct':
                     store.consume_confirmation(data['token']);payload=saved;payload['operation_id']=secrets.token_hex(16)
                 else:row,payload=store.transition(person,job,action,data.get('token'))
-                if action in ('claim','finish','bind') or payload is None:
+                if action in ('claim','bind') or payload is None:
                     return web.json_response({'message':{'claim':'已登记开始，请自行启动任务；结束后回到本队列登记','finish':'已登记结束，下一位可以开始','bind':'容器已关联，可使用 Stop','cancel':'任务记录已取消；未向服务器发送停止指令'}[action]})
                 if 'operations' in payload:
                     await AutoQueue(store,agent).submit(row,payload,person,mode)
-                    return web.json_response({'message':'已提交 '+str(len(payload['operations']))+' 个匹配目标，正在核实停止结果','state':'pending'})
+                    return web.json_response({'message':'已提交 '+str(len(payload['operations']))+' 个匹配目标，停止成功后才会释放队列','state':'pending'})
                 try:
                     result=await agent(row['node'],'/queue/kill',{'request':{'operation_id':payload['operation_id'],'snapshot':saved,'mode':mode},'actor':person})
                 except ControlError as e:
                     if action!='direct':store.resolve_cancel(job,False,e.message)
                     raise
-                return web.json_response({'message':'取消请求已提交，正在核实进程状态','operation_id':payload['operation_id'],'node':row['node'],'state':result['state']})
+                return web.json_response({'message':'停止请求已提交，正在核实结果；任务停止成功后才会释放队列','operation_id':payload['operation_id'],'node':row['node'],'state':result['state']})
             raise ControlError(404,'未知接口')
         except ControlError as e:return web.json_response({'message':e.message},status=e.status,headers={'Cache-Control':'no-store'})
         except (ValueError,TypeError,KeyError):return web.json_response({'message':'参数无效，请刷新后重试'},status=400)

@@ -110,18 +110,22 @@ async function loadPreview(){
  try{
   const preview=await api('preview',request);if(version!==previewVersion)return;token=preview.token;const s=preview.snapshot;
   const noMatches=s.auto_match&&s.targets.length===0;
-  $('stop-modes').classList.toggle('hidden',!!(!['cancel','direct'].includes(operation.action)||preview.queued||s.unbound||noMatches));
+  $('stop-modes').classList.toggle('hidden',!!(!['cancel','direct','finish'].includes(operation.action)||preview.queued||s.unbound||noMatches||s.container_changed));
   $('confirm-target').textContent=s.auto_match?s.node+'\\n'+(noMatches?'未检测到该工号的 NPU 作业':s.targets.map(t=>t.container+' ['+t.container_id.slice(0,12)+']\\n工号：'+t.owner_employee+'\\nNPU PID：'+t.processes.map(p=>p.pid).join(', ')).join('\\n\\n')):s.node+'\\n'+(s.unbound?'未关联容器':(s.container||s.container_id))+(s.container_changed?'\\n原容器实例已结束，不会操作新实例。':'')+(s.unbound?'':'\\nNPU 进程：'+(s.processes.length?s.processes.map(p=>p.pid+' ('+p.name+')').join(', '):'无'));
   let warning;
   if(operation.action==='claim')warning='仅登记开始使用，服务由你自行启动；结束后请回到该队列登记。';
   else if(operation.action==='bind')warning='确认关联此容器及其中的 NPU 进程。容器归属由你自行确认；请勿关联他人或共用容器。';
-  else if(operation.action==='finish')warning=s.unbound?'仅登记结束并释放排队名额，不会停止服务器上的任何进程。请确认你的任务已结束。':s.processes.length?'仍有 NPU 进程，请先自行停止或使用 Stop。':'确认登记结束并让下一位开始。';
+  else if(operation.action==='finish'){
+   const stops=!s.unbound&&!noMatches&&!s.container_changed&&(s.processes.length>0||operation.mode==='container');
+   warning=stops?(operation.mode==='container'?(s.auto_match?'将停止上面列出的全部 '+s.targets.length+' 个容器，容器内所有进程都会中断。':'将停止整个容器，容器内所有进程都会中断。'):'将结束上面列出的 NPU 进程，必要时强制终止；容器会保留。')+'停止成功后才会完成结束登记并释放队列；失败或结果未确认时保留占用。':'未检测到需要停止的 NPU 进程，确认后结束登记并释放队列，不发送停止指令。';
+  }
   else warning=preview.queued||s.unbound||noMatches?'只取消队列记录，不操作容器或进程。':operation.mode==='container'?(s.auto_match?'将停止上面列出的全部 '+s.targets.length+' 个容器，容器内所有进程都会中断。':'将停止整个容器，容器内所有进程都会中断。'):'将结束上面列出的 NPU 进程，必要时强制终止；容器会保留。';
-  $('confirm-warning').textContent=warning;$('confirm-button').disabled=operation.action==='finish'&&s.processes.length>0;
+  $('confirm-warning').textContent=warning;$('confirm-button').disabled=false;
  }catch(e){if(version===previewVersion)$('confirm-warning').textContent=e.message;}
 }
 async function show(request,row){
  if(busy)return;operation={...request,mode:'process'};document.querySelector('input[name=mode][value=process]').checked=true;
+ if(request.action==='finish')operation.stop=true;
  $('confirm-title').textContent=({claim:'确认开始使用？',finish:'确认结束登记？',bind:'确认关联此容器？'})[request.action]||'确认 Stop / 取消任务？';
  $('confirm-description').textContent=row?row.node+' · '+row.title:'请核对主机、容器和进程';$('confirm-dialog').showModal();await loadPreview();
 }
