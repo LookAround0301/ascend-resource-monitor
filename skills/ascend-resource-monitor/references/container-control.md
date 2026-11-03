@@ -2,6 +2,8 @@
 
 Use this workflow only when the user asks to add container control. This is an optional capability, not part of the default read-only installer. Do not treat path or employee-ID clues as authorization.
 
+For the explicitly requested personal queue and process/container Stop selector, see [task-queue.md](task-queue.md). That extension replaces the confirmation destination while retaining the existing administrator-only API. The workflow below describes the base administrator-only container control.
+
 For the separately authorized automatic policy for unmapped employee IDs, see [container-guard.md](container-guard.md). Manual Stop keeps its administrator session and confirmation requirements; the persistent guard uses the explicitly enabled policy instead of a per-stop browser session.
 
 ## Components

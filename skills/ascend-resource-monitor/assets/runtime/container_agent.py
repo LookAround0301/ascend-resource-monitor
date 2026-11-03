@@ -9,7 +9,7 @@ import urllib.parse
 from control_common import ControlError, StopEngine, parse_browser_payload
 
 
-def make_handler(engine, guard=None):
+def make_handler(engine, guard=None, queue=None):
     class Handler(BaseHTTPRequestHandler):
         def reply(self, status, body):
             encoded = json.dumps(body, ensure_ascii=False).encode()
@@ -20,6 +20,19 @@ def make_handler(engine, guard=None):
             self.wfile.write(encoded)
 
         def do_GET(self):
+            if self.path.startswith('/queue/') and queue:
+                try:
+                    path=urllib.parse.urlsplit(self.path);q=urllib.parse.parse_qs(path.query,keep_blank_values=True)
+                    if any(len(v)!=1 for v in q.values()):raise ControlError(400,'重复查询参数')
+                    if path.path=='/queue/containers' and not q:result=queue.containers()
+                    elif path.path=='/queue/snapshot' and set(q)=={'container_id','expected'}:
+                        result=queue.snapshot(q['container_id'][0],q['expected'][0] or None)
+                    elif path.path=='/queue/operation' and set(q)=={'operation_id'}:result=queue.status(q['operation_id'][0])
+                    else:raise ControlError(404,'未知队列接口')
+                    self.reply(200,result)
+                except ControlError as e:self.reply(e.status,{'message':e.message})
+                except Exception:self.reply(503,{'message':'队列进程状态暂不可用'})
+                return
             if self.path == '/healthz':
                 self.reply(200, {'status':'ok'})
             elif self.path == '/guard' and guard:
@@ -38,19 +51,20 @@ def make_handler(engine, guard=None):
                 self.reply(404, {'message':'Not found'})
 
         def do_POST(self):
-            if self.path not in ('/stop', '/whitelist') or (self.path == '/whitelist' and not guard):
+            if self.path not in ('/stop', '/whitelist', '/queue/kill') or (self.path == '/whitelist' and not guard) or (self.path=='/queue/kill' and not queue):
                 self.reply(404, {'message':'Not found'}); return
             try:
                 length = int(self.headers.get('Content-Length','0'))
-                if not 0 < length <= 8192:
+                if not 0 < length <= 65536:
                     raise ControlError(400, '无效请求长度')
                 if self.headers.get('Content-Type','').split(';')[0] != 'application/json':
                     raise ControlError(415,'JSON required')
                 body = json.loads(self.rfile.read(length))
                 if set(body) != {'request','actor'}:
                     raise ControlError(400, '无效请求')
-                result = (guard.whitelist(body['request'], body['actor']) if self.path == '/whitelist'
-                          else engine.stop(body['request'],body['actor']))
+                if self.path=='/queue/kill':result=queue.submit(body['request'],body['actor'])
+                elif self.path=='/whitelist':result=guard.whitelist(body['request'],body['actor'])
+                else:result=engine.stop(body['request'],body['actor'])
                 self.reply(200, result)
             except ControlError as e:
                 self.reply(e.status, {'message':e.message})
@@ -72,7 +86,11 @@ def main():
     if config.get('guard'):
         from container_guard import ContainerGuard
         guard = ContainerGuard(engine)
-    server=ThreadingHTTPServer((config['listen_ip'],config.get('port',18084)),make_handler(engine, guard))
+    queue=None
+    if config.get('task_queue'):
+        from queue_processes import QueueProcesses
+        queue=QueueProcesses(engine,guard)
+    server=ThreadingHTTPServer((config['listen_ip'],config.get('port',18084)),make_handler(engine, guard, queue))
     server.daemon_threads=True
     context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); context.minimum_version=ssl.TLSVersion.TLSv1_2
     context.load_cert_chain(config['cert'],config['key']); context.load_verify_locations(config['ca'])

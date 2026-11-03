@@ -42,7 +42,7 @@ def https_context(config):
     return context
 
 
-def create_app(config, agent_override=None, describe_override=None, guard_override=None):
+def create_app(config, agent_override=None, describe_override=None, guard_override=None, queue_override=None):
     from aiohttp import web, ClientSession, ClientTimeout, DummyCookieJar, WSMsgType
     app=web.Application(client_max_size=8*1024*1024)
 
@@ -117,6 +117,8 @@ def create_app(config, agent_override=None, describe_override=None, guard_overri
         except ControlError as e: return web.json_response({'admin':False,'message':e.message},status=e.status)
 
     async def confirm(request):
+        if config.get('task_queue'):
+            raise web.HTTPFound('/a5-queue/control?'+request.query_string)
         back='/d/'+config.get('dashboard_uid','a5-dual-node')
         login='/login?'+urllib.parse.urlencode({'redirectTo':request.path_qs})
         try:
@@ -214,7 +216,7 @@ def create_app(config, agent_override=None, describe_override=None, guard_overri
         return web.json_response({'status':'ok'})
 
     async def forward(request):
-        if request.path.startswith('/a5-control/'):
+        if request.path.startswith(('/a5-control/','/a5-queue')):
             return web.json_response({'message':'Not found'},status=404)
         headers={k:v for k,v in request.headers.items() if k.lower() not in HOP}
         url=config['grafana_url']+request.raw_path
@@ -265,6 +267,9 @@ def create_app(config, agent_override=None, describe_override=None, guard_overri
     app.router.add_get('/a5-control/guard.js', guard_js)
     app.router.add_post('/a5-control/whitelist', whitelist)
     app.router.add_get('/a5-control/healthz',health)
+    if config.get('task_queue'):
+        from queue_http import install_queue
+        install_queue(app,config,read_identity,identity,queue_override)
     app.router.add_route('*','/{tail:.*}',forward)
     return app
 

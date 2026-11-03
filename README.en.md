@@ -21,6 +21,8 @@ Optional [administrator-only Stop controls](skills/ascend-resource-monitor/refer
 
 Optional [persistent container guard](skills/ascend-resource-monitor/references/container-guard.md): explicitly opt in to stopping NPU containers with an employee ID missing from the supplied name roster. Marks survive restarts until an administrator adds the container to the whitelist. Disabled by default; invalid or stale input pauses new marking.
 
+Optional [personal reservation queue](skills/ascend-resource-monitor/references/task-queue.md): users register an employee ID, name and password; an administrator verifies ownership and grants a container to that account. Submit, view and cancel reservations in the browser, with FIFO order per node and manual startup after claiming the head reservation. Users control their own reservations; administrators can control all. With this extension enabled, **Stop offers exact NPU processes or the entire container**, both with confirmation. Cancelling a waiting reservation sends no signals. Passwords are salted hashes. This is a usage register, not a scheduler that enforces external SSH activity; each reserved container must be exclusive to that task.
+
 ## Access: local launcher recommended, direct browser optional
 
 **Start with `Open-Monitor.cmd`**. Connect to the company network / VPN, then double-click the launcher to establish an SSH tunnel and open the dashboard. Keep its terminal open. This requires SSH connectivity and login permission from the client PC; it does not require direct access to the server's HTTPS port. `Install.cmd` creates a desktop shortcut.
@@ -45,6 +47,8 @@ Keep ordinary users read-only; require administrator login and confirmation when
 ```
 
 Dual-entry packaging and roster names are available in the repository source; install the Skill from this repository to use them. Published v0.2.0 packages retain the original local launcher and do not include these new features.
+
+Enable the queue separately using its reference; the Windows wizard does not enable personal control by default. Existing deployments keep their launcher and HTTPS address. The dashboard adds a task queue link.
 
 ## Install as a skill
 

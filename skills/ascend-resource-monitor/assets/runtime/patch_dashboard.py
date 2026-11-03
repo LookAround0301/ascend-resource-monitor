@@ -6,6 +6,19 @@ import re
 from pathlib import Path
 
 
+def add_queue_link(dashboard):
+    """Only call after the explicitly requested queue backend is installed."""
+    result=copy.deepcopy(dashboard)
+    result['links']=[x for x in result.get('links',[]) if x.get('title')!='任务排队 / 我的任务']+[
+        {'type':'link','title':'任务排队 / 我的任务','url':'/a5-queue','targetBlank':True,
+         'includeVars':False,'keepTime':False,'icon':'external link'}]
+    for panel in result['panels']:
+        if panel.get('title')=='按工号与目录汇总 · 仅 NPU 进程':
+            panel['description']='Stop 可选择停止 NPU 进程或整个容器，并需再次确认。个人账号只能操作已授权且登记使用的任务，管理员可操作全部。顶部“任务排队 / 我的任务”可注册、排队和管理授权。'
+    result['version']=result.get('version',1)+1
+    return result
+
+
 def add_guard_panel(dashboard, prefix='ascend'):
     """Only call for an explicitly provisioned persistent container guard."""
     result = copy.deepcopy(dashboard)
@@ -80,6 +93,7 @@ def add_stop_button(dashboard):
            'targetBlank':False,'includeVars':False,'keepTime':False,'icon':'signin'}
     result['links']=[x for x in result.get('links',[]) if x.get('title')!='管理员登录']+[login]
     result['version']=result.get('version',1)+1
+    if any(x.get('url')=='/a5-queue' for x in result['links']):return add_queue_link(result)
     return result
 
 
