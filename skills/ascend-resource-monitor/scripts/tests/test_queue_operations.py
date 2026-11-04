@@ -39,6 +39,50 @@ class QueueOperationTests(unittest.TestCase):
         self.assertEqual({r['id']:r['created'] for r in rows},before)
         self.queue.action({**self.users[0],'admin':True},b,'priority-down')
         self.assertEqual([r['id'] for r in self.queue.view(None)['tasks']],[first,a,b])
+    def test_user_can_lower_only_own_waiting_reservation(self):
+        first=self.add();self.claim(first)
+        a=self.add(self.users[1]);b=self.add(self.users[2]);c=self.add(self.users[1])
+        rows={r['id']:r for r in self.queue.view(self.users[1])['tasks']}
+        self.assertTrue(rows[a]['can_lower_priority'])
+        self.assertFalse(rows[b]['can_lower_priority'])
+        self.assertFalse(rows[c]['can_lower_priority'])
+        with self.assertRaises(ControlError):self.queue.action(self.users[1],b,'priority-down')
+        with self.assertRaises(ControlError):self.queue.action(self.users[0],first,'priority-down')
+        with self.assertRaises(ControlError):self.queue.action({**self.users[0],'admin':True},first,'priority-down')
+        self.queue.action(self.users[1],a,'priority-down')
+        self.assertEqual([r['id'] for r in self.queue.view(None)['tasks']],[first,b,a,c])
+    def test_ready_owner_defers_one_place_and_invalidates_offer(self):
+        a=self.add(self.users[0]);b=self.add(self.users[1]);c=self.add(self.users[2])
+        before=self.queue.view(self.users[0])['tasks'];offer=before[0]['offer_id']
+        self.assertTrue(before[0]['can_lower_priority'])
+        with self.assertRaises(ControlError):self.queue.action(self.users[1],a,'priority-down',offer)
+        with self.assertRaises(ControlError):self.queue.action(self.users[0],a,'priority-down','stale')
+        with self.assertRaises(ControlError):self.queue.action(self.users[0],a,'priority-down')
+        self.queue.action(self.users[0],a,'priority-down',offer)
+        rows=self.queue.view(self.users[0])['tasks']
+        self.assertEqual([r['id'] for r in rows],[b,a,c])
+        self.assertEqual([r['state'] for r in rows],['ready','queued','queued'])
+        self.assertEqual(rows[1]['created'],before[0]['created'])
+        self.assertEqual(rows[1]['allocations'],{})
+        self.assertEqual(rows[1]['missed_claims'],0)
+        with self.assertRaises(ControlError):self.queue.action(self.users[0],a,'claim',offer)
+        self.claim(b,self.users[1]);self.queue.action(self.users[1],b,'finish')
+        new=next(r for r in self.queue.view(self.users[0])['tasks'] if r['id']==a)
+        self.assertEqual(new['state'],'ready')
+        self.assertNotEqual(new['offer_id'],offer)
+        with self.assertRaises(ControlError):self.queue.action(self.users[0],a,'claim',offer)
+    def test_ready_tail_cannot_defer_and_other_ready_offer_is_not_preempted(self):
+        a=self.add(self.users[0])
+        self.assertFalse(self.queue.view(self.users[0])['tasks'][0]['can_lower_priority'])
+        offer=self.queue.view(self.users[0])['tasks'][0]['offer_id']
+        with self.assertRaises(ControlError):self.queue.action(self.users[0],a,'priority-down',offer)
+        b=self.queue.enqueue(self.users[1],{'machine':'b','cards':8,'requested_seconds':60,'notifications_ready':True})
+        before=self.queue.view(self.users[0])['tasks'];other=before[1]['offer_id']
+        self.queue.action(self.users[0],a,'priority-down',offer)
+        rows=self.queue.view(self.users[0])['tasks']
+        self.assertEqual([r['id'] for r in rows],[b,a])
+        self.assertEqual(rows[0]['offer_id'],other)
+        self.assertEqual(rows[0]['state'],'ready')
     def test_top_moves_directly_to_first_waiting_preserving_other_order_and_active(self):
         first=self.add();self.claim(first)
         a=self.add(self.users[1]);b=self.add(self.users[2]);c=self.add(self.users[1]);d=self.add(self.users[2])

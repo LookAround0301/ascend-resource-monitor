@@ -16,7 +16,7 @@ This guide describes the repository source as of 2026-11-04. Basic monitoring ca
 | Persistent guard | When explicitly enabled, intercept NPU containers with a valid employee ID but no mapped name; allowlist exemptions take precedence |
 | Navigation | One canonical homepage, including old-home redirects, preserved query parameters and Grafana client-side navigation |
 | Refresh | 1/5/10/30-second choices, default 1 second; queue polling follows the choice and pauses when automatic refresh is Off |
-| Queue operations | Administrator-only top/up/down waiting-priority adjustment, owner/next-user overdue notices and optional daily 09:00 reservation reset |
+| Queue operations | Owners can move their queued or ready reservations down one place; administrators can reorder waiting reservations; active reservations cannot be moved down |
 | Registration checks | Read-only process/queue matching, with unregistered-use annotations and online notifications; no automatic Stop |
 | Windows access | `Open-Monitor.cmd` for a local SSH tunnel, optional `Open-Web.cmd` for verified HTTPS, and a separate user guide |
 
@@ -32,12 +32,13 @@ Registration checks tolerate an exporter timestamp up to 15 seconds ahead of the
 | Two nodes | 2/4/8/16 cards in total, split 1+1 / 2+2 / 4+4 / 8+8 |
 | Card placement | Use available queue capacity; requests for 1–4 cards per node stay in one four-card group |
 | Duration | Defaults to 0 hours and 30 minutes; whole hours plus 0/5/10/…/55 minutes; normal tasks are at most two hours |
-| Reservation horizon | New tasks must start and finish by 09:00 on the next calendar day in the configured timezone |
+| Reservation horizon | Normal tasks finish by next-day 09:00; night tasks start between 20:00 and 09:00 and may finish later with a warning |
+| Scheduling priority | Unallocated normal tasks take priority over night tasks; already allocated or active night tasks are not preempted |
 | Claiming | Click Start use directly within at most ten minutes of allocation; an earlier scheduling deadline still applies |
 | Reminders | At allocation, then after 2, 4, 6, 8 and 9 minutes; keep the page open, signed in and notifications enabled |
 | Unclaimed offer | Release that allocation and move back one waiting position, preserving the original application time |
 | Completion | Stop the workload yourself, then confirm Finish registration; the button releases the reservation without stopping processes or containers |
-| Daily reset | When enabled, clear all reservation records at 09:00 without stopping workloads; prior registered container instances can continue |
+| Daily reset | When enabled, clear normal reservations at 09:00 and retain night reservations, without stopping workloads |
 
 Application time remains visible after a task starts. Offer deadlines and order are persisted; reloads or proxy restarts do not reset them. A stale offer ID cannot claim a new allocation. Consecutive simultaneous misses pass the next reservation as one block, moving each missed reservation one position; a trailing reservation stays at the end when nobody follows it.
 
@@ -157,15 +158,15 @@ python skills/ascend-resource-monitor/scripts/build_windows_package.py --mode cl
 | --- | --- |
 | Divergent default/new homes and missing queue after client-side navigation | Canonical home redirects and queue loading across both dashboard APIs |
 | Limited resource combinations | Separate machine/card selectors, automatic or fixed single-node placement, four balanced dual-node sizes |
-| Awkward hour-only entry and unbounded future reservations | Five-minute choices and a persisted next-day 09:00 horizon that also constrains delayed claims |
+| Awkward hour-only entry and unbounded future reservations | Five-minute choices, a normal-task 09:00 deadline and visible warnings for night tasks extending beyond 09:00 |
 | Allocations held without being claimed | Server-side ten-minute window, repeated reminders, one-position deferral and stale-offer rejection |
 | Extra Start dialog and disappearing application time | Direct claim, preserved application time, retained cancellation/completion confirmation |
 | Confusing allowlist/login flow | Administrator-only roster access, no redundant login link, cross-host synchronization and conflict checks |
 | Exempt containers mixed into active interception | Filter the active table while retaining stored marks |
 | Process/guard tables disappeared after collector updates | Configurable metric namespace and validation of actual returned series |
 | Inconsistent polling/access instructions | One-second default, four refresh choices, CMD fallback and synchronized handoff documentation |
-| Overdue use and rigid waiting order | Current/next-user notices, visible overdue status and administrator-only top/up/down priority adjustment |
-| Stale daily reservations and awkward duration defaults | Optional 09:00 clearing without workload interruption; 0-hour/30-minute defaults |
+| Overdue use and rigid waiting order | Current/next-user notices, visible overdue status, owner deferral and administrator priority adjustment |
+| Stale daily reservations and awkward duration defaults | Optional 09:00 clearing of normal reservations without workload interruption; night reservations remain visible |
 | AICore-only headline remained zero | Prefer device-wide utilization, with per-card fallback for older exporters |
 | Unregistered NPU use was hard to see | Fresh-source registration matching, informational status and online notices, with no automatic Stop |
 

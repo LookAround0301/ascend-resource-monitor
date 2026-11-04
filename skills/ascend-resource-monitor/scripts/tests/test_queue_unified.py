@@ -46,7 +46,7 @@ class UnifiedWindowTests(unittest.TestCase):
         with patch('queue_unified.time.time', return_value=self.now):
             self.assertEqual(self.queue.view(self.user)['reservation_window']['end'], self.deadline)
             self.add(night=True, not_before=self.deadline-90*60)
-            for start, seconds in [(self.deadline-60, 120), (self.deadline, 60),
+            for start, seconds in [(stamp('2026-11-04T19:59:00'), 120), (self.deadline+60, 60),
                                    (self.now-60, 60), (float('nan'), 60)]:
                 with self.assertRaises(ControlError): self.add(night=True, not_before=start, requested_seconds=seconds)
         # Before 9am still means the following calendar day's 9am.

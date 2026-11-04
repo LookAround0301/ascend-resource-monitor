@@ -6,6 +6,7 @@ import time
 import unittest
 from unittest.mock import patch
 import asyncio
+from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[2]/'assets/runtime'))
 try:
@@ -93,6 +94,29 @@ class ClaimHTTPTests(unittest.IsolatedAsyncioTestCase):
         self.admin=True;response=await self.post('unified-action',request)
         self.assertIn('置顶',response['message'])
         self.assertEqual([r['id'] for r in (await self.state())['tasks']],[first,a,b])
+
+    async def test_owner_can_defer_ready_via_http_without_admin(self):
+        first=await self.enqueue();second=await self.enqueue()
+        row=(await self.state())['tasks'][0]
+        payload={'job':first,'action':'priority-down','confirmed':True}
+        await self.post('unified-action',payload,409)
+        await self.post('unified-action',{**payload,'offer_id':row['offer_id']})
+        rows=(await self.state())['tasks']
+        self.assertEqual([r['id'] for r in rows],[second,first])
+        self.assertEqual([r['state'] for r in rows],['ready','queued'])
+        await self.post('unified-action',{'job':first,'action':'claim','confirmed':True,'offer_id':row['offer_id']},409)
+
+    async def test_night_over_nine_is_accepted_and_reported_by_api(self):
+        day=datetime.fromtimestamp(self.now,timezone.utc).date()+timedelta(days=1)
+        start=datetime.combine(day,datetime.min.time(),timezone.utc).replace(hour=20).timestamp()
+        self.clock.return_value=start-3600
+        payload={'machine':'a','cards':8,'requested_seconds':14*3600,'notifications_ready':True,
+                 'night':True,'not_before':start}
+        job=(await self.post('enqueue',payload))['job']
+        row=next(r for r in (await self.state())['tasks'] if r['id']==job)
+        self.assertEqual(row['estimated_start'],start)
+        self.assertTrue(row['night_end_overdue'])
+        self.assertFalse(row['window_expired'])
 
 
 if __name__=='__main__':unittest.main()

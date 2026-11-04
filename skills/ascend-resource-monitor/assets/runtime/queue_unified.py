@@ -76,6 +76,26 @@ class UnifiedQueue:
         tomorrow = datetime.fromtimestamp(now, self.timezone).date() + timedelta(days=1)
         return datetime.combine(tomorrow, daytime(9), self.timezone).timestamp()
 
+    def night_cutoff(self, start):
+        local = datetime.fromtimestamp(start, self.timezone)
+        day = local.date() if local.hour < 9 else local.date() + timedelta(days=1)
+        return datetime.combine(day, daytime(9), self.timezone).timestamp()
+
+    def normal_two_am(self, created):
+        local = datetime.fromtimestamp(created, self.timezone)
+        day = local.date() if local.hour < 2 else local.date() + timedelta(days=1)
+        return datetime.combine(day, daytime(2), self.timezone).timestamp()
+
+    def night_windows(self, now):
+        day = datetime.fromtimestamp(now, self.timezone).date()
+        result = []
+        for date in (day - timedelta(days=1), day):
+            start = datetime.combine(date, daytime(20), self.timezone).timestamp()
+            end = datetime.combine(date + timedelta(days=1), daytime(9), self.timezone).timestamp()
+            if end > now:
+                result.append({'start': max(start, now), 'end': end})
+        return result
+
     def reset_boundary(self, now):
         current = datetime.fromtimestamp(now, self.timezone)
         day = current.date() if current.hour >= 9 else current.date()-timedelta(days=1)
@@ -88,13 +108,13 @@ class UnifiedQueue:
         previous = db.execute("SELECT value FROM unified_meta WHERE key='reset_checkpoint'").fetchone()
         if previous and float(previous[0]) >= boundary:
             return
-        count = db.execute('SELECT COUNT(*) FROM unified_tasks').fetchone()[0]
-        for row in db.execute("SELECT r.allocations,a.employee FROM unified_tasks r JOIN accounts a ON a.id=r.account WHERE r.state='active'").fetchall():
+        count = db.execute('SELECT COUNT(*) FROM unified_tasks WHERE not_before=0').fetchone()[0]
+        for row in db.execute("SELECT r.allocations,a.employee FROM unified_tasks r JOIN accounts a ON a.id=r.account WHERE r.state='active' AND r.not_before=0").fetchall():
             for node in json.loads(row['allocations']):
                 db.execute('INSERT OR REPLACE INTO unified_continuing VALUES (?,?,?)',(node,row['employee'],boundary))
-        db.execute('DELETE FROM confirmations WHERE job IN (SELECT id FROM unified_tasks)')
-        db.execute('DELETE FROM reservations WHERE id IN (SELECT id FROM unified_tasks)')
-        db.execute('DELETE FROM unified_tasks')
+        db.execute('DELETE FROM confirmations WHERE job IN (SELECT id FROM unified_tasks WHERE not_before=0)')
+        db.execute('DELETE FROM reservations WHERE id IN (SELECT id FROM unified_tasks WHERE not_before=0)')
+        db.execute('DELETE FROM unified_tasks WHERE not_before=0')
         db.execute("INSERT OR REPLACE INTO unified_meta VALUES ('reset_checkpoint',?)", (str(boundary),))
         db.execute("INSERT OR REPLACE INTO unified_meta VALUES ('last_daily_reset',?)", (json.dumps({'at':boundary,'count':count}),))
 
@@ -106,7 +126,7 @@ class UnifiedQueue:
         result = []
         if reset and reset['count'] and 0 <= now-reset['at'] < 600:
             result.append({'id':'daily-reset:'+str(reset['at']), 'kind':'reset',
-                           'message':'上午 9 点已清空全部预约登记；实际任务未停止，仍需使用资源请重新登记。'})
+                           'message':'上午 9 点已清空普通任务预约登记；夜间任务保留，实际任务未停止。'})
         if not user:
             return result
         for row in rows:
@@ -125,7 +145,7 @@ class UnifiedQueue:
         return result
 
     def _expire_offers(self, db, now):
-        pending = [dict(row) for row in db.execute("SELECT * FROM unified_tasks WHERE state IN ('queued','ready') ORDER BY queue_order,rowid")]
+        pending = [dict(row) for row in db.execute("SELECT * FROM unified_tasks WHERE state IN ('queued','ready') ORDER BY (not_before>0),queue_order,rowid")]
         expired = [row for row in pending if row['state']=='ready' and row['claim_before'] and row['claim_before']<=now]
         missed = {row['id'] for row in expired if row['ready_since'] and now>=row['ready_since']+600}
         for row in expired:
@@ -140,9 +160,9 @@ class UnifiedQueue:
             if pending[i]['id'] not in missed:
                 order.append(pending[i]); i += 1; continue
             start = i
-            while i < len(pending) and pending[i]['id'] in missed:
+            while i < len(pending) and pending[i]['id'] in missed and bool(pending[i]['not_before']) == bool(pending[start]['not_before']):
                 i += 1
-            if i < len(pending):
+            if i < len(pending) and bool(pending[i]['not_before']) == bool(pending[start]['not_before']):
                 order.append(pending[i]); order.extend(pending[start:i]); i += 1
             else:
                 order.extend(pending[start:i])
@@ -156,7 +176,7 @@ class UnifiedQueue:
     def _schedule(self, db, now):
         self._reset_if_due(db, now)
         self._expire_offers(db, now)
-        rows = [dict(row) for row in db.execute("SELECT * FROM unified_tasks WHERE state IN ('ready','active','queued') ORDER BY queue_order,rowid")]
+        rows = [dict(row) for row in db.execute("SELECT * FROM unified_tasks WHERE state IN ('ready','active','queued') ORDER BY (not_before>0),queue_order,rowid")]
         busy, waiting = [], []
         for row in rows:
             if row['state'] in ('ready', 'active'):
@@ -169,7 +189,7 @@ class UnifiedQueue:
             else:
                 item = {'id': row['id'], 'cards': row['cards'], 'dual': bool(row['dual']),
                         'seconds': row['requested_seconds'] or 3600, 'not_before': row['not_before'],
-                        'finish_before': row['finish_before']}
+                        'finish_before': row['finish_before'] if not row['not_before'] else 0}
                 if row['fixed_node']:
                     item['allowed_nodes'] = [row['fixed_node']]
                 waiting.append(item)
@@ -179,7 +199,7 @@ class UnifiedQueue:
             prediction = predictions.get(row['id'])
             if prediction and prediction['start'] is not None and prediction['start'] <= now:
                 deadlines=[now+600]
-                if row['finish_before']:
+                if row['finish_before'] and not row['not_before']:
                     deadlines.append(row['finish_before'] - row['requested_seconds'])
                 for earlier in previous:
                     if earlier['start'] is None or earlier['start'] <= now:
@@ -201,7 +221,7 @@ class UnifiedQueue:
             predictions = self._schedule(db, now)
             rows = [dict(row) for row in db.execute('''SELECT r.*,a.employee,a.name FROM unified_tasks r
                 JOIN accounts a ON a.id=r.account WHERE r.state IN ('queued','ready','active')
-                ORDER BY r.queue_order,r.rowid''')]
+                ORDER BY (r.not_before>0),r.queue_order,r.rowid''')]
             reset_row=db.execute("SELECT value FROM unified_meta WHERE key='last_daily_reset'").fetchone()
             reset=json.loads(reset_row[0]) if reset_row else None
         alerts=self.alerts(rows,user,now,reset)
@@ -221,18 +241,24 @@ class UnifiedQueue:
             row['claim_remaining_seconds'] = max(0, row['claim_before']-now) if row['state']=='ready' else 0
             prediction = predictions.get(row['id'], {})
             row['estimated_start'] = prediction.get('start') if row['state'] == 'queued' else None
-            row['window_expired'] = bool(row['finish_before'] and now + row['requested_seconds'] > row['finish_before'] and row['state'] != 'active')
+            row['window_expired'] = bool(not row['not_before'] and row['finish_before'] and now + row['requested_seconds'] > row['finish_before'] and row['state'] != 'active')
+            estimated = row['activated'] if row['state']=='active' else now if row['state']=='ready' else prediction.get('start')
+            two_am = self.normal_two_am(row['created']) if not row['not_before'] else 0
+            row['normal_start_after_two'] = bool(two_am and row['state'] != 'active' and (now >= two_am or (estimated is not None and estimated >= two_am)))
+            row['normal_start_unknown'] = bool(two_am and row['state']=='queued' and estimated is None and now < two_am)
+            row['night_end_overdue'] = bool(row['not_before'] and row['finish_before'] and (now > row['finish_before'] or (estimated is not None and estimated + row['requested_seconds'] > row['finish_before'])))
             row['planned_allocations'] = prediction.get('allocations', {}) if row['state'] == 'queued' else {}
             row['node'] = ', '.join(row['allocations']) or row['fixed_node'] or '待分配'
             row['machine'] = 'dual' if row['dual'] else row['fixed_node'] or 'auto'
             row['total_cards'] = row['cards'] * (2 if row['dual'] else 1)
-        waiting=[row for row in rows if row['state']=='queued']
         for row in rows:
+            waiting=[r for r in rows if r['state']=='queued' and bool(r['not_before'])==bool(row['not_before'])]
+            pending=[r for r in rows if r['state'] in ('queued','ready') and bool(r['not_before'])==bool(row['not_before'])]
             row['can_raise_priority']=bool(user and user.get('admin') and row in waiting and waiting.index(row)>0)
-            row['can_lower_priority']=bool(user and user.get('admin') and row in waiting and waiting.index(row)<len(waiting)-1)
+            row['can_lower_priority']=bool(user and (row['mine'] or user.get('admin')) and row in pending and pending.index(row)<len(pending)-1)
         return {'user': user, 'tasks': rows, 'nodes': list(self.nodes), 'server_time': now, 'unified': True,
                 'alerts':alerts, 'daily_reset_enabled':self.daily_reset, 'last_daily_reset':reset,
-                'reservation_window': {'start': now, 'end': self.cutoff(now), 'timezone': str(self.timezone)}}
+                'reservation_window': {'start': now, 'end': self.cutoff(now), 'timezone': str(self.timezone), 'night_windows': self.night_windows(now)}}
 
     def enqueue(self, user, data):
         if data.get('notifications_ready') is not True:
@@ -265,10 +291,13 @@ class UnifiedQueue:
             raise ControlError(400, '预约开始时间无效')
         if night and start <= now:
             raise ControlError(400, '夜间预约需填写未来开始时间')
+        if night and not any(window['start'] <= start <= window['end'] for window in self.night_windows(now)):
+            raise ControlError(400, '夜间任务开始时间须在晚上 20:00 至次日 09:00 之间')
         if not night and start:
             raise ControlError(400, '普通任务无需填写预约开始时间')
-        finish_before = self.cutoff(now)
-        if max(now, start) + seconds > finish_before:
+        # Exactly 09:00 belongs to the preceding night, not the following one.
+        finish_before = self.night_cutoff(start - 0.001) if night else self.cutoff(now)
+        if not night and max(now, start) + seconds > finish_before:
             raise ControlError(400, '预约开始和预计结束时间都必须在次日上午 9 点前（含 9 点）')
         with self.store.db() as db:
             self._reset_if_due(db, now)
@@ -292,9 +321,16 @@ class UnifiedQueue:
             if not row:
                 raise ControlError(404, '任务不存在')
             if action in ('priority-up','priority-down','priority-top'):
-                if not user.get('admin'):
+                if action != 'priority-down' and not user.get('admin'):
                     raise ControlError(403,'仅管理员可调整排队优先级')
-                waiting=db.execute("SELECT id,queue_order FROM unified_tasks WHERE state='queued' ORDER BY queue_order,rowid").fetchall()
+                if action == 'priority-down' and row['account'] != user['id'] and not user.get('admin'):
+                    raise ControlError(403,'只能调低自己的预约')
+                if action == 'priority-down' and row['state'] == 'ready' and (not offer_id or offer_id != row['offer_id']):
+                    raise ControlError(409,'这次资源分配已失效，请刷新后查看当前排队状态')
+                if action == 'priority-down' and row['state'] == 'queued' and offer_id:
+                    raise ControlError(409,'这次资源分配已失效，请刷新后查看当前排队状态')
+                states = "('queued','ready')" if action == 'priority-down' else "('queued')"
+                waiting=db.execute("SELECT id,queue_order FROM unified_tasks WHERE state IN "+states+" AND (not_before>0)=? ORDER BY queue_order,rowid", (int(bool(row['not_before'])),)).fetchall()
                 index=next((i for i,r in enumerate(waiting) if r['id']==job),None)
                 if index is None:
                     raise ControlError(409,'仅等待中的预约可调整优先级')
@@ -309,6 +345,8 @@ class UnifiedQueue:
                 other=index+(-1 if action=='priority-up' else 1)
                 if not 0<=other<len(waiting):
                     raise ControlError(409,'已到等待队列边界')
+                if row['state'] == 'ready':
+                    db.execute("UPDATE unified_tasks SET state='queued',allocations='{}',claim_before=0,ready_since=0,offer_id='' WHERE id=?", (job,))
                 db.execute('UPDATE unified_tasks SET queue_order=? WHERE id=?',(waiting[other]['queue_order'],job))
                 db.execute('UPDATE unified_tasks SET queue_order=? WHERE id=?',(waiting[index]['queue_order'],waiting[other]['id']))
                 self._schedule(db,now)
@@ -318,7 +356,7 @@ class UnifiedQueue:
             if action == 'claim' and row['state'] == 'ready':
                 if offer_id is not None and offer_id != row['offer_id']:
                     raise ControlError(409, '这次资源分配已失效，请刷新后查看当前排队状态')
-                if row['finish_before'] and now + row['requested_seconds'] > row['finish_before']:
+                if not row['not_before'] and row['finish_before'] and now + row['requested_seconds'] > row['finish_before']:
                     raise ControlError(409, '剩余预约时段不足，请取消后重新预约')
                 db.execute("UPDATE unified_tasks SET state='active',activated=? WHERE id=?", (now, job))
             elif action == 'finish' and row['state'] == 'active':
