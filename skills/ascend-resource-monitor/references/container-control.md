@@ -22,6 +22,8 @@ Native Actions cells can appear empty when their frontend permission context dis
 
 Keep the existing externally tunneled port stable. For example, move Grafana from loopback 3000 to free loopback 3001 and put the control proxy on loopback 3000. Forward normal HTTP/WebSocket traffic to Grafana. Reserve `/a5-control/*` for the control API. Back up the previous ini and dashboard first; roll back the port change if proxy health fails.
 
+To use one stable dashboard URL, set the optional proxy `canonical_dashboard_path` to a local path under its configured dashboard UID, for example `/d/a5-dual-node/a5-server`. The proxy redirects `/` and `/d/default-home-dashboard/...` to that path, and returns it from the Grafana home-discovery API. Time range and filter query parameters are preserved. The setting does not redirect unrelated dashboards or change account permissions.
+
 Run the proxy under its own unprivileged service account, separate from Grafana and without Docker socket access. Run each small host agent under an account authorized to access the local Docker socket; bind it only to the explicit monitoring-network IP. Require mutual TLS between proxy and agents. Issue separate server certificates with exact IP SANs and one client certificate for the proxy. Protect private keys and keep them out of Git, releases, logs and dashboard configuration.
 
 Example proxy configuration (adapt paths/addresses):

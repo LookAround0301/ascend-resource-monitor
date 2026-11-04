@@ -41,7 +41,7 @@ def dashboard(c):
     for p in panels:
         p['datasource']['uid'] = c['id'] + '-prometheus'
     labels = [n['name'] for n in c['nodes']]
-    dashboard={'uid':c['id'],'title':c['title'],'tags':['Ascend','resource-monitor'],'timezone':'browser','schemaVersion':39,'version':1,'refresh':'5s','editable':False,
-               'time':{'from':'now-30m','to':'now'},'timepicker':{'refresh_intervals':['5s','10s','30s','1m','5m']},'panels':panels,
+    dashboard={'uid':c['id'],'title':c['title'],'tags':['Ascend','resource-monitor'],'timezone':'browser','schemaVersion':39,'version':1,'refresh':'1s','editable':False,
+               'time':{'from':'now-30m','to':'now'},'timepicker':{'refresh_intervals':['1s','5s','10s','30s']},'panels':panels,
                'templating':{'list':[{'name':'node','label':'主机','type':'custom','query':','.join(labels),'multi':True,'includeAll':True,'allValue':'.*','current':{'text':'All','value':'$__all'}}]}}
     return dashboard

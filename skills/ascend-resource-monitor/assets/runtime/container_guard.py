@@ -108,7 +108,26 @@ class ContainerGuard:
     def policy(self, cid):
         entry = self.entries().get(cid)
         if not entry: return '未标记'
-        return '白名单' if entry['whitelisted'] else ('持续拦截' if entry.get('marked_at') else '未标记')
+        return '白名单' if entry['whitelisted'] or entry.get('personnel_whitelisted') else ('持续拦截' if entry.get('marked_at') else '未标记')
+
+    def personnel_exempt(self, cid, entry):
+        allowed = False
+        ids = entry.get('employee_ids', [])
+        if ids and self.config.get('owners_file'):
+            mapping = json.loads(Path(self.config['owners_file']).read_text(encoding='utf-8'))
+            names = mapping.get('employee_names')
+            if not isinstance(names, dict) or not names or any(
+                    not EMPLOYEE.fullmatch(k) or not employee_name_for(k, mapping) for k in names):
+                raise ValueError('Cannot verify personnel allowlist')
+            allowed = all(isinstance(e, str) and EMPLOYEE.fullmatch(e) and employee_name_for(e, mapping) for e in ids)
+        if bool(entry.get('personnel_whitelisted')) != bool(allowed):
+            self.engine.write_audit({'action': 'container.guard.personnel-exemption',
+                                     'node': self.engine.config['node'], 'container_id': cid,
+                                     'employee_ids': ids, 'allowed': bool(allowed)})
+            entry['personnel_whitelisted'] = bool(allowed)
+            entry['last_result'] = '人员白名单，跳过自动拦截' if allowed else '已移出人员白名单'
+            self.save()
+        return bool(allowed)
 
     def snapshot(self):
         with self.engine.lock:
@@ -171,6 +190,7 @@ class ContainerGuard:
 
     def enforce(self, cid, entry):
         if entry['whitelisted'] or not entry.get('marked_at'): return
+        if self.personnel_exempt(cid, entry): return
         try: info = self.engine.docker.inspect(cid)
         except ControlError as e:
             if e.status == 404:

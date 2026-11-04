@@ -10,6 +10,8 @@ from queue_processes import QueueProcesses
 from queue_ui import QUEUE_HTML, QUEUE_JS
 from queue_metrics import render_queue_metrics
 from queue_auto import AutoQueue
+from queue_unified import UnifiedQueue
+from queue_unified_ui import HOME_JS
 
 COOKIE='a5_queue_session'
 
@@ -28,7 +30,8 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
             if response.status!=200: raise ControlError(response.status,result.get('message','主机状态暂不可用'))
             return result
 
-    auto=AutoQueue(store,agent) if settings.get('auto_match_employee') else None
+    unified=UnifiedQueue(store, config['nodes'], settings.get('reservation_buffer_seconds',600), settings.get('timezone','UTC')) if settings.get('unified_queue') is True else None
+    auto=AutoQueue(store,agent) if not unified and settings.get('auto_match_employee') else None
 
     async def actor(request,required=True):
         person=store.user(request.cookies.get(COOKIE))
@@ -71,7 +74,9 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
     async def lifecycle(app):
         async def poll():
             while True:
-                try: await reconcile()
+                try:
+                    if unified: await asyncio.to_thread(unified.tick)
+                    else: await reconcile()
                 except Exception: pass
                 if auto:
                     try:await auto.refresh()
@@ -94,14 +99,21 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
         audit(config['audit_log'],{'action':'queue.'+action,'actor':{k:user[k] for k in ('id','employee','name','admin') if k in user},**fields})
 
     async def page(request):
+        if unified:
+            raise web.HTTPFound('/d/'+config.get('dashboard_uid','a5-dual-node'), headers={'Cache-Control':'no-store'})
         return web.Response(text=QUEUE_HTML.replace('__BACK__','/d/'+config.get('dashboard_uid','a5-dual-node')),
                             content_type='text/html',headers={'Cache-Control':'no-store','X-Frame-Options':'DENY',
             'Content-Security-Policy':"default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'"})
 
-    async def javascript(request):return web.Response(text=QUEUE_JS,content_type='application/javascript',headers={'Cache-Control':'no-store'})
+    async def javascript(request):return web.Response(text=HOME_JS if unified else QUEUE_JS,content_type='application/javascript',headers={'Cache-Control':'no-store'})
 
     async def metrics(request):
-        return web.Response(text=render_queue_metrics(store.view(None)['tasks'],list(config['nodes']),time.time(),
+        rows=store.view(None)['tasks'] if not unified else unified.view(None)['tasks']
+        if unified:
+            rows=[{**row,'node':node,'state':'queued' if row['state']=='ready' else row['state'], 'container':'',
+                   'title':('双机共 '+str(row['total_cards'])+' 卡（各 '+str(row['cards'])+' 卡）') if row['dual'] else '单机 '+str(row['cards'])+' 卡'}
+                  for row in rows for node in (list(row['allocations']) or ([row['fixed_node']] if row['fixed_node'] else []))]
+        return web.Response(text=render_queue_metrics(rows,list(config['nodes']),time.time(),
                             settings.get('metric_prefix','ascend'),settings.get('timezone','UTC')),
                             content_type='text/plain',headers={'Cache-Control':'no-store'})
 
@@ -110,7 +122,9 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
             operation=request.match_info['operation']
             if request.method=='GET':
                 person=await actor(request,required=False)
-                if operation=='state':return web.json_response({**store.view(person),'nodes':list(config['nodes']),'server_time':time.time(),'auto_match_employee':auto is not None},headers={'Cache-Control':'no-store','Vary':'Cookie, Authorization'})
+                if operation=='state':return web.json_response(unified.view(person) if unified else {**store.view(person),'nodes':list(config['nodes']),'server_time':time.time(),'auto_match_employee':auto is not None},headers={'Cache-Control':'no-store','Vary':'Cookie, Authorization'})
+                if unified and operation in ('containers','operation','control-context'):
+                    raise ControlError(404,'统一队列不提供网页停止或容器关联')
                 if operation=='containers':
                     if not person:raise ControlError(401,'请先登录个人账号')
                     return web.json_response(await agent(request.query['node'],'/queue/containers'),headers={'Cache-Control':'no-store'})
@@ -159,6 +173,21 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
             if operation=='logout':
                 store.logout(request.cookies.get(COOKIE,''));response=web.json_response({'message':'个人账号已退出'})
                 response.del_cookie(COOKIE,path='/a5-queue');return response
+            if unified:
+                if operation=='enqueue':
+                    if not person['registered']:raise ControlError(400,'提交预约前请先登录个人账号')
+                    event(person,'enqueue_unified')
+                    job=unified.enqueue(person,data)
+                    return web.json_response({'message':'已加入统一队列','job':job})
+                if operation=='unified-action':
+                    if data.get('confirmed') is not True:raise ControlError(400,'请先确认操作')
+                    action=data.get('action');job=data.get('job')
+                    if action=='claim' and (not isinstance(data.get('offer_id'),str) or not data['offer_id']):
+                        raise ControlError(409,'请刷新页面后直接点击“开始使用”')
+                    event(person,'unified_'+str(action),job=job)
+                    unified.action(person,job,action,data.get('offer_id'))
+                    return web.json_response({'message':{'claim':'已登记开始，请自行启动任务','finish':'已结束登记，预约资源已释放','cancel':'已取消预约'}[action]})
+                raise ControlError(404,'统一队列不提供网页停止或容器关联')
             if operation=='enqueue':
                 if not person['registered']:raise ControlError(400,'提交自己的预约前，请先注册个人账号')
                 node=data.get('node');cid=data.get('container_id','')
@@ -221,7 +250,9 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
 
     app.router.add_get('/a5-queue',page)
     app.router.add_get('/a5-queue/control',page)
+    app.router.add_get('/a5-queue/home',page)
     app.router.add_get('/a5-queue/queue.js',javascript)
+    app.router.add_get('/a5-queue/home.js',javascript)
     app.router.add_get('/a5-queue/metrics',metrics)
     app.router.add_route('GET','/a5-queue/api/{operation}',api)
     app.router.add_route('POST','/a5-queue/api/{operation}',api)

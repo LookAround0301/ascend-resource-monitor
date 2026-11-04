@@ -44,6 +44,22 @@ function Assert-SharedUrl([string]$Value) {
     }
 }
 
+function Get-ClientDashboardUrl($Config) {
+    $path = "/d/$($Config.dashboard_uid)"
+    # A verified HTTPS shortcut can name the same dashboard's canonical slug.
+    # Retain the independent SSH fallback if that optional URL is invalid.
+    if ($Config.shared_url) {
+        try {
+            Assert-SharedUrl ([string]$Config.shared_url)
+            $shared = [Uri]([string]$Config.shared_url)
+            if ($shared.AbsolutePath -ceq $path -or $shared.AbsolutePath.StartsWith($path + '/', [StringComparison]::Ordinal)) {
+                $path = $shared.AbsolutePath + $shared.Query
+            }
+        } catch { }
+    }
+    return "http://127.0.0.1:$($Config.local_port)$path"
+}
+
 function Get-SshOptions($Node, [string]$IdentityFile, [switch]$Scp) {
     $result = @('-o', 'ConnectTimeout=15', '-o', 'StrictHostKeyChecking=accept-new', '-o', 'ServerAliveInterval=30', '-o', 'ServerAliveCountMax=3')
     if ($Scp) { $result += @('-P', [string]$Node.ssh_port) } else { $result += @('-p', [string]$Node.ssh_port) }

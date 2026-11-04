@@ -10,7 +10,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'assets/runtime'))
 from container_guard import ContainerGuard, load_candidates
 from control_common import ControlError, StopEngine
-from process_exporter import guard_metrics
+from process_exporter import guard_metrics, metric_lines
 from patch_dashboard import add_guard_panel
 
 CID = 'a' * 64
@@ -33,6 +33,17 @@ class Docker:
 
 
 class GuardTests(unittest.TestCase):
+    def test_custom_metric_prefix_preserves_guard_records_and_label_values(self):
+        lines=['# TYPE ascend_container_guard_info gauge',
+               'ascend_container_guard_info{container="ascend_keep",employee_ids="j30064796",guard_state="持续拦截"} 1',
+               'ascend_process_inventory_success 1']
+        renamed=metric_lines(lines,'a5')
+        self.assertEqual(renamed[0],'# TYPE a5_container_guard_info gauge')
+        self.assertEqual(renamed[1],'a5_container_guard_info{container="ascend_keep",employee_ids="j30064796",guard_state="持续拦截"} 1')
+        self.assertEqual(renamed[2],'a5_process_inventory_success 1')
+        self.assertEqual(metric_lines(lines),lines)
+        with self.assertRaises(ValueError): metric_lines(lines,'bad-prefix')
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -76,6 +87,27 @@ class GuardTests(unittest.TestCase):
         self.assertIsNone(self.guard.entries()[CID]['marked_at'])
         self.allow(False); self.guard.next_discovery = 0; self.guard.scan()
         self.assertEqual(self.docker.calls, [CID])
+
+    def test_personnel_allowlist_overrides_existing_mark_and_deletion_restores(self):
+        owners=Path(self.temp.name)/'owners.json'
+        owners.write_text(json.dumps({'employee_names':{'a12345678':'Existing'}}),encoding='utf-8')
+        self.config['guard']['owners_file']=str(owners)
+        self.guard.scan()
+        self.assertEqual(len(self.docker.calls),1)
+        owners.write_text(json.dumps({'employee_names':{'a12345678':'Existing','z12345678':'Allowed'}}),encoding='utf-8')
+        self.docker.info['State']={'Running':True,'StartedAt':'2026-11-03T02:00:00Z'}
+        self.guard.scan()
+        self.assertEqual(len(self.docker.calls),1)
+        self.assertEqual(self.guard.policy(CID),'白名单')
+        self.assertIn('guard_state="白名单"','\n'.join(guard_metrics(self.path)))
+        self.assertTrue(self.guard.entries()[CID]['marked_at'])
+        owners.write_text('{broken',encoding='utf-8')
+        self.guard.scan()
+        self.assertEqual(len(self.docker.calls),1)
+        owners.write_text(json.dumps({'employee_names':{'a12345678':'Existing'}}),encoding='utf-8')
+        self.guard.scan()
+        self.assertEqual(len(self.docker.calls),2)
+        self.assertEqual(self.guard.policy(CID),'持续拦截')
 
     def test_disabled_stale_foreign_protected_and_non_npu_are_not_marked(self):
         variants = ['disabled', 'stale', 'foreign', 'protected', 'k8s', 'non_npu', 'reused_pid']
@@ -132,9 +164,16 @@ class GuardTests(unittest.TestCase):
         self.assertIn('guard_state="白名单"', '\n'.join(guard_metrics(self.path)))
         old = {'uid': 'test', 'panels': [{'id': 20, 'gridPos': {'y': 4}, 'title': 'original'}]}
         patched = add_guard_panel(old)
+        self.assertIn('guard_state="持续拦截"',patched['panels'][-1]['targets'][0]['expr'])
         self.assertEqual(len(patched['panels']), 2)
         self.assertEqual(add_guard_panel(patched)['panels'], patched['panels'])
         self.assertEqual(old['panels'][0]['gridPos']['y'], 4)
+        legacy = json.loads(json.dumps(patched))
+        legacy['panels'][-1]['title'] = '容器管控 · 持续拦截与白名单'
+        legacy['panels'][-1]['targets'][0]['expr'] = 'a5_container_guard_info{node=~"$node"}'
+        updated = add_guard_panel(legacy, 'a5')
+        self.assertEqual(len(updated['panels']),2)
+        self.assertEqual(updated['panels'][-1]['targets'][0]['expr'],'a5_container_guard_info{node=~"$node",guard_state="持续拦截"}')
 
     def test_reader_uses_real_roster_and_requires_complete_fresh_source(self):
         owners = Path(self.temp.name) / 'owners.json'

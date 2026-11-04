@@ -45,6 +45,12 @@ def https_context(config):
 def create_app(config, agent_override=None, describe_override=None, guard_override=None, queue_override=None):
     from aiohttp import web, ClientSession, ClientTimeout, DummyCookieJar, WSMsgType
     app=web.Application(client_max_size=8*1024*1024)
+    canonical_home=config.get('canonical_dashboard_path')
+    if canonical_home is not None:
+        uid_path='/d/'+urllib.parse.quote(config.get('dashboard_uid','a5-dual-node'),safe='')
+        if (not isinstance(canonical_home,str) or not (canonical_home==uid_path or canonical_home.startswith(uid_path+'/'))
+                or any(c in canonical_home for c in ('?','#','\\')) or '..' in canonical_home.split('/')):
+            raise ValueError('Canonical dashboard must be a local path for the configured dashboard UID')
 
     async def lifespan(app):
         app['http']=ClientSession(cookie_jar=DummyCookieJar(),auto_decompress=False,
@@ -78,7 +84,7 @@ def create_app(config, agent_override=None, describe_override=None, guard_overri
         if not state['authenticated']:
             raise ControlError(401,'请先从面板的“管理员登录”入口登录 Grafana 管理员账号')
         if not state['admin']:
-            raise ControlError(403,'只有 Grafana 管理员可以停止容器；当前账号仅可查看')
+            raise ControlError(403,'此操作需要 Grafana 管理员权限；当前账号仅可查看')
         return state['user']
 
     async def stop(request):
@@ -197,13 +203,29 @@ def create_app(config, agent_override=None, describe_override=None, guard_overri
     async def guard_js(request):
         return web.Response(text=GUARD_JS, content_type='application/javascript', headers={'Cache-Control': 'no-store'})
 
+    from personnel_roster import install_roster
+    install_roster(app, config, read_identity, identity, guard_call)
+
     async def personalized_dashboard(data,request):
         # Grafana can load either the legacy DTO or a Kubernetes-style resource.
         model=data.get('dashboard') or data.get('spec') or {}
+        panels=model.get('panels', [])+[p.get('spec', {}) for p in model.get('elements', {}).values()]
+        for panel in panels:
+            if panel.get('title')=='容器管控 · 持续拦截与白名单': panel['title']='容器管控 · 持续拦截'
+        for link in model.get('links', []):
+            if link.get('url') == '/a5-control/guard': link['title'] = '人员白名单'
+        if (config.get('task_queue',{}).get('unified_queue') is True
+                and (model.get('uid') or data.get('metadata',{}).get('name')) in
+                (config.get('dashboard_uid','a5-dual-node'), 'default-home-dashboard')):
+            from patch_dashboard import add_queue_home_panel
+            updated=add_queue_home_panel(model,list(config['nodes']))
+            model.clear();model.update(updated)
         links=model.get('links',[])
-        if not any(x.get('title')=='管理员登录' for x in links):return data
+        if not any(x.get('title')=='管理员登录' or x.get('url')=='/a5-control/guard' for x in links):return data
         try:state=await read_identity(request)
         except ControlError:state={'authenticated':False,'admin':False,'user':None}
+        if not state['admin']:
+            model['links'] = [link for link in links if link.get('url') != '/a5-control/guard']
         for link in links:
             if link.get('title')!='管理员登录':continue
             if state['authenticated']:
@@ -216,10 +238,20 @@ def create_app(config, agent_override=None, describe_override=None, guard_overri
         return web.json_response({'status':'ok'})
 
     async def forward(request):
+        if canonical_home and request.method=='GET':
+            query=request.rel_url.raw_query_string
+            target=canonical_home+('?' + query if query else '')
+            if request.path=='/api/dashboards/home':
+                return web.json_response({'redirectUri':target},headers={'Cache-Control':'no-store'})
+            if request.path in ('/','/d/default-home-dashboard') or request.path.startswith('/d/default-home-dashboard/'):
+                raise web.HTTPFound(target,headers={'Cache-Control':'no-store'})
         if request.path.startswith(('/a5-control/','/a5-queue')):
             return web.json_response({'message':'Not found'},status=404)
         headers={k:v for k,v in request.headers.items() if k.lower() not in HOP}
         url=config['grafana_url']+request.raw_path
+        queue_shell=(config.get('task_queue',{}).get('unified_queue') is True
+                     and request.method=='GET' and ('text/html' in request.headers.get('Accept','')
+                     or request.path=='/' or request.path.startswith('/d/')))
         if request.headers.get('Upgrade','').lower()=='websocket':
             try:
                 async with app['http'].ws_connect(url,headers=headers) as upstream:
@@ -246,10 +278,21 @@ def create_app(config, agent_override=None, describe_override=None, guard_overri
                         return web.json_response(await personalized_dashboard(data,request),headers={'Cache-Control':'no-store','Vary':'Cookie, Authorization'})
                     return web.Response(status=upstream.status,body=await upstream.read(),content_type='application/json')
             async with app['http'].request(request.method,url,headers=headers,data=request.content,
-                                           allow_redirects=False) as upstream:
+                                           allow_redirects=False,auto_decompress=queue_shell) as upstream:
+                if queue_shell and upstream.content_type=='text/html' and upstream.status==200:
+                    html=await upstream.text()
+                    injection='<script src="/a5-queue/home.js" defer></script>'
+                    html=html.replace('</body>',injection+'</body>')
+                    response=web.Response(status=upstream.status,text=html,content_type='text/html')
+                    for k,v in upstream.headers.items():
+                        if k.lower() not in HOP|{'content-length','content-encoding','content-type','etag','cache-control'}:
+                            if k.lower()=='set-cookie':v=browser_cookie(v,request.secure)
+                            response.headers.add(k,v)
+                    response.headers['Cache-Control']='no-store'
+                    return response
                 response=web.StreamResponse(status=upstream.status,reason=upstream.reason)
                 for k,v in upstream.headers.items():
-                    if k.lower() not in HOP:
+                    if k.lower() not in HOP and not (queue_shell and k.lower() in {'content-encoding','content-length'}):
                         if k.lower()=='set-cookie':v=browser_cookie(v,request.secure)
                         response.headers.add(k,v)
                 await response.prepare(request)

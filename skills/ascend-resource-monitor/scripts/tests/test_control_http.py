@@ -126,7 +126,7 @@ class ProxyTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(r.status,(400,403))
         self.assertFalse(self.guard_calls)
         r=await self.client.get('/a5-control/guard',headers=self.headers('Admin'))
-        self.assertEqual(r.status,200);self.assertIn('id="allow-form"',await r.text())
+        self.assertEqual(r.status,200);self.assertIn('id="add-form"',await r.text())
         self.assertFalse(self.guard_calls)
         r=await self.client.post('/a5-control/whitelist',json=body,headers=self.headers('Admin'))
         self.assertEqual(r.status,200);self.assertEqual(len(self.guard_calls),1)

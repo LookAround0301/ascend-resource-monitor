@@ -5,7 +5,7 @@ try {
     Assert-Client $config
     if ($ValidateOnly) { Write-Output 'Client configuration valid'; exit 0 }
     $ssh = Get-Command ssh.exe -ErrorAction Stop
-    $url = "http://127.0.0.1:$($config.local_port)/d/$($config.dashboard_uid)"
+    $url = Get-ClientDashboardUrl $config
     $api = "http://127.0.0.1:$($config.local_port)/api/dashboards/uid/$($config.dashboard_uid)"
     function Test-Dashboard([string]$Api, [string]$Uid) {
         $response = $null; $reader = $null

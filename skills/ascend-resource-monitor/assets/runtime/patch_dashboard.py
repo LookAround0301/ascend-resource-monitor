@@ -6,6 +6,59 @@ import re
 from pathlib import Path
 
 
+def add_queue_home_panel(dashboard, nodes):
+    """Replace the per-node queue tables with one interactive homepage region."""
+    result = copy.deepcopy(dashboard)
+    result['links'] = [link for link in result.get('links', [])
+                       if link.get('url') != '/a5-queue' and link.get('title') != '任务排队 / 我的任务']
+    title = '排队与资源分配'
+    content = '<div style="height:100%;overflow:auto"><a href="/a5-queue/home">正在加载预约功能…</a></div>'
+    if 'elements' in result:
+        elements=result['elements']
+        if any(p.get('spec',{}).get('title')==title for p in elements.values()):
+            return result
+        if result.get('layout',{}).get('kind')!='GridLayout':
+            raise ValueError('Queue homepage requires a grid dashboard layout')
+        old_titles={node+' 排队情况' for node in nodes}
+        keys={key for key,p in elements.items() if p.get('spec',{}).get('title') in old_titles}
+        items=result['layout']['spec']['items']
+        old_items=[item for item in items if item['spec'].get('element',{}).get('name') in keys]
+        anchor=min((p['spec']['y'] for p in old_items),default=10)
+        bottom=max((p['spec']['y']+p['spec']['height'] for p in old_items),default=anchor)
+        remaining=[item for item in items if item not in old_items]
+        for item in remaining:
+            if item['spec']['y']>=bottom:item['spec']['y']+=20-(bottom-anchor)
+        panel_id=min((elements[key]['spec']['id'] for key in keys),default=max((p['spec']['id'] for p in elements.values()),default=0)+1)
+        for key in keys:del elements[key]
+        key='panel-'+str(panel_id)
+        elements[key]={'kind':'Panel','spec':{'id':panel_id,'title':title,'links':[],
+                       'data':{'kind':'QueryGroup','spec':{'queries':[],'transformations':[],'queryOptions':{}}},
+                       'vizConfig':{'kind':'VizConfig','group':'text','version':'','spec':{
+                           'options':{'mode':'html','content':content},'fieldConfig':{'defaults':{},'overrides':[]}}}}}
+        remaining.append({'kind':'GridLayoutItem','spec':{'x':0,'y':anchor,'width':24,'height':20,
+                          'element':{'kind':'ElementReference','name':key}}})
+        result['layout']['spec']['items']=remaining
+        return result
+    if any(panel.get('title') == title for panel in result.get('panels', [])):
+        return result
+    old_titles = {node + ' 排队情况' for node in nodes}
+    old = [panel for panel in result.get('panels', []) if panel.get('title') in old_titles]
+    panels = [panel for panel in result.get('panels', []) if panel.get('title') not in old_titles]
+    anchor = min((p['gridPos']['y'] for p in old), default=10)
+    bottom = max((p['gridPos']['y']+p['gridPos']['h'] for p in old), default=anchor)
+    height = 20
+    shift = height - (bottom-anchor)
+    for panel in panels:
+        if panel.get('gridPos', {}).get('y', 0) >= bottom:
+            panel['gridPos']['y'] += shift
+    panel_id = min((p['id'] for p in old), default=max((p['id'] for p in panels), default=0)+1)
+    panels.append({'id': panel_id, 'title': title, 'type': 'text',
+                   'gridPos': {'x': 0, 'y': anchor, 'w': 24, 'h': height},
+                   'options': {'mode': 'html', 'content': content}})
+    result['panels'] = panels
+    return result
+
+
 def add_queue_link(dashboard):
     """Only call after the explicitly requested queue backend is installed."""
     result=copy.deepcopy(dashboard)
@@ -25,7 +78,7 @@ def add_queue_panels(dashboard,nodes,prefix='ascend'):
     titles={node:node+' 排队情况' for node in nodes}
     existing={p['title']:p for p in result['panels'] if p.get('title') in titles.values()}
     missing=[node for node in nodes if titles[node] not in existing]
-    anchor=next((p['gridPos']['y']+p['gridPos']['h'] for p in result['panels'] if p.get('title')=='容器管控 · 持续拦截与白名单'),4)
+    anchor=next((p['gridPos']['y']+p['gridPos']['h'] for p in result['panels'] if p.get('title') in {'容器管控 · 持续拦截与白名单','容器管控 · 持续拦截'}),4)
     for panel in result['panels']:
         if panel['gridPos']['y']>=anchor:panel['gridPos']['y']+=len(missing)*7
     next_id=max((p['id'] for p in result['panels']),default=0)+1
@@ -59,20 +112,28 @@ def add_queue_panels(dashboard,nodes,prefix='ascend'):
 def add_guard_panel(dashboard, prefix='ascend'):
     """Only call for an explicitly provisioned persistent container guard."""
     result = copy.deepcopy(dashboard)
-    result['links'] = [x for x in result.get('links', []) if x.get('title') != '容器管控 / 白名单'] + [
-        {'type': 'link', 'title': '容器管控 / 白名单', 'url': '/a5-control/guard',
+    result['links'] = [x for x in result.get('links', []) if x.get('url') != '/a5-control/guard'] + [
+        {'type': 'link', 'title': '人员白名单', 'url': '/a5-control/guard',
          'targetBlank': True, 'includeVars': False, 'keepTime': False, 'icon': 'external link'}]
-    title = '容器管控 · 持续拦截与白名单'
-    if any(p.get('title') == title for p in result['panels']): return result
+    title = '容器管控 · 持续拦截'
+    expression = prefix+'_container_guard_info{node=~"$node",guard_state="持续拦截"}'
+    description = '仅显示当前持续拦截的容器，包括已自动停止的容器。加入人员或容器白名单后不再显示；后台保留原管控标记。'
+    for panel in result['panels']:
+        if panel.get('title') == '容器管控 · 持续拦截与白名单': panel['title'] = title
+        if panel.get('title') == title:
+            panel['description'] = description
+            for target in panel.get('targets', []):
+                if '_container_guard_info' in target.get('expr', ''): target['expr'] = expression
+            return result
     panel_id = max(p['id'] for p in result['panels']) + 1
     for panel in result['panels']:
         if panel['gridPos']['y'] >= 4: panel['gridPos']['y'] += 6
     order = ['node', 'employee_ids', 'container', 'guard_state', 'guard_result', 'container_id']
     result['panels'].append({'id': panel_id, 'title': title, 'type': 'table',
         'gridPos': {'x': 0, 'y': 4, 'w': 24, 'h': 6},
-        'description': '此表保留已停止容器的标记。持续拦截绑定完整容器 ID；只有管理员加入白名单后才解除。顶部“容器管控 / 白名单”可查看实时状态和管理白名单。',
+        'description': description,
         'datasource': {'type': 'prometheus', 'uid': 'a5-prometheus'},
-        'targets': [{'refId': 'Guard', 'expr': prefix+'_container_guard_info{node=~"$node"}', 'format': 'table', 'instant': True, 'range': False}],
+        'targets': [{'refId': 'Guard', 'expr': expression, 'format': 'table', 'instant': True, 'range': False}],
         'transformations': [{'id': 'organize', 'options': {
             'excludeByName': {k: True for k in ['Time', 'Value', '__name__', 'job', 'instance', 'host']},
             'indexByName': {name: i for i, name in enumerate(order)},
