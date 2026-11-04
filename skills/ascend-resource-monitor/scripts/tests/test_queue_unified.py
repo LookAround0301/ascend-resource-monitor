@@ -126,6 +126,63 @@ class UnifiedWindowTests(unittest.TestCase):
         self.assertEqual(set(row['allocations']), {'b'})
         self.assertEqual(len(row['allocations']['b']), 3)
 
+    def test_ten_minute_timeout_moves_only_one_position(self):
+        with patch('queue_unified.time.time', return_value=self.now):
+            jobs = [self.add(machine='a', cards=8) for _ in range(3)]
+            rows = self.queue.view(self.user)['tasks']
+            old_offer = rows[0]['offer_id']
+            created = {r['id']:r['created'] for r in rows}
+            self.assertEqual(rows[0]['claim_before'], self.now+600)
+        with patch('queue_unified.time.time', return_value=self.now+599):
+            self.assertEqual(self.queue.view(self.user)['tasks'][0]['id'], jobs[0])
+        with patch('queue_unified.time.time', return_value=self.now+600):
+            self.queue.tick()
+            rows = self.queue.view(self.user)['tasks']
+            self.assertEqual([r['id'] for r in rows], [jobs[1],jobs[0],jobs[2]])
+            self.assertEqual([r['state'] for r in rows], ['ready','queued','queued'])
+            self.assertEqual(rows[1]['missed_claims'], 1)
+            self.assertEqual({r['id']:r['created'] for r in rows}, created)
+            with self.assertRaises(ControlError):self.queue.action(self.user,jobs[0],'claim',old_offer)
+
+    def test_offer_survives_restart_and_stale_offer_cannot_claim_reallocation(self):
+        with patch('queue_unified.time.time', return_value=self.now):
+            job=self.add(machine='a',cards=8)
+            offer=self.queue.view(self.user)['tasks'][0]
+        with patch('queue_unified.time.time', return_value=self.now+300):
+            reopened=UnifiedQueue(self.store,['a','b'],timezone='Asia/Shanghai')
+            row=reopened.view(self.user)['tasks'][0]
+            self.assertEqual(row['ready_since'],offer['ready_since'])
+            self.assertEqual(row['claim_before'],offer['claim_before'])
+            self.assertEqual(row['offer_id'],offer['offer_id'])
+        with patch('queue_unified.time.time', return_value=self.now+600):
+            reopened.tick()
+            new=reopened.view(self.user)['tasks'][0]
+            self.assertEqual(new['missed_claims'],1)
+            self.assertNotEqual(new['offer_id'],offer['offer_id'])
+            with self.assertRaises(ControlError):reopened.action(self.user,job,'claim',offer['offer_id'])
+            reopened.action(self.user,job,'claim',new['offer_id'])
+            self.assertEqual(reopened.view(self.user)['tasks'][0]['state'],'active')
+
+    def test_simultaneous_timeouts_each_move_back_one_place(self):
+        with patch('queue_unified.time.time', return_value=self.now):
+            a=self.add(machine='a',cards=8);b=self.add(machine='b',cards=8)
+            c=self.add(machine='a',cards=8);d=self.add(machine='b',cards=8)
+        with patch('queue_unified.time.time', return_value=self.now+600):
+            rows=self.queue.view(self.user)['tasks']
+            self.assertEqual([r['id'] for r in rows],[c,a,b,d])
+            self.assertEqual([r['missed_claims'] for r in rows],[0,1,1,0])
+
+    def test_claimed_work_is_not_postponed_after_ten_minutes(self):
+        with patch('queue_unified.time.time', return_value=self.now):
+            job=self.add(machine='a',cards=8)
+            offer=self.queue.view(self.user)['tasks'][0]['offer_id']
+        with patch('queue_unified.time.time', return_value=self.now+599):
+            self.queue.action(self.user,job,'claim',offer)
+        with patch('queue_unified.time.time', return_value=self.now+1200):
+            row=self.queue.view(self.user)['tasks'][0]
+            self.assertEqual(row['state'],'active')
+            self.assertEqual(row['missed_claims'],0)
+
     def test_all_dual_totals_split_evenly_and_release_both_nodes(self):
         with patch('queue_unified.time.time', return_value=self.now):
             for total in (2, 4, 8, 16):

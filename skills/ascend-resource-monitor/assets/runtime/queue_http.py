@@ -75,7 +75,8 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
         async def poll():
             while True:
                 try:
-                    if not unified: await reconcile()
+                    if unified: await asyncio.to_thread(unified.tick)
+                    else: await reconcile()
                 except Exception: pass
                 if auto:
                     try:await auto.refresh()
@@ -181,8 +182,10 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                 if operation=='unified-action':
                     if data.get('confirmed') is not True:raise ControlError(400,'请先确认操作')
                     action=data.get('action');job=data.get('job')
+                    if action=='claim' and (not isinstance(data.get('offer_id'),str) or not data['offer_id']):
+                        raise ControlError(409,'请刷新页面后直接点击“开始使用”')
                     event(person,'unified_'+str(action),job=job)
-                    unified.action(person,job,action)
+                    unified.action(person,job,action,data.get('offer_id'))
                     return web.json_response({'message':{'claim':'已登记开始，请自行启动任务','finish':'已结束登记，预约资源已释放','cancel':'已取消预约'}[action]})
                 raise ControlError(404,'统一队列不提供网页停止或容器关联')
             if operation=='enqueue':
