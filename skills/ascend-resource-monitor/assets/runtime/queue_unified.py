@@ -1,0 +1,164 @@
+"""Transactional, manual-only reservations across two eight-card nodes."""
+import json
+import secrets
+import time
+
+from control_common import ControlError
+from queue_planner import plan
+
+
+class UnifiedQueue:
+    def __init__(self, store, nodes, buffer_seconds=600):
+        self.store = store
+        self.nodes = {node: list(range(8)) for node in nodes}
+        if len(self.nodes) != 2:
+            raise ValueError('unified queue requires exactly two nodes')
+        self.buffer = buffer_seconds
+        with store.db() as db:
+            db.execute('''CREATE TABLE IF NOT EXISTS unified_tasks (
+                id TEXT PRIMARY KEY, account TEXT NOT NULL, title TEXT NOT NULL,
+                state TEXT NOT NULL, created REAL NOT NULL, activated REAL, finished REAL,
+                requested_seconds INTEGER NOT NULL, cards INTEGER NOT NULL,
+                dual INTEGER NOT NULL DEFAULT 0, not_before REAL NOT NULL DEFAULT 0,
+                fixed_node TEXT NOT NULL DEFAULT '', allocations TEXT NOT NULL DEFAULT '{}',
+                legacy INTEGER NOT NULL DEFAULT 0, claim_before REAL NOT NULL DEFAULT 0)''')
+            if 'claim_before' not in {row['name'] for row in db.execute('PRAGMA table_info(unified_tasks)')}:
+                db.execute('ALTER TABLE unified_tasks ADD COLUMN claim_before REAL NOT NULL DEFAULT 0')
+            db.execute('CREATE TABLE IF NOT EXISTS unified_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+            if not db.execute("SELECT 1 FROM unified_meta WHERE key='legacy_imported'").fetchone():
+                if db.execute("SELECT 1 FROM reservations WHERE state='cancelling' LIMIT 1").fetchone():
+                    raise RuntimeError('legacy stop is still pending; resolve it before migration')
+                for row in db.execute("SELECT * FROM reservations WHERE state IN ('queued','active') ORDER BY created,rowid").fetchall():
+                    if row['node'] not in self.nodes:
+                        raise RuntimeError('legacy reservation refers to an unknown node')
+                    allocation = {row['node']: self.nodes[row['node']]} if row['state'] == 'active' else {}
+                    db.execute('''INSERT INTO unified_tasks
+                        (id,account,title,state,created,activated,finished,requested_seconds,cards,
+                         fixed_node,allocations,legacy)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,1)''',
+                        (row['id'], row['account'], row['title'], row['state'], row['created'],
+                         row['activated'], row['finished'], row['requested_seconds'] or 0, 8,
+                         row['node'], json.dumps(allocation)))
+                db.execute("INSERT INTO unified_meta VALUES ('legacy_imported','1')")
+            db.execute("DELETE FROM confirmations WHERE job IN (SELECT id FROM unified_tasks WHERE state IN ('completed','cancelled'))")
+            db.execute("DELETE FROM reservations WHERE id IN (SELECT id FROM unified_tasks WHERE state IN ('completed','cancelled'))")
+            db.execute("DELETE FROM confirmations WHERE job IN (SELECT id FROM reservations WHERE state IN ('completed','cancelled'))")
+            db.execute("DELETE FROM reservations WHERE state IN ('completed','cancelled')")
+            db.execute("DELETE FROM unified_tasks WHERE state IN ('completed','cancelled')")
+            db.execute("UPDATE unified_tasks SET title='' WHERE title<>''")
+            db.execute("UPDATE reservations SET title='' WHERE id IN (SELECT id FROM unified_tasks)")
+
+    def _schedule(self, db, now):
+        db.execute("UPDATE unified_tasks SET state='queued',allocations='{}',claim_before=0 WHERE state='ready' AND claim_before>0 AND claim_before<?", (now,))
+        rows = [dict(row) for row in db.execute("SELECT * FROM unified_tasks WHERE state IN ('ready','active','queued') ORDER BY created,rowid")]
+        busy, waiting = [], []
+        for row in rows:
+            if row['state'] in ('ready', 'active'):
+                end = (row['activated'] + row['requested_seconds'] + self.buffer
+                       if row['state'] == 'active' and row['activated'] and row['requested_seconds'] else
+                       row['claim_before'] + row['requested_seconds'] + self.buffer
+                       if row['state'] == 'ready' and row['claim_before'] else None)
+                for node, cards in json.loads(row['allocations']).items():
+                    busy.append({'node': node, 'cards': cards, 'start': row['activated'] or row['created'], 'end': end})
+            else:
+                item = {'id': row['id'], 'cards': row['cards'], 'dual': bool(row['dual']),
+                        'seconds': row['requested_seconds'] or 3600, 'not_before': row['not_before']}
+                if row['fixed_node']:
+                    item['allowed_nodes'] = [row['fixed_node']]
+                waiting.append(item)
+        predictions = {item['id']: item for item in plan(self.nodes, busy, waiting, now, self.buffer)}
+        previous=[]
+        for row in rows:
+            prediction = predictions.get(row['id'])
+            if prediction and prediction['start'] is not None and prediction['start'] <= now:
+                deadlines=[]
+                for earlier in previous:
+                    if earlier['start'] is None or earlier['start'] <= now:
+                        continue
+                    for node,cards in prediction['allocations'].items():
+                        if set(cards).intersection(earlier['allocations'].get(node,[])):
+                            deadlines.append(earlier['start'] - (row['requested_seconds'] or 3600) - self.buffer)
+                claim_before=min(deadlines) if deadlines else 0
+                db.execute("UPDATE unified_tasks SET state='ready',allocations=?,claim_before=? WHERE id=? AND state='queued'",
+                           (json.dumps(prediction['allocations']), claim_before, row['id']))
+            if prediction:
+                previous.append(prediction)
+        return predictions
+
+    def view(self, user):
+        now = time.time()
+        account = user['id'] if user else ''
+        with self.store.db() as db:
+            predictions = self._schedule(db, now)
+            rows = [dict(row) for row in db.execute('''SELECT r.*,a.employee,a.name FROM unified_tasks r
+                JOIN accounts a ON a.id=r.account WHERE r.state IN ('queued','ready','active')
+                ORDER BY r.created,r.rowid''')]
+        position = 0
+        for row in rows:
+            row['mine'] = row.pop('account') == account
+            row.pop('title', None)
+            row['allocations'] = json.loads(row['allocations'])
+            if row['state'] in ('queued', 'ready'):
+                position += 1
+                row['position'] = position
+            else:
+                row['position'] = None
+            row['can_claim'] = row['mine'] and row['state'] == 'ready'
+            prediction = predictions.get(row['id'], {})
+            row['estimated_start'] = prediction.get('start') if row['state'] == 'queued' else None
+            row['planned_allocations'] = prediction.get('allocations', {}) if row['state'] == 'queued' else {}
+            row['node'] = ', '.join(row['allocations']) or row['fixed_node'] or '待分配'
+        return {'user': user, 'tasks': rows, 'nodes': list(self.nodes), 'server_time': now, 'unified': True}
+
+    def enqueue(self, user, data):
+        if data.get('notifications_ready') is not True:
+            raise ControlError(400, '请先在主页开启桌面通知并通过测试，再加入队列')
+        cards, seconds = data.get('cards'), data.get('requested_seconds')
+        dual, night, start = data.get('dual', False), data.get('night', False), data.get('not_before', 0)
+        now = time.time()
+        if type(dual) is not bool or type(night) is not bool or type(cards) is not int or not 1 <= cards <= 8:
+            raise ControlError(400, '请选择 1–8 卡或双机整机')
+        if dual and cards != 8:
+            raise ControlError(400, '双机任务需要每台 8 卡')
+        if type(seconds) is not int or not 60 <= seconds <= (30*86400 if night else 7200):
+            raise ControlError(400, '普通任务时长为 1 分钟至 2 小时；夜间任务最多 30 天')
+        if type(start) not in (int, float) or not 0 <= start <= now + 30*86400:
+            raise ControlError(400, '预约开始时间无效')
+        if night and start <= now:
+            raise ControlError(400, '夜间预约需填写未来开始时间')
+        if not night and start:
+            raise ControlError(400, '普通任务无需填写预约开始时间')
+        with self.store.db() as db:
+            count = db.execute("SELECT COUNT(*) FROM unified_tasks WHERE account=? AND state IN ('queued','ready','active')", (user['id'],)).fetchone()[0]
+            if count >= 5:
+                raise ControlError(409, '每人最多保留 5 个未结束预约')
+            job = secrets.token_hex(16)
+            db.execute('''INSERT INTO unified_tasks(id,account,title,state,created,requested_seconds,cards,dual,not_before)
+                VALUES (?,?,?,'queued',?,?,?,?,?)''', (job, user['id'], '', now, seconds, cards, int(dual), start))
+            self._schedule(db, now)
+        return job
+
+    def action(self, user, job, action):
+        if not isinstance(job, str) or action not in ('claim', 'finish', 'cancel'):
+            raise ControlError(400, '无效任务操作')
+        now = time.time()
+        with self.store.db() as db:
+            self._schedule(db, now)
+            row = db.execute('SELECT * FROM unified_tasks WHERE id=?', (job,)).fetchone()
+            if not row:
+                raise ControlError(404, '任务不存在')
+            if row['account'] != user['id'] and not user.get('admin'):
+                raise ControlError(403, '只能操作自己的预约')
+            if action == 'claim' and row['state'] == 'ready':
+                db.execute("UPDATE unified_tasks SET state='active',activated=? WHERE id=?", (now, job))
+            elif action == 'finish' and row['state'] == 'active':
+                db.execute('DELETE FROM unified_tasks WHERE id=?', (job,))
+                db.execute('DELETE FROM confirmations WHERE job=?', (job,))
+                db.execute('DELETE FROM reservations WHERE id=?', (job,))
+            elif action == 'cancel' and row['state'] in ('queued', 'ready'):
+                db.execute('DELETE FROM unified_tasks WHERE id=?', (job,))
+                db.execute('DELETE FROM confirmations WHERE job=?', (job,))
+                db.execute('DELETE FROM reservations WHERE id=?', (job,))
+            else:
+                raise ControlError(409, '任务状态已变化，请刷新后重试')
+            self._schedule(db, now)

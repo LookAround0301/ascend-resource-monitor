@@ -6,6 +6,59 @@ import re
 from pathlib import Path
 
 
+def add_queue_home_panel(dashboard, nodes):
+    """Replace the per-node queue tables with one interactive homepage region."""
+    result = copy.deepcopy(dashboard)
+    result['links'] = [link for link in result.get('links', [])
+                       if link.get('url') != '/a5-queue' and link.get('title') != '任务排队 / 我的任务']
+    title = '排队与资源分配'
+    content = '<div style="height:100%;overflow:auto"><a href="/a5-queue/home">正在加载预约功能…</a></div>'
+    if 'elements' in result:
+        elements=result['elements']
+        if any(p.get('spec',{}).get('title')==title for p in elements.values()):
+            return result
+        if result.get('layout',{}).get('kind')!='GridLayout':
+            raise ValueError('Queue homepage requires a grid dashboard layout')
+        old_titles={node+' 排队情况' for node in nodes}
+        keys={key for key,p in elements.items() if p.get('spec',{}).get('title') in old_titles}
+        items=result['layout']['spec']['items']
+        old_items=[item for item in items if item['spec'].get('element',{}).get('name') in keys]
+        anchor=min((p['spec']['y'] for p in old_items),default=10)
+        bottom=max((p['spec']['y']+p['spec']['height'] for p in old_items),default=anchor)
+        remaining=[item for item in items if item not in old_items]
+        for item in remaining:
+            if item['spec']['y']>=bottom:item['spec']['y']+=20-(bottom-anchor)
+        panel_id=min((elements[key]['spec']['id'] for key in keys),default=max((p['spec']['id'] for p in elements.values()),default=0)+1)
+        for key in keys:del elements[key]
+        key='panel-'+str(panel_id)
+        elements[key]={'kind':'Panel','spec':{'id':panel_id,'title':title,'links':[],
+                       'data':{'kind':'QueryGroup','spec':{'queries':[],'transformations':[],'queryOptions':{}}},
+                       'vizConfig':{'kind':'VizConfig','group':'text','version':'','spec':{
+                           'options':{'mode':'html','content':content},'fieldConfig':{'defaults':{},'overrides':[]}}}}}
+        remaining.append({'kind':'GridLayoutItem','spec':{'x':0,'y':anchor,'width':24,'height':20,
+                          'element':{'kind':'ElementReference','name':key}}})
+        result['layout']['spec']['items']=remaining
+        return result
+    if any(panel.get('title') == title for panel in result.get('panels', [])):
+        return result
+    old_titles = {node + ' 排队情况' for node in nodes}
+    old = [panel for panel in result.get('panels', []) if panel.get('title') in old_titles]
+    panels = [panel for panel in result.get('panels', []) if panel.get('title') not in old_titles]
+    anchor = min((p['gridPos']['y'] for p in old), default=10)
+    bottom = max((p['gridPos']['y']+p['gridPos']['h'] for p in old), default=anchor)
+    height = 20
+    shift = height - (bottom-anchor)
+    for panel in panels:
+        if panel.get('gridPos', {}).get('y', 0) >= bottom:
+            panel['gridPos']['y'] += shift
+    panel_id = min((p['id'] for p in old), default=max((p['id'] for p in panels), default=0)+1)
+    panels.append({'id': panel_id, 'title': title, 'type': 'text',
+                   'gridPos': {'x': 0, 'y': anchor, 'w': 24, 'h': height},
+                   'options': {'mode': 'html', 'content': content}})
+    result['panels'] = panels
+    return result
+
+
 def add_queue_link(dashboard):
     """Only call after the explicitly requested queue backend is installed."""
     result=copy.deepcopy(dashboard)

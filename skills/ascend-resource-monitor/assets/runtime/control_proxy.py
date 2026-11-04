@@ -200,6 +200,11 @@ def create_app(config, agent_override=None, describe_override=None, guard_overri
     async def personalized_dashboard(data,request):
         # Grafana can load either the legacy DTO or a Kubernetes-style resource.
         model=data.get('dashboard') or data.get('spec') or {}
+        if (config.get('task_queue',{}).get('unified_queue') is True
+                and (model.get('uid') or data.get('metadata',{}).get('name')) == config.get('dashboard_uid','a5-dual-node')):
+            from patch_dashboard import add_queue_home_panel
+            updated=add_queue_home_panel(model,list(config['nodes']))
+            model.clear();model.update(updated)
         links=model.get('links',[])
         if not any(x.get('title')=='管理员登录' for x in links):return data
         try:state=await read_identity(request)
@@ -220,6 +225,8 @@ def create_app(config, agent_override=None, describe_override=None, guard_overri
             return web.json_response({'message':'Not found'},status=404)
         headers={k:v for k,v in request.headers.items() if k.lower() not in HOP}
         url=config['grafana_url']+request.raw_path
+        queue_shell=(config.get('task_queue',{}).get('unified_queue') is True
+                     and request.method=='GET' and (request.path=='/' or request.path.startswith('/d/')))
         if request.headers.get('Upgrade','').lower()=='websocket':
             try:
                 async with app['http'].ws_connect(url,headers=headers) as upstream:
@@ -246,10 +253,21 @@ def create_app(config, agent_override=None, describe_override=None, guard_overri
                         return web.json_response(await personalized_dashboard(data,request),headers={'Cache-Control':'no-store','Vary':'Cookie, Authorization'})
                     return web.Response(status=upstream.status,body=await upstream.read(),content_type='application/json')
             async with app['http'].request(request.method,url,headers=headers,data=request.content,
-                                           allow_redirects=False) as upstream:
+                                           allow_redirects=False,auto_decompress=queue_shell) as upstream:
+                if queue_shell and upstream.content_type=='text/html' and upstream.status==200:
+                    html=await upstream.text()
+                    injection='<script src="/a5-queue/home.js" defer></script>'
+                    html=html.replace('</body>',injection+'</body>')
+                    response=web.Response(status=upstream.status,text=html,content_type='text/html')
+                    for k,v in upstream.headers.items():
+                        if k.lower() not in HOP|{'content-length','content-encoding','content-type','etag','cache-control'}:
+                            if k.lower()=='set-cookie':v=browser_cookie(v,request.secure)
+                            response.headers.add(k,v)
+                    response.headers['Cache-Control']='no-store'
+                    return response
                 response=web.StreamResponse(status=upstream.status,reason=upstream.reason)
                 for k,v in upstream.headers.items():
-                    if k.lower() not in HOP:
+                    if k.lower() not in HOP and not (queue_shell and k.lower() in {'content-encoding','content-length'}):
                         if k.lower()=='set-cookie':v=browser_cookie(v,request.secure)
                         response.headers.add(k,v)
                 await response.prepare(request)

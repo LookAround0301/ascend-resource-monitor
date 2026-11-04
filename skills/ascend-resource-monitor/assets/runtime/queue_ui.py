@@ -5,7 +5,7 @@ QUEUE_HTML = '''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><m
 <header><div><h1>A5 任务队列</h1><p>选服务器加入队列 → 登记开始 → 登记结束</p></div><div><a class="button secondary" href="__BACK__">返回监控</a> <a id="admin-login" href="/login?redirectTo=%2Fa5-queue">管理员登录</a></div></header>
 <section><h2>个人账号</h2><div id="account-status"></div>
 <form id="account-form" class="row"><label>工号<input id="employee" name="username" autocomplete="username" pattern="[A-Za-z][0-9]{8}" required></label><label>姓名<input id="name" autocomplete="name"></label><label>个人密码<input id="password" type="password" name="password" autocomplete="current-password" minlength="10" maxlength="128" required></label><button name="login">登录</button><button name="register" class="secondary">首次注册</button></form>
-<p id="account-help">首次注册填写工号、姓名和个人密码，注册后即可加入任一服务器队列，无需管理员审批。</p><button id="logout" class="secondary hidden">退出个人账号</button><p id="admin-tools" class="hidden">管理员可操作全部队列任务。<a href="/a5-control/guard" target="_blank">容器管控 / 白名单</a></p></section>
+<button id="enable-notifications" class="secondary hidden" type="button">启用桌面通知</button><p id="notification-status" aria-live="polite"></p><p id="account-help">首次注册填写工号、姓名和个人密码，注册后即可加入任一服务器队列，无需管理员审批。</p><button id="logout" class="secondary hidden">退出个人账号</button><p id="admin-tools" class="hidden">管理员可操作全部队列任务。<a href="/a5-control/guard" target="_blank">容器管控 / 白名单</a></p></section>
 <section id="direct" class="hidden"><h2>当前容器操作</h2><p id="direct-info"></p><button id="direct-stop" class="danger">Stop：选择停止方式</button></section>
 <div id="queues"></div>
 <p id="workflow-note">两台服务器分别排队，互不占用对方名额。网页只登记使用顺序，服务由用户自行启动。需要网页 Stop 时，在使用中的任务上关联自己的容器；无需关联也可以登记开始和结束。</p>
@@ -24,6 +24,47 @@ function report(text,error=false){message.textContent=text;message.className=err
 async function api(name,data){
  const response=await fetch('/a5-queue/api/'+name,{method:data===undefined?'GET':'POST',credentials:'same-origin',cache:'no-store',headers:data===undefined?{}:{'Content-Type':'application/json','X-A5-Queue':'queue-v1'},body:data===undefined?undefined:JSON.stringify(data)});
  const body=await response.json();if(!response.ok)throw new Error(body.message||'操作失败');return body;
+}
+// Notifications are opt-in and are derived only from the signed-in user's rows.
+function notificationStatus(registered){
+ const button=$('enable-notifications'),note=$('notification-status');
+ button.classList.toggle('hidden',!registered);
+ if(!registered){note.textContent='';return;}
+ if(!window.isSecureContext||!('Notification' in window)){
+  button.disabled=true;note.textContent='当前访问方式或浏览器不支持桌面通知。请使用本机隧道或受信任的 HTTPS。';return;
+ }
+ const permission=Notification.permission;
+ button.disabled=permission!=='default';
+ note.textContent=permission==='granted'?'桌面通知已启用；请保持网页打开并登录，后台提醒可能延迟。':permission==='denied'?'桌面通知被浏览器或系统阻止，请在浏览器站点设置中允许。':'启用桌面通知后，轮到使用或预计结束时会收到提醒；请保持网页打开。';
+}
+$('enable-notifications').onclick=async()=>{
+ try{await Notification.requestPermission();}catch(e){report('无法启用桌面通知：'+e.message,true);}
+ notificationStatus(!!(state&&state.user&&state.user.registered));
+ if(state)notifyTasks(state);
+};
+function notifyTasks(current){
+ if(!current.user||!current.user.registered||!window.isSecureContext||!('Notification' in window)||Notification.permission!=='granted')return;
+ const now=current.server_time;
+ if(!Number.isFinite(now))return;
+ for(const row of current.tasks){
+  if(!row.mine)continue;
+  let event='',title='',body='';
+  if(row.state==='queued'&&row.can_claim){event='ready';title='A5 任务可以开始';body=row.node+' 已轮到你，请返回任务页面确认开始。';}
+  else if(row.state==='active'&&row.activated&&row.requested_seconds>0){
+   const remaining=row.activated+row.requested_seconds-now;
+   const warning=Math.min(900,Math.max(60,Math.floor(row.requested_seconds/4)));
+   if(remaining<=0){event='overdue';title='A5 任务已到预计结束时间';body=row.node+' 的任务已到预计结束时间，请检查并及时结束登记。';}
+   else if(remaining<=warning){event='ending';title='A5 任务即将到预计结束时间';body=row.node+' 的任务预计将在 '+Math.ceil(remaining/60)+' 分钟内结束，请提前准备。';}
+  }
+  if(!event)continue;
+  const key='a5-queue-notice:'+current.user.id+':'+row.id+':'+event;
+  try{
+   if(localStorage.getItem(key))continue;
+   const notice=new Notification(title,{body,tag:key});
+   notice.onclick=()=>{window.focus();notice.close();};
+   localStorage.setItem(key,'1');
+  }catch(e){console.warn('桌面通知不可用',e);}
+ }
 }
 function statusText(row){return ({queued:'排队第 '+row.position+' 位',active:'使用中',cancelling:'正在结束',cancelled:'已取消',completed:'已结束'})[row.state]||row.state;}
 function date(value){return value?new Date(value*1000).toLocaleString():'—';}
@@ -85,7 +126,7 @@ async function refresh(){
   $('account-status').textContent=user?'已登录：'+(user.employee||'')+' '+user.name+(user.admin?'（管理员）':'（个人账号）'):'未登录：可以查看队列，登记需登录';
   $('admin-login').textContent=user&&user.admin?'管理员已登录':'管理员登录';
   $('account-form').classList.toggle('hidden',!!registered);$('account-help').classList.toggle('hidden',!!registered);$('logout').classList.toggle('hidden',!registered);$('admin-tools').classList.toggle('hidden',!(user&&user.admin));
-  renderQueues();const params=new URLSearchParams(location.search);$('direct').classList.add('hidden');
+  renderQueues();notificationStatus(registered);notifyTasks(state);const params=new URLSearchParams(location.search);$('direct').classList.add('hidden');
   if(params.has('node')&&params.has('target')&&user){
    try{direct=await api('control-context?'+params.toString());$('direct').classList.remove('hidden');$('direct-info').textContent=params.get('node')+' / '+params.get('target').split('@')[0];}
    catch(e){report(e.message,true);}

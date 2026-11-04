@@ -1,0 +1,89 @@
+"""Pure reservation planning for a two-node, eight-card resource pool.
+
+This module does not read hardware, start or stop jobs, or persist allocations.
+Callers must serialize planning and persistence and supply trustworthy intervals.
+"""
+from itertools import combinations
+import math
+
+
+def plan(nodes, busy, jobs, now, buffer_seconds=600):
+    """Plan jobs in submitted order, allowing non-delaying backfill.
+
+    ``nodes`` maps node names to eight ordered card identifiers; order defines
+    the two groups of four. Busy entries have node, cards, start and end;
+    ``None`` end means the release time is unknown. Entries represent still
+    occupied or reserved resources; remove them only after explicit release.
+    An overdue entry has unknown release time, regardless of its old estimate.
+    Jobs have id, cards,
+    seconds, optional ``not_before``, and optional ``dual`` (both full nodes).
+    Returned times are estimates based on declared durations, not guarantees.
+    """
+    if len(nodes) != 2 or any(len(cards) != 8 or len(set(cards)) != 8 for cards in nodes.values()):
+        raise ValueError('two nodes with eight distinct ordered cards each are required')
+    if buffer_seconds < 0 or not math.isfinite(now):
+        raise ValueError('invalid planning time or buffer')
+    intervals = []
+    for item in busy:
+        node = item['node']
+        cards = tuple(item['cards'])
+        end = math.inf if item['end'] is None or item['end'] <= now else item['end']
+        if node not in nodes or not cards or len(set(cards)) != len(cards) or not set(cards) <= set(nodes[node]):
+            raise ValueError('invalid busy cards')
+        if end <= item['start']:
+            raise ValueError('invalid busy interval')
+        intervals.append((node, frozenset(cards), item['start'], end))
+
+    def free(node, start, end):
+        used = set()
+        for occupied_node, cards, begin, finish in intervals:
+            if occupied_node == node and begin < end and start < finish:
+                used.update(cards)
+        return [card for card in nodes[node] if card not in used]
+
+    def options(job, start):
+        end = start + job['seconds'] + buffer_seconds
+        available = {node: free(node, start, end) for node in nodes}
+        if job.get('dual'):
+            return [{node: list(cards) for node, cards in nodes.items()}] if all(len(v) == 8 for v in available.values()) else []
+        count = job['cards']
+        choices = []
+        allowed = job.get('allowed_nodes', nodes)
+        for node, ordered in nodes.items():
+            if node not in allowed:
+                continue
+            cards = available[node]
+            groups = (ordered[:4], ordered[4:]) if count <= 4 else (ordered,)
+            for group in groups:
+                for choice in combinations([card for card in group if card in cards], count):
+                    remaining = set(cards) - set(choice)
+                    # Fill the more occupied node/group first to leave whole groups available.
+                    intact_groups = sum(set(g) <= remaining for g in (ordered[:4], ordered[4:]))
+                    choices.append(((len(cards), -intact_groups, str(node), tuple(map(str, choice))), {node: list(choice)}))
+        return [choice for _, choice in sorted(choices, key=lambda pair: pair[0])]
+
+    planned = []
+    for job in jobs:
+        if (type(job.get('cards')) is not int or not 1 <= job['cards'] <= 8
+                or type(job.get('seconds')) is not int or job['seconds'] <= 0):
+            raise ValueError('invalid job size or duration')
+        earliest = max(now, job.get('not_before', now))
+        candidates = {earliest}
+        candidates.update(end for _, _, _, end in intervals if math.isfinite(end) and end >= earliest)
+        chosen = None
+        for start in sorted(candidates):
+            available = options(job, start)
+            if available:
+                chosen = (start, available[0])
+                break
+        if chosen is None:
+            planned.append({'id': job['id'], 'start': None, 'allocations': {}})
+            # Without a bound for this job, accepting later work can starve it.
+            planned.extend({'id': later['id'], 'start': None, 'allocations': {}} for later in jobs[len(planned):])
+            break
+        start, allocations = chosen
+        finish = start + job['seconds'] + buffer_seconds
+        for node, cards in allocations.items():
+            intervals.append((node, frozenset(cards), start, finish))
+        planned.append({'id': job['id'], 'start': start, 'allocations': allocations})
+    return planned
