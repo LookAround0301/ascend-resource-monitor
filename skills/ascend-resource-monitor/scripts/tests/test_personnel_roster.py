@@ -67,6 +67,15 @@ class RosterTests(unittest.TestCase):
         with self.assertRaises(OSError): self.store.add(self.data(), self.actor)
         self.assertEqual(self.path.read_bytes(), before)
 
+    def test_remove_preserves_unrelated_names_and_is_idempotent(self):
+        self.store.add(self.data(), self.actor)
+        request=self.data()
+        self.assertTrue(self.store.remove(request,self.actor)['changed'])
+        self.assertEqual(json.loads(self.path.read_text(encoding='utf-8')),self.original)
+        self.assertFalse(self.store.remove(request,self.actor)['changed'])
+        with self.assertRaises(ControlError):
+            self.store.remove(self.data(employee='u12345678',name='已有人员'),self.actor)
+
     def test_bad_or_empty_roster_fails_closed(self):
         for value in ['not json', '{}', '{"employee_names": {}}']:
             self.path.write_text(value, encoding='utf-8')

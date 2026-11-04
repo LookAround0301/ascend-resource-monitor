@@ -35,10 +35,10 @@ class PersonnelHTTPTests(unittest.IsolatedAsyncioTestCase):
         self.grafana = TestServer(fake); await self.grafana.start_server()
         async def node_call(node, route, data, actor):
             self.calls.append((node, route, data))
-            if route != '/roster': raise AssertionError(route)
+            if route not in ('/roster','/roster/remove'): raise AssertionError(route)
             if data is None: return self.stores[node].snapshot()
             if node == self.fail_node: raise OSError('simulated unavailable node')
-            return self.stores[node].add(data, actor)
+            return self.stores[node].remove(data, actor) if route.endswith('/remove') else self.stores[node].add(data, actor)
         config = {'grafana_url': str(self.grafana.make_url('')).rstrip('/'), 'org_id': 1,
                   'nodes': {node: {'url': 'https://unused'} for node in self.stores},
                   'audit_log': str(Path(self.temp.name) / 'audit.jsonl')}
@@ -52,13 +52,19 @@ class PersonnelHTTPTests(unittest.IsolatedAsyncioTestCase):
         return {'Origin': str(self.client.make_url('')).rstrip('/'), 'X-A5-Control': 'stop-v1',
                 **({'Authorization': 'Basic ' + role} if role else {})}
 
-    async def add(self, expected=200, role='Admin', data=None, headers=None):
+    async def add(self, expected=200, role='Admin', data=None, headers=None, operation='add'):
         payload = {'employee': 'u12345679', 'name': '新人员', 'confirmed': True} if data is None else data
-        response = await self.client.post('/a5-control/roster/add', json=payload, headers=headers or self.headers(role))
+        response = await self.client.post('/a5-control/roster/'+operation, json=payload, headers=headers or self.headers(role))
         result = await response.json(); self.assertEqual(response.status, expected, result); return result
 
-    async def test_public_read_and_admin_only_form(self):
-        for role in [None, 'Viewer', 'Editor', 'Admin']:
+    async def test_page_and_list_are_admin_only(self):
+        for role, code in [(None,401),('Viewer',403),('Editor',403)]:
+            for path in ['/a5-control/roster','/a5-control/guard']:
+                response = await self.client.get(path, headers=self.headers(role))
+                self.assertEqual(response.status, code)
+                self.assertNotIn('原有人员', await response.text())
+        self.assertEqual(self.calls, [])
+        for role in ['Admin']:
             response = await self.client.get('/a5-control/roster', headers=self.headers(role)); self.assertEqual(response.status, 200)
             result = await response.json(); self.assertEqual(result['can_edit'], role == 'Admin')
             self.assertEqual(result['people'], [{'employee': 'u12345678', 'name': '原有人员'}])
@@ -68,6 +74,7 @@ class PersonnelHTTPTests(unittest.IsolatedAsyncioTestCase):
     async def test_unauthorized_and_forged_headers_cannot_add(self):
         for role, code in [(None, 401), ('Viewer', 403), ('Editor', 403)]:
             await self.add(expected=code, role=role)
+            await self.add(expected=code, role=role, operation='remove')
         await self.add(expected=401, headers={**self.headers(), 'X-Grafana-Role': 'Admin', 'X-WEBAUTH-USER': 'Admin'})
         self.assertFalse(self.calls)
 
@@ -93,6 +100,23 @@ class PersonnelHTTPTests(unittest.IsolatedAsyncioTestCase):
         self.fail_node = None
         result = await self.add()
         self.assertEqual([r['changed'] for r in result['results']], [False, True])
+
+    async def test_removal_confirmation_sync_and_retry(self):
+        await self.add()
+        await self.add(operation='remove', expected=400, data={'employee':'u12345679','name':'新人员','confirmed':False})
+        await self.add(operation='remove', expected=403, headers={**self.headers('Admin'),'Origin':'http://other.invalid'})
+        self.fail_node='node-b'
+        await self.add(operation='remove', expected=503)
+        self.assertEqual(len(self.stores['node-a'].snapshot()['people']),1)
+        self.fail_node=None
+        result=await self.add(operation='remove')
+        self.assertEqual([r['changed'] for r in result['results']],[False,True])
+        result=await self.add(operation='remove')
+        self.assertFalse(any(r['changed'] for r in result['results']))
+        for store in self.stores.values(): self.assertEqual(len(store.snapshot()['people']),1)
+
+    async def test_last_entry_cannot_be_removed(self):
+        await self.add(operation='remove',expected=409,data={'employee':'u12345678','name':'原有人员','confirmed':True})
 
 
 if __name__ == '__main__': unittest.main()

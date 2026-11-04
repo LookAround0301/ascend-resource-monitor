@@ -57,7 +57,7 @@ def make_handler(engine, guard=None, queue=None, roster=None):
                 self.reply(404, {'message':'Not found'})
 
         def do_POST(self):
-            if self.path not in ('/stop', '/whitelist', '/queue/kill', '/roster') or (self.path == '/whitelist' and not guard) or (self.path=='/queue/kill' and not queue) or (self.path=='/roster' and not roster):
+            if self.path not in ('/stop', '/whitelist', '/queue/kill', '/roster', '/roster/remove') or (self.path == '/whitelist' and not guard) or (self.path=='/queue/kill' and not queue) or (self.path in ('/roster','/roster/remove') and not roster):
                 self.reply(404, {'message':'Not found'}); return
             try:
                 length = int(self.headers.get('Content-Length','0'))
@@ -68,7 +68,8 @@ def make_handler(engine, guard=None, queue=None, roster=None):
                 body = json.loads(self.rfile.read(length))
                 if set(body) != {'request','actor'}:
                     raise ControlError(400, '无效请求')
-                if self.path=='/roster':result=roster.add(body['request'],body['actor'])
+                if self.path=='/roster/remove':result=roster.remove(body['request'],body['actor'])
+                elif self.path=='/roster':result=roster.add(body['request'],body['actor'])
                 elif self.path=='/queue/kill':result=queue.submit(body['request'],body['actor'])
                 elif self.path=='/whitelist':result=guard.whitelist(body['request'],body['actor'])
                 else:result=engine.stop(body['request'],body['actor'])

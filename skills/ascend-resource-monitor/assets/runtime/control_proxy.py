@@ -186,8 +186,8 @@ def create_app(config, agent_override=None, describe_override=None, guard_overri
 
     async def guard_view(request):
         try:
-            state = await read_identity(request)
-            body = guard_page(state['user'] if state['admin'] else None, config.get('dashboard_uid', 'a5-dual-node')); status = 200
+            actor = await identity(request)
+            body = guard_page(actor, config.get('dashboard_uid', 'a5-dual-node')); status = 200
         except ControlError as e:
             body = notice(e.message, '/login?redirectTo=%2Fa5-control%2Fguard', '/d/' + config.get('dashboard_uid', 'a5-dual-node')); status = e.status
         return web.Response(text=body, status=status, content_type='text/html', headers={
@@ -211,9 +211,11 @@ def create_app(config, agent_override=None, describe_override=None, guard_overri
             updated=add_queue_home_panel(model,list(config['nodes']))
             model.clear();model.update(updated)
         links=model.get('links',[])
-        if not any(x.get('title')=='管理员登录' for x in links):return data
+        if not any(x.get('title')=='管理员登录' or x.get('url')=='/a5-control/guard' for x in links):return data
         try:state=await read_identity(request)
         except ControlError:state={'authenticated':False,'admin':False,'user':None}
+        if not state['admin']:
+            model['links'] = [link for link in links if link.get('url') != '/a5-control/guard']
         for link in links:
             if link.get('title')!='管理员登录':continue
             if state['authenticated']:

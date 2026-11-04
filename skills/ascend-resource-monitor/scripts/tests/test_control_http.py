@@ -117,10 +117,8 @@ class ProxyTests(unittest.IsolatedAsyncioTestCase):
     async def test_guard_page_and_whitelist_require_admin_and_csrf(self):
         body={'node':'node-a','container_id':'a'*64,'allowed':True,'confirmed':True}
         for role,code in [(None,401),('Viewer',403),('Editor',403)]:
-            for path in ['/a5-control/guard/status']:
+            for path in ['/a5-control/guard','/a5-control/guard/status']:
                 r=await self.client.get(path,headers=self.headers(role));self.assertEqual(r.status,code)
-            r=await self.client.get('/a5-control/guard',headers=self.headers(role));self.assertEqual(r.status,200)
-            self.assertNotIn('id="add-form"',await r.text())
             r=await self.client.post('/a5-control/whitelist',json=body,headers=self.headers(role));self.assertEqual(r.status,code)
         self.assertFalse(self.guard_calls)
         for delta,h in [({'confirmed':False},{}),({'node':'other'},{}),({'allowed':1},{}),({}, {'Origin':'http://evil.invalid'})]:

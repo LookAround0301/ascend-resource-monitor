@@ -51,6 +51,12 @@ class RosterStore:
                                for employee, name in sorted(data['employee_names'].items())]}
 
     def add(self, data, actor):
+        return self.change(data, actor, remove=False)
+
+    def remove(self, data, actor):
+        return self.change(data, actor, remove=True)
+
+    def change(self, data, actor, remove=False):
         if (not isinstance(data, dict) or set(data) != {'node', 'employee', 'name', 'revision', 'confirmed'}
                 or data.get('node') != self.engine.config['node'] or data.get('confirmed') is not True
                 or not isinstance(data.get('revision'), str)
@@ -62,16 +68,20 @@ class RosterStore:
         with self.engine.lock:
             raw, mapping = self.read()
             existing = mapping['employee_names'].get(employee)
-            if existing == name:
-                return {'node': data['node'], 'changed': False, 'message': '该人员已在名单中'}
-            if existing is not None:
+            if (remove and existing is None) or (not remove and existing == name):
+                return {'node': data['node'], 'changed': False,
+                        'message': '该人员已不在名单中' if remove else '该人员已在名单中'}
+            if existing is not None and existing != name:
                 raise ControlError(409, '该工号已有不同姓名，请先核实，不会覆盖原记录')
+            if remove and len(mapping['employee_names']) <= 1:
+                raise ControlError(409, '至少需要保留一位人员，不能清空整个人员表')
             if hashlib.sha256(raw).hexdigest() != data['revision']:
                 raise ControlError(409, '人员名单已被更新，请刷新后重试')
-            event = {'action': 'personnel.add', 'node': data['node'], 'actor': actor,
+            event = {'action': 'personnel.remove' if remove else 'personnel.add', 'node': data['node'], 'actor': actor,
                      'employee': employee, 'name': name}
             self.engine.write_audit({**event, 'result': 'requested'})
-            mapping['employee_names'][employee] = name
+            if remove: del mapping['employee_names'][employee]
+            else: mapping['employee_names'][employee] = name
             metadata = self.path.stat()
             temporary = self.path.with_name(self.path.name + '.roster-' + secrets.token_hex(8))
             try:
@@ -92,7 +102,7 @@ class RosterStore:
             finally:
                 if temporary.exists(): temporary.unlink()
             self.engine.write_audit({**event, 'result': 'saved'})
-            return {'node': data['node'], 'changed': True, 'message': '人员已添加'}
+            return {'node': data['node'], 'changed': True, 'message': '人员已删除' if remove else '人员已添加'}
 
 
 def combine(sources):
@@ -132,16 +142,18 @@ def install_roster(app, config, read_identity, identity, node_call):
         return dict(await asyncio.gather(*(read(node) for node in config['nodes'])))
 
     async def status(request):
+        try: await identity(request)
+        except ControlError as e:
+            return web.json_response({'message': e.message}, status=e.status, headers={'Cache-Control': 'no-store'})
         sources = await snapshots()
-        try: state = await read_identity(request)
-        except ControlError: state = {'admin': False}
-        return web.json_response({**combine(sources), 'can_edit': state['admin'],
+        return web.json_response({**combine(sources), 'can_edit': True,
                                   'sources': [{'node': node, 'available': not source.get('error')}
                                               for node, source in sources.items()]},
                                  headers={'Cache-Control': 'no-store', 'Vary': 'Cookie, Authorization'})
 
     async def add(request):
         try:
+            remove = request.path.endswith('/remove')
             check_browser_request(request.headers, request.host, request.scheme)
             actor = await identity(request)
             if request.content_length is None or request.content_length > 4096:
@@ -157,21 +169,23 @@ def install_roster(app, config, read_identity, identity, node_call):
                 existing = next((row['name'] for row in source['people'] if row['employee'] == employee), None)
                 if existing is not None and existing != name:
                     raise ControlError(409, '该工号已有不同姓名，请核实原记录；此次未修改名单')
-            audit(config['audit_log'], {'action': 'personnel.add', 'actor': actor,
+                if remove and existing is not None and len(source['people']) <= 1:
+                    raise ControlError(409, '至少需要保留一位人员，不能清空整个人员表')
+            audit(config['audit_log'], {'action': 'personnel.remove' if remove else 'personnel.add', 'actor': actor,
                                        'employee': employee, 'name': name, 'result': 'authorized'})
             results, failures = [], []
             for node, source in sources.items():
                 try:
-                    result = await node_call(node, '/roster', {'node': node, 'employee': employee,
+                    result = await node_call(node, '/roster/remove' if remove else '/roster', {'node': node, 'employee': employee,
                         'name': name, 'revision': source['revision'], 'confirmed': True}, actor)
                     results.append({'node': node, 'changed': result['changed']})
                 except Exception: failures.append(node)
             if failures:
                 return web.json_response({'message': '部分服务器尚未确认保存：' + '、'.join(failures) +
-                    '。请刷新核实后，使用相同工号和姓名重试；不会重复添加。', 'results': results},
+                    '。请刷新核实后，使用相同工号和姓名重试。', 'results': results},
                     status=503, headers={'Cache-Control': 'no-store'})
-            return web.json_response({'message': '该人员已在两台服务器的白名单中' if not any(r['changed'] for r in results)
-                else '人员已添加，并已同步到两台服务器', 'results': results}, headers={'Cache-Control': 'no-store'})
+            message = ('人员已删除，并已同步到两台服务器' if any(r['changed'] for r in results) else '该人员已不在两台服务器的白名单中') if remove else ('人员已添加，并已同步到两台服务器' if any(r['changed'] for r in results) else '该人员已在两台服务器的白名单中')
+            return web.json_response({'message': message, 'results': results}, headers={'Cache-Control': 'no-store'})
         except ControlError as e:
             return web.json_response({'message': e.message}, status=e.status, headers={'Cache-Control': 'no-store'})
         except (ValueError, TypeError, KeyError):
@@ -181,3 +195,4 @@ def install_roster(app, config, read_identity, identity, node_call):
 
     app.router.add_get('/a5-control/roster', status)
     app.router.add_post('/a5-control/roster/add', add)
+    app.router.add_post('/a5-control/roster/remove', add)
