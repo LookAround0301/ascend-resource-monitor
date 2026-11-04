@@ -30,8 +30,17 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
             if response.status!=200: raise ControlError(response.status,result.get('message','主机状态暂不可用'))
             return result
 
-    unified=UnifiedQueue(store, config['nodes'], settings.get('reservation_buffer_seconds',600), settings.get('timezone','UTC')) if settings.get('unified_queue') is True else None
+    unified=UnifiedQueue(store, config['nodes'], settings.get('reservation_buffer_seconds',600), settings.get('timezone','UTC'), settings.get('daily_reset',False)) if settings.get('unified_queue') is True else None
     auto=AutoQueue(store,agent) if not unified and settings.get('auto_match_employee') else None
+    monitor=None
+    if unified and settings.get('monitor_processes'):
+        from queue_monitor import QueueMonitor
+        async def fetch_inventory(url,query):
+            from aiohttp import ClientTimeout
+            async with app['http'].get(url+'/api/v1/query',params={'query':query},auto_decompress=True,timeout=ClientTimeout(total=5)) as response:
+                if response.status!=200:raise ValueError('Process inventory unavailable')
+                return await response.json()
+        monitor=QueueMonitor(config['nodes'],settings,fetch_inventory)
 
     async def actor(request,required=True):
         person=store.user(request.cookies.get(COOKIE))
@@ -77,6 +86,7 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                 try:
                     if unified: await asyncio.to_thread(unified.tick)
                     else: await reconcile()
+                    if monitor: await monitor.poll()
                 except Exception: pass
                 if auto:
                     try:await auto.refresh()
@@ -109,12 +119,13 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
 
     async def metrics(request):
         rows=store.view(None)['tasks'] if not unified else unified.view(None)['tasks']
+        process_metrics=monitor.metrics(rows,continuing=unified.continuing()) if monitor else ''
         if unified:
             rows=[{**row,'node':node,'state':'queued' if row['state']=='ready' else row['state'], 'container':'',
                    'title':('双机共 '+str(row['total_cards'])+' 卡（各 '+str(row['cards'])+' 卡）') if row['dual'] else '单机 '+str(row['cards'])+' 卡'}
                   for row in rows for node in (list(row['allocations']) or ([row['fixed_node']] if row['fixed_node'] else []))]
         return web.Response(text=render_queue_metrics(rows,list(config['nodes']),time.time(),
-                            settings.get('metric_prefix','ascend'),settings.get('timezone','UTC')),
+                            settings.get('metric_prefix','ascend'),settings.get('timezone','UTC'))+process_metrics,
                             content_type='text/plain',headers={'Cache-Control':'no-store'})
 
     async def api(request):
@@ -122,7 +133,10 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
             operation=request.match_info['operation']
             if request.method=='GET':
                 person=await actor(request,required=False)
-                if operation=='state':return web.json_response(unified.view(person) if unified else {**store.view(person),'nodes':list(config['nodes']),'server_time':time.time(),'auto_match_employee':auto is not None},headers={'Cache-Control':'no-store','Vary':'Cookie, Authorization'})
+                if operation=='state':
+                    state=unified.view(person) if unified else {**store.view(person),'nodes':list(config['nodes']),'server_time':time.time(),'auto_match_employee':auto is not None}
+                    if monitor:state=monitor.decorate(state,unified.continuing())
+                    return web.json_response(state,headers={'Cache-Control':'no-store','Vary':'Cookie, Authorization'})
                 if unified and operation in ('containers','operation','control-context'):
                     raise ControlError(404,'统一队列不提供网页停止或容器关联')
                 if operation=='containers':
@@ -186,7 +200,7 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                         raise ControlError(409,'请刷新页面后直接点击“开始使用”')
                     event(person,'unified_'+str(action),job=job)
                     unified.action(person,job,action,data.get('offer_id'))
-                    return web.json_response({'message':{'claim':'已登记开始，请自行启动任务','finish':'已结束登记，预约资源已释放','cancel':'已取消预约'}[action]})
+                    return web.json_response({'message':{'claim':'已登记开始，请自行启动任务','finish':'已结束登记，预约资源已释放','cancel':'已取消预约','priority-up':'已调高一位优先级','priority-down':'已调低一位优先级'}[action]})
                 raise ControlError(404,'统一队列不提供网页停止或容器关联')
             if operation=='enqueue':
                 if not person['registered']:raise ControlError(400,'提交自己的预约前，请先注册个人账号')

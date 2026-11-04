@@ -5,6 +5,32 @@ import json
 import re
 from pathlib import Path
 
+def add_registration_status(dashboard, prefix='ascend'):
+    """Join observed registration state without changing process CPU values."""
+    result=copy.deepcopy(dashboard)
+    for panel in result.get('panels',[]):
+        if panel.get('title')!='NPU 进程归属与工作目录':continue
+        for target in panel.get('targets',[]):
+            expr=target.get('expr','')
+            if '_queue_process_registration' in expr:continue
+            if '_process_cpu_percent' in expr:
+                target['expr']=f'({expr} * on(node,process_key) group_left(queue_registration) {prefix}_queue_process_registration) or on(node,process_key) ({expr})'
+        organize=next(t['options'] for t in panel['transformations'] if t['id']=='organize')
+        order=sorted(organize.get('indexByName',{}),key=organize['indexByName'].get)
+        if 'queue_registration' not in order:order.insert(order.index('employee_id')+1,'queue_registration')
+        organize['indexByName']={name:i for i,name in enumerate(order)}
+        organize.setdefault('renameByName',{})['queue_registration']='排队状态'
+        overrides=panel['fieldConfig'].setdefault('overrides',[])
+        overrides[:]=[v for v in overrides if v.get('matcher',{}).get('options')!='排队状态']
+        overrides.append({'matcher':{'id':'byName','options':'排队状态'},'properties':[
+            {'id':'custom.width','value':180},{'id':'custom.cellOptions','value':{'type':'color-text'}},
+            {'id':'noValue','value':'待核实'}, {'id':'mappings','value':[{'type':'value','options':{
+                '已登记使用':{'text':'已登记使用','color':'green'},
+                '跨日继续使用':{'text':'跨日继续使用','color':'blue'},
+                '未登记使用（疑似插队）':{'text':'未登记使用（疑似插队）','color':'red'},
+                '待核实':{'text':'待核实','color':'orange'}}}]}]})
+    return result
+
 
 def add_queue_home_panel(dashboard, nodes):
     """Replace the per-node queue tables with one interactive homepage region."""

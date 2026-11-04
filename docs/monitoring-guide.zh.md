@@ -17,6 +17,8 @@
 | 页面入口 | 默认主页和旧主页地址跳到同一规范地址，保留时间范围等参数；支持 Grafana 页面内导航 |
 | 刷新 | 右上角可选 1、5、10、30 秒，默认 1 秒；统一队列跟随选择，关闭自动刷新时暂停轮询 |
 | Windows 访问 | `Open-Monitor.cmd` 建立本机 SSH 隧道；已配置 HTTPS 时可选 `Open-Web.cmd`；附独立使用说明 |
+| 排队管理 | 仅管理员可调高/调低等待优先级；使用超时标记并通知当前使用人和下一位 |
+| 登记核对 | 进程未匹配使用登记时标记“疑似插队”并通知在线用户，仅提示，不自动 Stop |
 
 页面刷新不是采集周期：资源抓取通常为 5 秒，进程采集默认 10 秒。姓名和来源依赖已配置的证据，不代表独立的企业身份认证。
 
@@ -33,6 +35,7 @@
 | 多次提醒 | 分配时及第 2、4、6、8、9 分钟提醒；需要页面保持打开、登录并允许桌面通知 |
 | 超时 | 未开始则释放本次分配，预约向后顺延一位，保留原申请时间；不是移动到队尾 |
 | 结束 | 用户先自行停掉任务，再确认“结束登记”；该按钮只释放预约，不停止进程或容器 |
+| 每日清空 | 启用后每天 09:00 清空全部预约登记；账号和实际任务保留，原已登记容器的本次运行可继续 |
 
 开始使用后仍显示原申请时间。等待资格和计时保存在服务端，刷新页面或重启代理不重置；过期的分配编号不能领取新的分配。多个相邻预约同时超时时作为一组让后一位先行，使每个超时预约后移一位；末尾没有下一位时保留其末尾位置。
 
@@ -105,7 +108,11 @@ Windows 需要 PowerShell 5.1 和 OpenSSH Client，不需要 Python；主机需�
     "database": "/data/operator/ascend-monitor/lab-monitor/data/task-queue/queue.db",
     "timezone": "Asia/Shanghai",
     "metric_prefix": "ascend",
-    "reservation_buffer_seconds": 600
+    "reservation_buffer_seconds": 600,
+    "daily_reset": true,
+    "monitor_processes": true,
+    "prometheus_url": "http://127.0.0.1:9090",
+    "process_metric_prefix": "ascend_process_"
   }
 }
 ```
@@ -117,6 +124,8 @@ Windows 需要 PowerShell 5.1 和 OpenSSH Client，不需要 Python；主机需�
 - 队列指标由代理 `/a5-queue/metrics` 提供。两节点各三个采集目标再加队列时，通常应有 7 个目标；实际以配置为准。
 - Grafana 设置 `[dashboards] min_refresh_interval = 1s`；面板 `refresh` 为 `1s`，`timepicker.refresh_intervals` 为 `1s/5s/10s/30s`。
 - 进程采集器、Prometheus 查询和 guard 必须使用一致前缀。采集器默认 `ascend_`；既有自定义部署使用 `--metric-prefix <prefix>`，guard 使用对应的 `<prefix>_process_`。抓取健康不代表查询前缀正确。
+
+NPU 利用率优先使用设备整体指标 `npu_chip_info_overall_utilization`，旧采集器没有时再回退到 AICore 指标。两者含义见[官方指标定义](https://github.com/Ascend/mind-cluster/blob/master/docs/zh/scheduling/06_api/00_npu_exporter/01_prometheus_metrics_api.md)，不能用 HBM 占用替代计算利用率。登记核对要求采集完整且新鲜，归属不明确时只提示待核实；团队可能另有协调，未登记标记不触发容器停止。
 
 控制代理及账号权限详见[容器控制](../skills/ascend-resource-monitor/references/container-control.md)，HTTPS、Cookie、WebSocket 和证书配置详见[网页入口](../skills/ascend-resource-monitor/references/web-entry.md)。统一队列的开始/结束不调用旧版网页 Stop；不要混用两种队列的操作说明。
 
