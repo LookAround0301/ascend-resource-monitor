@@ -40,6 +40,8 @@ class RuntimeTests(unittest.TestCase):
 
     def test_dashboard_is_dynamic_and_process_tables_are_npu_only(self):
         c=example(); d=dashboard(c)
+        self.assertEqual(d['refresh'],'1s')
+        self.assertEqual(d['timepicker']['refresh_intervals'],['1s','5s','10s','30s'])
         self.assertEqual(len(d['panels']),20)
         self.assertEqual(d['templating']['list'][0]['query'],'a,b')
         for p in d['panels']:
@@ -55,6 +57,7 @@ class RuntimeTests(unittest.TestCase):
         files=deploy.rendered_config(c)
         self.assertIn('10.0.0.2:18083',files['prometheus.yml'])
         self.assertIn('http_addr = 127.0.0.1',files['grafana.ini'])
+        self.assertIn('min_refresh_interval = 1s',files['grafana.ini'])
         self.assertNotIn('PASSWORD',''.join(files.values()))
         self.assertNotIn('141.61.',json.dumps(d))
 

@@ -7,7 +7,7 @@ HOME_FRAGMENT = '''<style>
 <section><h3>个人账号与桌面通知</h3><p id="account-status"></p>
 <form id="account-form" class="row"><label>工号<input id="employee" autocomplete="username" pattern="[A-Za-z][0-9]{8}" required></label><label>姓名<input id="name" autocomplete="name"></label><label>个人密码<input id="password" type="password" autocomplete="current-password" minlength="10" maxlength="128" required></label><button name="login">登录</button><button name="register" class="secondary">首次注册</button></form>
 <div class="row"><button id="logout" class="secondary hidden" type="button">退出个人账号</button><button id="enable-notifications" type="button" disabled>开启并验证桌面通知</button></div><p id="notification-status" role="status">登录后开启并验证桌面通知，才能加入队列。</p></section>
-<section><h3>提交预约</h3><form id="join-form" class="row"><label>机器<select id="machine" required></select></label><label>卡数（合计）<select id="cards" required></select></label><label>预约类型<select id="kind"><option value="normal">普通任务</option><option value="night">夜间长任务</option></select></label><label>预计时长（小时）<input id="hours" type="number" min="0" max="2" step="1" value="1" required></label><label>分钟<select id="minutes" aria-label="预计时长（分钟）"></select></label><label id="start-label" class="hidden">预约开始时间<input id="start" type="datetime-local" step="60"></label><button id="join" disabled>加入队列</button></form><p id="resource-hint"></p><p id="reservation-window"></p><p>普通任务最长 2 小时，至少 1 分钟；每台 1–4 卡位于同一四卡组。分配后 10 分钟内点击“开始使用”，超时向后顺延一位。用完后自行停止服务，再结束登记。</p></section>
+<section><h3>提交预约</h3><form id="join-form" class="row"><label>机器<select id="machine" required></select></label><label>卡数（合计）<select id="cards" required></select></label><label>预约类型<select id="kind"><option value="normal">普通任务</option><option value="night">夜间长任务</option></select></label><label>预计时长（小时）<input id="hours" type="number" min="0" max="2" step="1" value="1" required></label><label>分钟<select id="minutes" aria-label="预计时长（分钟）"></select></label><label id="start-label" class="hidden">预约开始时间<input id="start" type="datetime-local" step="60"></label><button id="join" disabled>加入队列</button></form><p id="resource-hint"></p><p id="reservation-window"></p><p>普通任务最长 2 小时，时长按 5 分钟一档选择；每台 1–4 卡位于同一四卡组。分配后 10 分钟内点击“开始使用”，超时向后顺延一位。用完后自行停止服务，再结束登记。</p></section>
 <section><div class="scroll"><table><thead><tr><th>状态</th><th>工号 / 姓名</th><th>资源需求</th><th>机器与卡号</th><th>申请时间</th><th>开始时间</th><th>预计占用</th><th>预计结束时间</th><th>操作</th></tr></thead><tbody id="tasks"></tbody></table></div></section><p id="message" role="status"></p>'''
 
 HOME_JS = r'''"use strict";
@@ -18,8 +18,8 @@ HOME_JS = r'''"use strict";
  function mount(host){
   const root=host.attachShadow({mode:'open'});root.innerHTML=fragment;
   const $=id=>root.getElementById(id);
-  for(let minute=0;minute<60;minute++){const option=document.createElement('option');option.value=String(minute);option.textContent=minute+' 分钟';$('minutes').append(option);}
-  let machineNodes='',state=null,polling=false,stopped=false,submitting=false,verifiedUser=null,verifying=false,version=0;
+  for(let minute=0;minute<60;minute+=5){const option=document.createElement('option');option.value=String(minute);option.textContent=minute+' 分钟';$('minutes').append(option);}
+  let machineNodes='',state=null,polling=false,stopped=false,submitting=false,verifiedUser=null,verifying=false,version=0,lastRefreshAt=0;
   let failure='';const delivered=new Map(),openNotices=new Set();
   const registered=()=>!!(state&&state.user&&state.user.registered);
   const supported=()=>window.isSecureContext&&('Notification' in window);
@@ -71,7 +71,7 @@ HOME_JS = r'''"use strict";
    const night=$('kind').value==='night',seconds=Number($('hours').value)*3600+Number($('minutes').value)*60,window=state&&state.reservation_window;
    $('start-label').classList.toggle('hidden',!night);$('start').required=night;$('hours').max=night?'33':'2';
    const start=night?new Date($('start').value).getTime()/1000:state&&state.server_time;
-   let error=!Number.isInteger(seconds)||seconds<60?'预计时长至少 1 分钟':!night&&seconds>7200?'普通任务最长 2 小时':'';
+   let error=!Number.isInteger(seconds)||seconds<300?'预计时长至少 5 分钟':!night&&seconds>7200?'普通任务最长 2 小时':'';
    if(!error&&window&&Number.isFinite(start)&&start+seconds>window.end)error='预计结束时间不能超过次日上午 9 点';
    $('minutes').setCustomValidity(error);
    if(window){$('start').min=localInput(Math.ceil(window.start/60)*60);$('start').max=localInput(Math.floor((window.end-seconds)/60)*60);$('reservation-window').textContent='本次可预约：现在至 '+date(window.end)+'。开始和预计结束时间均须在此范围内。';}
@@ -108,7 +108,7 @@ HOME_JS = r'''"use strict";
    if(!body.children.length){const tr=element('tr',''),td=element('td','暂无排队或使用中的预约。');td.colSpan=9;tr.append(td);body.append(tr);}
   }
   async function refresh(){
-   if(polling||stopped)return;polling=true;
+   if(polling||stopped)return;polling=true;lastRefreshAt=Date.now();
    try{const next=await api('state');if(stopped)return;if((state&&state.user&&state.user.id)!==(next.user&&next.user.id)){version++;verifiedUser=null;verifying=false;failure='';delivered.clear();closeNotices();}state=next;render();}catch(e){if(!stopped)report(e.message,true);}finally{polling=false;}
   }
   $('account-form').onsubmit=async e=>{e.preventDefault();try{const result=await api(e.submitter.name,{employee:$('employee').value,name:$('name').value,password:$('password').value});$('password').value='';report(result.message);await refresh();}catch(err){report(err.message,true);}};
@@ -116,7 +116,12 @@ HOME_JS = r'''"use strict";
   $('machine').onchange=resourceFields;$('cards').onchange=resourceFields;
   $('kind').onchange=timeLimits;$('hours').oninput=timeLimits;$('minutes').onchange=timeLimits;$('start').oninput=timeLimits;timeLimits();
   $('join-form').onsubmit=async e=>{e.preventDefault();timeLimits();if(!$('join-form').reportValidity())return;if(!ready()){gate();report('请先开启桌面通知并通过测试，才能加入队列。',true);return;}const night=$('kind').value==='night';submitting=true;gate();try{report((await api('enqueue',{machine:$('machine').value,cards:Number($('cards').value),night,not_before:night?new Date($('start').value).getTime()/1000:0,requested_seconds:Number($('hours').value)*3600+Number($('minutes').value)*60,notifications_ready:true})).message);await refresh();}catch(err){report(err.message,true);}finally{submitting=false;gate();}};
-  refresh();const interval=setInterval(refresh,3000);
+  function refreshDelay(){
+   const control=document.querySelector('button[aria-label^="Choose refresh time interval"]');
+   if(control&&control.textContent.trim()==='Off')return 0;
+   return ({'1s':1000,'5s':5000,'10s':10000,'30s':30000})[new URLSearchParams(window.location.search).get('refresh')]||1000;
+  }
+  refresh();const interval=setInterval(()=>{const delay=refreshDelay();if(delay&&Date.now()-lastRefreshAt>=delay)refresh();},1000);
   const focus=()=>{gate();refresh();};window.addEventListener('focus',focus);
   return ()=>{stopped=true;version++;clearInterval(interval);window.removeEventListener('focus',focus);closeNotices();};
  }

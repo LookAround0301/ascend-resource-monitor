@@ -245,7 +245,7 @@ enabled = {str(c['anonymous_viewer']).lower()}
 org_role = Viewer
 hide_version = true
 [dashboards]
-min_refresh_interval = 5s
+min_refresh_interval = 1s
 default_home_dashboard_path = {base}/config/dashboards/overview.json
 [log]
 mode = file
