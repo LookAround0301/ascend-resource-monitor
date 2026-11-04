@@ -206,7 +206,8 @@ def create_app(config, agent_override=None, describe_override=None, guard_overri
         for link in model.get('links', []):
             if link.get('url') == '/a5-control/guard': link['title'] = '人员白名单'
         if (config.get('task_queue',{}).get('unified_queue') is True
-                and (model.get('uid') or data.get('metadata',{}).get('name')) == config.get('dashboard_uid','a5-dual-node')):
+                and (model.get('uid') or data.get('metadata',{}).get('name')) in
+                (config.get('dashboard_uid','a5-dual-node'), 'default-home-dashboard')):
             from patch_dashboard import add_queue_home_panel
             updated=add_queue_home_panel(model,list(config['nodes']))
             model.clear();model.update(updated)
@@ -233,7 +234,8 @@ def create_app(config, agent_override=None, describe_override=None, guard_overri
         headers={k:v for k,v in request.headers.items() if k.lower() not in HOP}
         url=config['grafana_url']+request.raw_path
         queue_shell=(config.get('task_queue',{}).get('unified_queue') is True
-                     and request.method=='GET' and (request.path=='/' or request.path.startswith('/d/')))
+                     and request.method=='GET' and ('text/html' in request.headers.get('Accept','')
+                     or request.path=='/' or request.path.startswith('/d/')))
         if request.headers.get('Upgrade','').lower()=='websocket':
             try:
                 async with app['http'].ws_connect(url,headers=headers) as upstream:
