@@ -78,7 +78,7 @@ def create_app(config, agent_override=None, describe_override=None, guard_overri
         if not state['authenticated']:
             raise ControlError(401,'请先从面板的“管理员登录”入口登录 Grafana 管理员账号')
         if not state['admin']:
-            raise ControlError(403,'只有 Grafana 管理员可以停止容器；当前账号仅可查看')
+            raise ControlError(403,'此操作需要 Grafana 管理员权限；当前账号仅可查看')
         return state['user']
 
     async def stop(request):
@@ -186,8 +186,8 @@ def create_app(config, agent_override=None, describe_override=None, guard_overri
 
     async def guard_view(request):
         try:
-            actor = await identity(request)
-            body = guard_page(actor, config.get('dashboard_uid', 'a5-dual-node')); status = 200
+            state = await read_identity(request)
+            body = guard_page(state['user'] if state['admin'] else None, config.get('dashboard_uid', 'a5-dual-node')); status = 200
         except ControlError as e:
             body = notice(e.message, '/login?redirectTo=%2Fa5-control%2Fguard', '/d/' + config.get('dashboard_uid', 'a5-dual-node')); status = e.status
         return web.Response(text=body, status=status, content_type='text/html', headers={
@@ -197,9 +197,14 @@ def create_app(config, agent_override=None, describe_override=None, guard_overri
     async def guard_js(request):
         return web.Response(text=GUARD_JS, content_type='application/javascript', headers={'Cache-Control': 'no-store'})
 
+    from personnel_roster import install_roster
+    install_roster(app, config, read_identity, identity, guard_call)
+
     async def personalized_dashboard(data,request):
         # Grafana can load either the legacy DTO or a Kubernetes-style resource.
         model=data.get('dashboard') or data.get('spec') or {}
+        for link in model.get('links', []):
+            if link.get('url') == '/a5-control/guard': link['title'] = '人员白名单'
         if (config.get('task_queue',{}).get('unified_queue') is True
                 and (model.get('uid') or data.get('metadata',{}).get('name')) == config.get('dashboard_uid','a5-dual-node')):
             from patch_dashboard import add_queue_home_panel

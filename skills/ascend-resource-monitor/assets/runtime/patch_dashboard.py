@@ -112,8 +112,8 @@ def add_queue_panels(dashboard,nodes,prefix='ascend'):
 def add_guard_panel(dashboard, prefix='ascend'):
     """Only call for an explicitly provisioned persistent container guard."""
     result = copy.deepcopy(dashboard)
-    result['links'] = [x for x in result.get('links', []) if x.get('title') != '容器管控 / 白名单'] + [
-        {'type': 'link', 'title': '容器管控 / 白名单', 'url': '/a5-control/guard',
+    result['links'] = [x for x in result.get('links', []) if x.get('url') != '/a5-control/guard'] + [
+        {'type': 'link', 'title': '人员白名单', 'url': '/a5-control/guard',
          'targetBlank': True, 'includeVars': False, 'keepTime': False, 'icon': 'external link'}]
     title = '容器管控 · 持续拦截与白名单'
     if any(p.get('title') == title for p in result['panels']): return result

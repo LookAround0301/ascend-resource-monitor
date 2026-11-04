@@ -9,7 +9,7 @@ import urllib.parse
 from control_common import ControlError, StopEngine, parse_browser_payload
 
 
-def make_handler(engine, guard=None, queue=None):
+def make_handler(engine, guard=None, queue=None, roster=None):
     class Handler(BaseHTTPRequestHandler):
         def reply(self, status, body):
             encoded = json.dumps(body, ensure_ascii=False).encode()
@@ -20,6 +20,11 @@ def make_handler(engine, guard=None, queue=None):
             self.wfile.write(encoded)
 
         def do_GET(self):
+            if self.path == '/roster' and roster:
+                try: self.reply(200, roster.snapshot())
+                except ControlError as e: self.reply(e.status, {'message': e.message})
+                except Exception: self.reply(503, {'message': '人员名单暂不可用'})
+                return
             if self.path.startswith('/queue/') and queue:
                 try:
                     path=urllib.parse.urlsplit(self.path);q=urllib.parse.parse_qs(path.query,keep_blank_values=True)
@@ -52,7 +57,7 @@ def make_handler(engine, guard=None, queue=None):
                 self.reply(404, {'message':'Not found'})
 
         def do_POST(self):
-            if self.path not in ('/stop', '/whitelist', '/queue/kill') or (self.path == '/whitelist' and not guard) or (self.path=='/queue/kill' and not queue):
+            if self.path not in ('/stop', '/whitelist', '/queue/kill', '/roster') or (self.path == '/whitelist' and not guard) or (self.path=='/queue/kill' and not queue) or (self.path=='/roster' and not roster):
                 self.reply(404, {'message':'Not found'}); return
             try:
                 length = int(self.headers.get('Content-Length','0'))
@@ -63,7 +68,8 @@ def make_handler(engine, guard=None, queue=None):
                 body = json.loads(self.rfile.read(length))
                 if set(body) != {'request','actor'}:
                     raise ControlError(400, '无效请求')
-                if self.path=='/queue/kill':result=queue.submit(body['request'],body['actor'])
+                if self.path=='/roster':result=roster.add(body['request'],body['actor'])
+                elif self.path=='/queue/kill':result=queue.submit(body['request'],body['actor'])
                 elif self.path=='/whitelist':result=guard.whitelist(body['request'],body['actor'])
                 else:result=engine.stop(body['request'],body['actor'])
                 self.reply(200, result)
@@ -91,7 +97,11 @@ def main():
     if config.get('task_queue'):
         from queue_processes import QueueProcesses
         queue=QueueProcesses(engine,guard)
-    server=ThreadingHTTPServer((config['listen_ip'],config.get('port',18084)),make_handler(engine, guard, queue))
+    roster=None
+    if config.get('guard', {}).get('owners_file'):
+        from personnel_roster import RosterStore
+        roster=RosterStore(engine)
+    server=ThreadingHTTPServer((config['listen_ip'],config.get('port',18084)),make_handler(engine, guard, queue, roster))
     server.daemon_threads=True
     context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); context.minimum_version=ssl.TLSVersion.TLSv1_2
     context.load_cert_chain(config['cert'],config['key']); context.load_verify_locations(config['ca'])

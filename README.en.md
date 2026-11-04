@@ -4,6 +4,8 @@ Reusable monitoring skill for Linux Ascend NPU servers. The recommended default 
 
 [中文](README.md) · [Windows wizard](https://github.com/LookAround0301/ascend-resource-monitor/releases/latest/download/ascend-monitor-setup.zip) · [Skill ZIP](https://github.com/LookAround0301/ascend-resource-monitor/releases/latest/download/ascend-resource-monitor-skill.zip)
 
+The personnel allowlist shows searchable employee IDs and names. Viewers can read it; a verified Grafana administrator can confirm additions to both host rosters. Identical retries are idempotent, conflicting names are rejected, and existing container marks are retained. See [personnel roster management](skills/ascend-resource-monitor/references/personnel-roster.md).
+
 ## Features
 
 - Grafana/Prometheus dashboards for host CPU, RAM, disks, shared storage, networking, and per-device NPU utilization, HBM, temperature and power.
