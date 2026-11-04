@@ -28,6 +28,15 @@ CONTAINER = re.compile(r"(?:docker[-/])([0-9a-f]{64})(?:[./\n]|$)")
 ROOT = Path(__file__).resolve().parent.parent
 HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
+def metric_lines(lines, prefix='ascend'):
+    """Rename metric identifiers without changing label values or help text."""
+    if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', prefix):
+        raise ValueError('Invalid metric prefix')
+    return [re.sub(r'^(# (?:HELP|TYPE) )?ascend_',
+                   lambda match: (match.group(1) or '') + prefix + '_', line)
+            for line in lines]
+
+
 def guard_metrics(path):
     if not path: return []
     try:
@@ -314,7 +323,7 @@ class Inventory:
             pairs = [key + '=' + json.dumps(value, ensure_ascii=False) for key, value in zip(SUMMARY_LABELS, values)]
             body.append('ascend_process_group_origin{' + ','.join(pairs) + '} ' + str(summarize_origin(codes)))
         body.extend(guard_metrics(getattr(self.args, 'guard_state', None)))
-        self.body = ("\n".join(body) + "\n").encode("utf-8")
+        self.body = ("\n".join(metric_lines(body, getattr(self.args, 'metric_prefix', 'ascend'))) + "\n").encode("utf-8")
         self.last_success = time.time()
         return {"rows": len(rows), "truncated": total > len(rows), "duration_seconds": time.monotonic() - start}
 
@@ -335,6 +344,7 @@ def main():
     parser.add_argument("--npu-url", required=True)
     parser.add_argument("--owners", default=str(ROOT / "config/process-owners.json"))
     parser.add_argument("--guard-state", help="Optional persisted state of an explicitly enabled container guard")
+    parser.add_argument("--metric-prefix", default="ascend", help="Metric prefix matching the existing Prometheus queries")
     args = parser.parse_args()
     inventory = Inventory(args)
     inventory.sample()

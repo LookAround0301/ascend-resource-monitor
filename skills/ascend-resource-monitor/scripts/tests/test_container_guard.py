@@ -10,7 +10,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'assets/runtime'))
 from container_guard import ContainerGuard, load_candidates
 from control_common import ControlError, StopEngine
-from process_exporter import guard_metrics
+from process_exporter import guard_metrics, metric_lines
 from patch_dashboard import add_guard_panel
 
 CID = 'a' * 64
@@ -33,6 +33,17 @@ class Docker:
 
 
 class GuardTests(unittest.TestCase):
+    def test_custom_metric_prefix_preserves_guard_records_and_label_values(self):
+        lines=['# TYPE ascend_container_guard_info gauge',
+               'ascend_container_guard_info{container="ascend_keep",employee_ids="j30064796",guard_state="持续拦截"} 1',
+               'ascend_process_inventory_success 1']
+        renamed=metric_lines(lines,'a5')
+        self.assertEqual(renamed[0],'# TYPE a5_container_guard_info gauge')
+        self.assertEqual(renamed[1],'a5_container_guard_info{container="ascend_keep",employee_ids="j30064796",guard_state="持续拦截"} 1')
+        self.assertEqual(renamed[2],'a5_process_inventory_success 1')
+        self.assertEqual(metric_lines(lines),lines)
+        with self.assertRaises(ValueError): metric_lines(lines,'bad-prefix')
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
