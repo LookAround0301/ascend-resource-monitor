@@ -69,7 +69,9 @@ class PersonnelHTTPTests(unittest.IsolatedAsyncioTestCase):
             result = await response.json(); self.assertEqual(result['can_edit'], role == 'Admin')
             self.assertEqual(result['people'], [{'employee': 'u12345678', 'name': '原有人员'}])
             response = await self.client.get('/a5-control/guard', headers=self.headers(role)); self.assertEqual(response.status, 200)
-            self.assertEqual('id="add-form"' in await response.text(), role == 'Admin')
+            body=await response.text()
+            self.assertEqual('id="add-form"' in body, role == 'Admin')
+            self.assertNotIn('>管理员登录</a>', body)
 
     async def test_unauthorized_and_forged_headers_cannot_add(self):
         for role, code in [(None, 401), ('Viewer', 403), ('Editor', 403)]:

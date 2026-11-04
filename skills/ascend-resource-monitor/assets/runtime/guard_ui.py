@@ -29,7 +29,7 @@ button.remove{background:#8c3543;padding:7px 13px}td:last-child{width:95px}
 <div class="toolbar"><label>搜索工号或姓名<input id="search" type="search" placeholder="输入工号或姓名"></label><span id="count"></span></div>
 <p id="health" role="status">正在读取人员名单…</p>
 <div class="scroll"><table><thead><tr><th>工号</th><th>姓名</th><th>操作</th></tr></thead><tbody id="people"></tbody></table></div>
-''' + form + '''<p id="result" role="status"></p><p><a class="button" href="/d/''' + esc(dashboard_uid) + '''">返回监控面板</a> <a href="/login?redirectTo=%2Fa5-control%2Fguard">管理员登录</a></p>
+''' + form + '''<p id="result" role="status"></p><p><a class="button" href="/d/''' + esc(dashboard_uid) + '''">返回监控面板</a></p>
 </main><script src="/a5-control/guard.js" defer></script></body></html>'''
 
 

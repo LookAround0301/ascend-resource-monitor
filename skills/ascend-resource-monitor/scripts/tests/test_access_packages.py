@@ -76,6 +76,19 @@ class AccessPackageTests(unittest.TestCase):
             self.assertEqual(run(folder / 'open-monitor.ps1', '-ValidateOnly').returncode, 0)
 
     @unittest.skipUnless(os.name == 'nt' and shutil.which('powershell.exe'), 'Windows integration')
+    def test_tunnel_uses_shared_dashboard_path_and_preserves_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);config=root/'deployment.json'
+            config.write_text(json.dumps(example()))
+            build('client',root/'out',config,shared_url='https://192.0.2.10:8443/d/lab/lab-panel?refresh=5s')
+            folder=root/'out/client-lab'
+            script=root/'url.ps1'
+            script.write_text("param($Folder)\n. (Join-Path $Folder 'common.ps1')\n$c=Read-JsonFile (Join-Path $Folder 'client.json')\nGet-ClientDashboardUrl $c\n$c.shared_url='https://192.0.2.10/d/another-panel'\nGet-ClientDashboardUrl $c\n$c.shared_url='javascript:alert(1)'\nGet-ClientDashboardUrl $c\n")
+            result=subprocess.run(['powershell.exe','-NoProfile','-ExecutionPolicy','Bypass','-File',str(script),'-Folder',str(folder)],capture_output=True,text=True)
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertEqual(result.stdout.splitlines(),['http://127.0.0.1:13000/d/lab/lab-panel?refresh=5s','http://127.0.0.1:13000/d/lab','http://127.0.0.1:13000/d/lab'])
+
+    @unittest.skipUnless(os.name == 'nt' and shutil.which('powershell.exe'), 'Windows integration')
     def test_windows_package_function_supports_both_modes(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
