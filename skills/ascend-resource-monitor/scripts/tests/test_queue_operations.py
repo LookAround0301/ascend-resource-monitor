@@ -39,6 +39,21 @@ class QueueOperationTests(unittest.TestCase):
         self.assertEqual({r['id']:r['created'] for r in rows},before)
         self.queue.action({**self.users[0],'admin':True},b,'priority-down')
         self.assertEqual([r['id'] for r in self.queue.view(None)['tasks']],[first,a,b])
+    def test_top_moves_directly_to_first_waiting_preserving_other_order_and_active(self):
+        first=self.add();self.claim(first)
+        a=self.add(self.users[1]);b=self.add(self.users[2]);c=self.add(self.users[1]);d=self.add(self.users[2])
+        before={r['id']:(r['created'],r['activated'],r['allocations']) for r in self.queue.view(None)['tasks']}
+        admin={**self.users[0],'admin':True}
+        with self.assertRaises(ControlError):self.queue.action(self.users[2],d,'priority-top')
+        with self.assertRaises(ControlError):self.queue.action(admin,first,'priority-top')
+        self.queue.action(admin,d,'priority-top')
+        rows=self.queue.view(admin)['tasks']
+        self.assertEqual([r['id'] for r in rows],[first,d,a,b,c])
+        self.assertEqual({r['id']:(r['created'],r['activated'],r['allocations']) for r in rows},before)
+        self.assertFalse(rows[1]['can_raise_priority'])
+        with self.assertRaises(ControlError):self.queue.action(admin,d,'priority-top')
+        reopened=UnifiedQueue(self.store,['a','b'],timezone='Asia/Shanghai',daily_reset=True)
+        self.assertEqual([r['id'] for r in reopened.view(None)['tasks']],[first,d,a,b,c])
     def test_nine_am_clears_active_and_waiting_once_and_preserves_accounts(self):
         active=self.add();self.claim(active);self.add(self.users[1]);self.clock.return_value=stamp('2026-11-04T08:59:59')
         self.assertEqual(len(self.queue.view(None)['tasks']),2)

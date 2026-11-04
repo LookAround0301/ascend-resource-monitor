@@ -16,7 +16,7 @@ This guide describes the repository source as of 2026-11-04. Basic monitoring ca
 | Persistent guard | When explicitly enabled, intercept NPU containers with a valid employee ID but no mapped name; allowlist exemptions take precedence |
 | Navigation | One canonical homepage, including old-home redirects, preserved query parameters and Grafana client-side navigation |
 | Refresh | 1/5/10/30-second choices, default 1 second; queue polling follows the choice and pauses when automatic refresh is Off |
-| Queue operations | Administrator-only waiting-priority adjustment, owner/next-user overdue notices and optional daily 09:00 reservation reset |
+| Queue operations | Administrator-only top/up/down waiting-priority adjustment, owner/next-user overdue notices and optional daily 09:00 reservation reset |
 | Registration checks | Read-only process/queue matching, with unregistered-use annotations and online notifications; no automatic Stop |
 | Windows access | `Open-Monitor.cmd` for a local SSH tunnel, optional `Open-Web.cmd` for verified HTTPS, and a separate user guide |
 
@@ -162,13 +162,13 @@ python skills/ascend-resource-monitor/scripts/build_windows_package.py --mode cl
 | Exempt containers mixed into active interception | Filter the active table while retaining stored marks |
 | Process/guard tables disappeared after collector updates | Configurable metric namespace and validation of actual returned series |
 | Inconsistent polling/access instructions | One-second default, four refresh choices, CMD fallback and synchronized handoff documentation |
-| Overdue use and rigid waiting order | Current/next-user notices, visible overdue status and administrator-only priority adjustment |
+| Overdue use and rigid waiting order | Current/next-user notices, visible overdue status and administrator-only top/up/down priority adjustment |
 | Stale daily reservations and awkward duration defaults | Optional 09:00 clearing without workload interruption; 0-hour/30-minute defaults |
 | AICore-only headline remained zero | Prefer device-wide utilization, with per-card fallback for older exporters |
 | Unregistered NPU use was hard to see | Fresh-source registration matching, informational status and online notices, with no automatic Stop |
 
 ## 6. Validation scope
 
-Use `python tools/check.py` and the required commit-range `pre-commit` checks. This iteration verified an existing two-node deployment's pages, permissions, entry points and all seven scrape targets. The latest isolated Linux backend suite ran 177 tests with three skips. Allocation, claim expiry, exact queue movement, restart persistence, stale offers, reminders, direct claiming, daily-reset boundaries, priority authorization and process-source freshness were tested in isolation or with browser fixtures; production workloads were not stopped for testing. The next live 09:00 reset is not forced as an acceptance test.
+Use `python tools/check.py` and the required commit-range `pre-commit` checks. This iteration verified an existing two-node deployment's pages, permissions, entry points and all seven scrape targets. The latest isolated Linux backend suite ran 178 tests with three skips. Allocation, claim expiry, exact queue movement, restart persistence, stale offers, reminders, direct claiming, daily-reset boundaries, priority authorization and process-source freshness were tested in isolation or with browser fixtures; production workloads were not stopped for testing. The next live 09:00 reset is not forced as an acceptance test.
 
 Fresh-host installation, other hardware profiles and different corporate network/certificate policies still require their own acceptance checks. Skipped tests are not reported as passed.

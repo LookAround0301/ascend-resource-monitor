@@ -283,7 +283,7 @@ class UnifiedQueue:
         return job
 
     def action(self, user, job, action, offer_id=None):
-        if not isinstance(job, str) or action not in ('claim', 'finish', 'cancel', 'priority-up', 'priority-down'):
+        if not isinstance(job, str) or action not in ('claim', 'finish', 'cancel', 'priority-up', 'priority-down', 'priority-top'):
             raise ControlError(400, '无效任务操作')
         now = time.time()
         with self.store.db() as db:
@@ -291,13 +291,21 @@ class UnifiedQueue:
             row = db.execute('SELECT * FROM unified_tasks WHERE id=?', (job,)).fetchone()
             if not row:
                 raise ControlError(404, '任务不存在')
-            if action in ('priority-up','priority-down'):
+            if action in ('priority-up','priority-down','priority-top'):
                 if not user.get('admin'):
                     raise ControlError(403,'仅管理员可调整排队优先级')
                 waiting=db.execute("SELECT id,queue_order FROM unified_tasks WHERE state='queued' ORDER BY queue_order,rowid").fetchall()
                 index=next((i for i,r in enumerate(waiting) if r['id']==job),None)
                 if index is None:
                     raise ControlError(409,'仅等待中的预约可调整优先级')
+                if action=='priority-top':
+                    if index==0:
+                        raise ControlError(409,'已在等待队列首位')
+                    db.execute('UPDATE unified_tasks SET queue_order=? WHERE id=?',(waiting[0]['queue_order'],job))
+                    for position in range(index):
+                        db.execute('UPDATE unified_tasks SET queue_order=? WHERE id=?',(waiting[position+1]['queue_order'],waiting[position]['id']))
+                    self._schedule(db,now)
+                    return
                 other=index+(-1 if action=='priority-up' else 1)
                 if not 0<=other<len(waiting):
                     raise ControlError(409,'已到等待队列边界')

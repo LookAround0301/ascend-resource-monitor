@@ -87,6 +87,12 @@ class ClaimHTTPTests(unittest.IsolatedAsyncioTestCase):
         await self.post('unified-action',request,403)
         self.admin=True;await self.post('unified-action',request)
         self.assertEqual([r['id'] for r in (await self.state())['tasks']],[first,b,a])
+        self.admin=False
+        request={'job':a,'action':'priority-top','confirmed':True,'admin':True}
+        await self.post('unified-action',request,403)
+        self.admin=True;response=await self.post('unified-action',request)
+        self.assertIn('置顶',response['message'])
+        self.assertEqual([r['id'] for r in (await self.state())['tasks']],[first,a,b])
 
 
 if __name__=='__main__':unittest.main()

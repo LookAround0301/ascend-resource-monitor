@@ -200,7 +200,7 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                         raise ControlError(409,'请刷新页面后直接点击“开始使用”')
                     event(person,'unified_'+str(action),job=job)
                     unified.action(person,job,action,data.get('offer_id'))
-                    return web.json_response({'message':{'claim':'已登记开始，请自行启动任务','finish':'已结束登记，预约资源已释放','cancel':'已取消预约','priority-up':'已调高一位优先级','priority-down':'已调低一位优先级'}[action]})
+                    return web.json_response({'message':{'claim':'已登记开始，请自行启动任务','finish':'已结束登记，预约资源已释放','cancel':'已取消预约','priority-top':'已置顶到等待队列首位','priority-up':'已调高一位优先级','priority-down':'已调低一位优先级'}[action]})
                 raise ControlError(404,'统一队列不提供网页停止或容器关联')
             if operation=='enqueue':
                 if not person['registered']:raise ControlError(400,'提交自己的预约前，请先注册个人账号')
