@@ -29,7 +29,7 @@ Page refresh is not sampling frequency: resource scraping is normally every five
 | Single node | Any available node or one specified node, 1–8 cards |
 | Two nodes | 2/4/8/16 cards in total, split 1+1 / 2+2 / 4+4 / 8+8 |
 | Card placement | Use available queue capacity; requests for 1–4 cards per node stay in one four-card group |
-| Duration | Whole hours plus 0/5/10/…/55 minutes; normal tasks are at most two hours |
+| Duration | Defaults to 0 hours and 30 minutes; whole hours plus 0/5/10/…/55 minutes; normal tasks are at most two hours |
 | Reservation horizon | New tasks must start and finish by 09:00 on the next calendar day in the configured timezone |
 | Claiming | Click Start use directly within at most ten minutes of allocation; an earlier scheduling deadline still applies |
 | Reminders | At allocation, then after 2, 4, 6, 8 and 9 minutes; keep the page open, signed in and notifications enabled |
@@ -120,6 +120,7 @@ These use the central proxy and mTLS host agents; the base wizard does not enabl
 - Configure exactly two eight-card nodes in the proxy's `nodes`, matching monitoring labels. The canonical path must belong to the same dashboard UID.
 - Install matching versions of the proxy, queue, planner and dependencies from `assets/runtime/`. Run `control_proxy.py --config .../proxy.json` centrally and `container_agent.py --config .../agent.json` on each host under their established service accounts.
 - Use `patch_dashboard.add_queue_home_panel(dashboard, nodes)` to add the unified region. Preserve existing panels, datasource UIDs, selectors and control links. The proxy supports both old and new Grafana dashboard APIs.
+- With `monitor_processes` enabled, also apply `patch_dashboard.add_registration_status(dashboard, prefix)` to add the process table's registration-status column. Match the queue metric prefix and validate `*_queue_process_source_up` on every node. This is a read-only match of current employee/node registrations; ambiguous or stale evidence remains unverified, and no container is stopped.
 - Install personnel modules per the [roster reference](personnel-roster.md). Enable automatic interception only under the separately authorized [guard procedure](container-guard.md), after reviewing candidates and protected workloads.
 - Scrape queue metrics at `/a5-queue/metrics`. Two nodes with three exporters each plus queue metrics normally produce seven targets; the configured topology is authoritative.
 - Set Grafana `[dashboards] min_refresh_interval = 1s`, dashboard `refresh` to `1s`, and `timepicker.refresh_intervals` to `1s/5s/10s/30s`.
@@ -161,9 +162,13 @@ python skills/ascend-resource-monitor/scripts/build_windows_package.py --mode cl
 | Exempt containers mixed into active interception | Filter the active table while retaining stored marks |
 | Process/guard tables disappeared after collector updates | Configurable metric namespace and validation of actual returned series |
 | Inconsistent polling/access instructions | One-second default, four refresh choices, CMD fallback and synchronized handoff documentation |
+| Overdue use and rigid waiting order | Current/next-user notices, visible overdue status and administrator-only priority adjustment |
+| Stale daily reservations and awkward duration defaults | Optional 09:00 clearing without workload interruption; 0-hour/30-minute defaults |
+| AICore-only headline remained zero | Prefer device-wide utilization, with per-card fallback for older exporters |
+| Unregistered NPU use was hard to see | Fresh-source registration matching, informational status and online notices, with no automatic Stop |
 
 ## 6. Validation scope
 
-Use `python tools/check.py` and the required commit-range `pre-commit` checks. This iteration verified an existing two-node deployment's pages, permissions, entry points and all seven scrape targets. The latest isolated Linux backend suite ran 167 tests with three skips. Allocation, claim expiry, exact queue movement, restart persistence, stale offers, reminders and direct claiming were tested in isolation or with browser fixtures; production workloads were not stopped for testing.
+Use `python tools/check.py` and the required commit-range `pre-commit` checks. This iteration verified an existing two-node deployment's pages, permissions, entry points and all seven scrape targets. The latest isolated Linux backend suite ran 177 tests with three skips. Allocation, claim expiry, exact queue movement, restart persistence, stale offers, reminders, direct claiming, daily-reset boundaries, priority authorization and process-source freshness were tested in isolation or with browser fixtures; production workloads were not stopped for testing. The next live 09:00 reset is not forced as an acceptance test.
 
 Fresh-host installation, other hardware profiles and different corporate network/certificate policies still require their own acceptance checks. Skipped tests are not reported as passed.

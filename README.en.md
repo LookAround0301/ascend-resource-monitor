@@ -29,6 +29,8 @@ Optional [unified reservations](skills/ascend-resource-monitor/references/monito
 
 Claim an allocation directly within ten minutes, without an extra dialog. Desktop reminders occur at allocation and after 2/4/6/8/9 minutes. An unclaimed allocation is released and the request moves back one position, retaining its application time. Order, deadlines and offer IDs persist across reloads and proxy restarts. Application time remains visible after claiming.
 
+Duration defaults to 0 hours and 30 minutes. Administrators can move waiting requests up or down; overdue use is marked on the page and notifies the current user and next relevant waiter. The optional daily 09:00 reset clears all reservation records, including active ones, without stopping workloads. Process-registration checks only annotate and broadcast unregistered use; they never automatically Stop containers. Stale data or unknown identities remain unverified.
+
 Stop the workload yourself before confirming Finish registration. The unified queue records and allocates reservations; it does not start or stop workloads or provide hardware isolation. The older per-node queues and browser Stop have a [separate reference](skills/ascend-resource-monitor/references/task-queue.md); do not apply their stopping workflow to unified reservations.
 
 ## Access: local launcher recommended, direct browser optional
