@@ -1,5 +1,4 @@
 """The unified queue survives default-home aliases and Grafana SPA navigation."""
-import copy
 from pathlib import Path
 import sys
 import tempfile
@@ -33,12 +32,13 @@ class HomeNavigationTests(unittest.IsolatedAsyncioTestCase):
         fake.router.add_get('/api/dashboards/uid/{uid}',dashboard)
         fake.router.add_get('/apis/dashboard.grafana.app/v2beta1/namespaces/default/dashboards/default-home-dashboard',resource)
         fake.router.add_get('/public/app.js',asset)
-        for route in ['/dashboards','/login','/profile','/d/a5-dual-node','/d/default-home-dashboard/home']:fake.router.add_get(route,shell)
+        for route in ['/dashboards','/login','/profile','/d/a5-dual-node','/d/a5-dual-node/a5-server','/d/default-home-dashboard/home']:fake.router.add_get(route,shell)
         self.grafana=TestServer(fake);await self.grafana.start_server()
         config={'grafana_url':str(self.grafana.make_url('')).rstrip('/'),'org_id':1,
                 'dashboard_uid':'a5-dual-node','nodes':{'A5-118':{'url':'https://unused'},'A5-124':{'url':'https://unused'}},
                 'audit_log':str(Path(self.temp.name)/'audit.jsonl'),
                 'task_queue':{'database':str(Path(self.temp.name)/'queue.db'),'unified_queue':True}}
+        self.config=config
         self.client=TestClient(TestServer(create_app(config,agent_override=True)))
         await self.client.start_server()
 
@@ -67,3 +67,31 @@ class HomeNavigationTests(unittest.IsolatedAsyncioTestCase):
         response=await self.client.get('/public/app.js',headers={'Accept':'application/javascript','Accept-Encoding':'gzip'})
         self.assertEqual(await response.text(),'const fixture = 1;')
         self.assertEqual(response.headers.get('Content-Encoding'),'gzip')
+
+    async def test_canonical_home_redirects_preserve_filters_without_loop(self):
+        target='/d/a5-dual-node/a5-server'
+        client=TestClient(TestServer(create_app({**self.config,'canonical_dashboard_path':target},agent_override=True)))
+        await client.start_server()
+        try:
+            query='from=now-30m&to=now&timezone=Asia%2FShanghai&var-node=%24__all&refresh=5s'
+            for source in ['/','/d/default-home-dashboard','/d/default-home-dashboard/home']:
+                response=await client.get(source+'?'+query,allow_redirects=False)
+                self.assertEqual(response.status,302)
+                self.assertEqual(response.headers['Cache-Control'],'no-store')
+                from urllib.parse import urlsplit,parse_qs
+                location=urlsplit(response.headers['Location'])
+                self.assertEqual(location.path,target)
+                self.assertEqual(parse_qs(location.query),parse_qs(query))
+            response=await client.get('/api/dashboards/home?'+query)
+            self.assertEqual(parse_qs(urlsplit((await response.json())['redirectUri']).query),parse_qs(query))
+            response=await client.get(target,headers={'Accept':'text/html'},allow_redirects=False)
+            self.assertEqual(response.status,200)
+            self.assertNotIn('Location',response.headers)
+            self.assertIn('/a5-queue/home.js',await response.text())
+        finally: await client.close()
+
+    async def test_canonical_target_is_bound_to_configured_dashboard(self):
+        for target in ['https://example.com/d/a5-dual-node/a5-server','//example.com/d/a5-dual-node/a5-server',
+                       '/d/other/dashboard','/d/a5-dual-node/../other','/d/a5-dual-node/a5-server?next=elsewhere']:
+            with self.assertRaises(ValueError):
+                create_app({**self.config,'canonical_dashboard_path':target},agent_override=True)

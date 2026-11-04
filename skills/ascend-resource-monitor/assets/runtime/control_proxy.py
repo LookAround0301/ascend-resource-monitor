@@ -45,6 +45,12 @@ def https_context(config):
 def create_app(config, agent_override=None, describe_override=None, guard_override=None, queue_override=None):
     from aiohttp import web, ClientSession, ClientTimeout, DummyCookieJar, WSMsgType
     app=web.Application(client_max_size=8*1024*1024)
+    canonical_home=config.get('canonical_dashboard_path')
+    if canonical_home is not None:
+        uid_path='/d/'+urllib.parse.quote(config.get('dashboard_uid','a5-dual-node'),safe='')
+        if (not isinstance(canonical_home,str) or not (canonical_home==uid_path or canonical_home.startswith(uid_path+'/'))
+                or any(c in canonical_home for c in ('?','#','\\')) or '..' in canonical_home.split('/')):
+            raise ValueError('Canonical dashboard must be a local path for the configured dashboard UID')
 
     async def lifespan(app):
         app['http']=ClientSession(cookie_jar=DummyCookieJar(),auto_decompress=False,
@@ -229,6 +235,13 @@ def create_app(config, agent_override=None, describe_override=None, guard_overri
         return web.json_response({'status':'ok'})
 
     async def forward(request):
+        if canonical_home and request.method=='GET':
+            query=request.rel_url.raw_query_string
+            target=canonical_home+('?' + query if query else '')
+            if request.path=='/api/dashboards/home':
+                return web.json_response({'redirectUri':target},headers={'Cache-Control':'no-store'})
+            if request.path in ('/','/d/default-home-dashboard') or request.path.startswith('/d/default-home-dashboard/'):
+                raise web.HTTPFound(target,headers={'Cache-Control':'no-store'})
         if request.path.startswith(('/a5-control/','/a5-queue')):
             return web.json_response({'message':'Not found'},status=404)
         headers={k:v for k,v in request.headers.items() if k.lower() not in HOP}
