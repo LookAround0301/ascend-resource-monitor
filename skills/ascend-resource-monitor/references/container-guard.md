@@ -33,9 +33,9 @@ Create a root-owned 0700 directory on the deployment data volume and initialize 
 }
 ```
 
-Give the process exporter read access to the state through its existing service account; do not make the file world-readable. Add `--guard-state <state.json>` to its ExecStart. `patch_dashboard.add_guard_panel(dashboard, prefix='ascend')` adds the persistent guard table and the administrator management link, preserving the existing NPU summary. The table includes stopped containers intentionally. The normal process tables remain NPU-only.
+Give the process exporter read access to the state through its existing service account; do not make the file world-readable. Add `--guard-state <state.json>` to its ExecStart and preserve any deployed `--metric-prefix`. `patch_dashboard.add_guard_panel(dashboard, prefix='ascend')` adds the active-interception table and the administrator personnel link, preserving the existing NPU summary. Stopped containers remain visible while intercepted; personnel/container exemptions are filtered from this table without deleting their marks. The normal process tables remain NPU-only.
 
-Restart just the updated monitoring components. Check the disabled guard through the mTLS `/guard` endpoint and the admin-only `/a5-control/guard` page, verify the roster and current candidate list, then set `enabled: true` for the user-authorized scope and restart the agent. Preserve existing certificates, credential hardening, HTTPS/SSH entry points and whitelist data on all later upgrades. The default wizard does not silently enable this policy.
+Restart just the updated monitoring components. Check the disabled guard through the mTLS `/guard` endpoint or administrator `/a5-control/guard/status`, and verify the personnel list through `/a5-control/guard`. Review current candidates before setting `enabled: true` for the user-authorized scope and restarting the agent. Preserve existing certificates, credential hardening, HTTPS/SSH entry points and whitelist data on later upgrades. The default wizard does not silently enable this policy.
 
 ## Verify
 

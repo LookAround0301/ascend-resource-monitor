@@ -1,4 +1,6 @@
-# Optional personal reservations and two-mode Stop
+# Unified reservations and the legacy per-node queue
+
+For the current feature matrix, deployment sequence and upgrade checklist, see [the monitoring guide](monitoring-guide.md).
 
 ## Unified homepage reservations
 
@@ -14,7 +16,9 @@ While the homepage remains open, send desktop reminders on allocation and after 
 
 The dashboard refresh menu offers 1, 5, 10 and 30 seconds, defaulting to 1 second. Configure Grafana's minimum dashboard refresh interval to 1 second. The embedded queue follows the selected refresh interval and pauses its polling when the dashboard is set to Off; user actions can still refresh it immediately. This controls page polling, not the exporters' collection or Prometheus scrape cadence.
 
-Use this extension when the user requests personal task queues or individual Stop permissions. Reuse the existing [control proxy and mutual-TLS host agents](container-control.md). The default deployment wizard remains read-only. This implementation reserves whole nodes in FIFO order; it does not execute launch commands, allocate individual cards, or stop tasks merely because another user is waiting.
+## Legacy per-node reservations and Stop
+
+The remaining sections describe the older per-node workflow, not unified mode. Reuse the existing [control proxy and mutual-TLS host agents](container-control.md). The default deployment wizard remains read-only. This legacy implementation reserves whole nodes in FIFO order and does not allocate individual cards. Its confirmed Stop/finish behavior must not be applied to the current unified queue.
 
 ## Establish the ownership model
 
