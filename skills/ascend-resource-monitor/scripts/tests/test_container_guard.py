@@ -164,9 +164,16 @@ class GuardTests(unittest.TestCase):
         self.assertIn('guard_state="白名单"', '\n'.join(guard_metrics(self.path)))
         old = {'uid': 'test', 'panels': [{'id': 20, 'gridPos': {'y': 4}, 'title': 'original'}]}
         patched = add_guard_panel(old)
+        self.assertIn('guard_state="持续拦截"',patched['panels'][-1]['targets'][0]['expr'])
         self.assertEqual(len(patched['panels']), 2)
         self.assertEqual(add_guard_panel(patched)['panels'], patched['panels'])
         self.assertEqual(old['panels'][0]['gridPos']['y'], 4)
+        legacy = json.loads(json.dumps(patched))
+        legacy['panels'][-1]['title'] = '容器管控 · 持续拦截与白名单'
+        legacy['panels'][-1]['targets'][0]['expr'] = 'a5_container_guard_info{node=~"$node"}'
+        updated = add_guard_panel(legacy, 'a5')
+        self.assertEqual(len(updated['panels']),2)
+        self.assertEqual(updated['panels'][-1]['targets'][0]['expr'],'a5_container_guard_info{node=~"$node",guard_state="持续拦截"}')
 
     def test_reader_uses_real_roster_and_requires_complete_fresh_source(self):
         owners = Path(self.temp.name) / 'owners.json'

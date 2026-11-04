@@ -1,5 +1,11 @@
 # Optional personal reservations and two-mode Stop
 
+## Unified homepage reservations
+
+When `task_queue.unified_queue` is enabled, use `queue_unified.py`, `queue_planner.py` and `queue_unified_ui.py` instead of the older whole-node workflow below. The homepage allocates 1–8 cards on one node or eight on each node, with manual start/finish and no automatic workload execution or stopping. Duration is entered as whole hours plus a 0–59 minute dropdown. Normal jobs remain limited to 1–120 minutes; scheduled night jobs may be longer.
+
+New reservations must start and finish within the period from submission to 09:00 on the next calendar day in `task_queue.timezone`. Persist that deadline with the reservation; queue delays and later claims cannot move its estimated end past the original deadline. The ten-minute release buffer is additional scheduling space, not requested use time. If waiting leaves too little time, retain a visible cancellable entry with an expired-window message instead of silently deleting it. Existing active/legacy reservations keep their original behavior; passing the estimate or deadline never stops a workload. Verify minute-only and mixed durations, the two-hour normal limit, timezone/midnight boundaries, and delayed claims.
+
 Use this extension when the user requests personal task queues or individual Stop permissions. Reuse the existing [control proxy and mutual-TLS host agents](container-control.md). The default deployment wizard remains read-only. This implementation reserves whole nodes in FIFO order; it does not execute launch commands, allocate individual cards, or stop tasks merely because another user is waiting.
 
 ## Establish the ownership model

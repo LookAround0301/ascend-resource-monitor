@@ -116,18 +116,24 @@ def add_guard_panel(dashboard, prefix='ascend'):
         {'type': 'link', 'title': '人员白名单', 'url': '/a5-control/guard',
          'targetBlank': True, 'includeVars': False, 'keepTime': False, 'icon': 'external link'}]
     title = '容器管控 · 持续拦截'
+    expression = prefix+'_container_guard_info{node=~"$node",guard_state="持续拦截"}'
+    description = '仅显示当前持续拦截的容器，包括已自动停止的容器。加入人员或容器白名单后不再显示；后台保留原管控标记。'
     for panel in result['panels']:
         if panel.get('title') == '容器管控 · 持续拦截与白名单': panel['title'] = title
-    if any(p.get('title') == title for p in result['panels']): return result
+        if panel.get('title') == title:
+            panel['description'] = description
+            for target in panel.get('targets', []):
+                if '_container_guard_info' in target.get('expr', ''): target['expr'] = expression
+            return result
     panel_id = max(p['id'] for p in result['panels']) + 1
     for panel in result['panels']:
         if panel['gridPos']['y'] >= 4: panel['gridPos']['y'] += 6
     order = ['node', 'employee_ids', 'container', 'guard_state', 'guard_result', 'container_id']
     result['panels'].append({'id': panel_id, 'title': title, 'type': 'table',
         'gridPos': {'x': 0, 'y': 4, 'w': 24, 'h': 6},
-        'description': '此表保留已停止容器的标记。持续拦截绑定完整容器 ID；只有管理员加入白名单后才解除。顶部“容器管控 / 白名单”可查看实时状态和管理白名单。',
+        'description': description,
         'datasource': {'type': 'prometheus', 'uid': 'a5-prometheus'},
-        'targets': [{'refId': 'Guard', 'expr': prefix+'_container_guard_info{node=~"$node"}', 'format': 'table', 'instant': True, 'range': False}],
+        'targets': [{'refId': 'Guard', 'expr': expression, 'format': 'table', 'instant': True, 'range': False}],
         'transformations': [{'id': 'organize', 'options': {
             'excludeByName': {k: True for k in ['Time', 'Value', '__name__', 'job', 'instance', 'host']},
             'indexByName': {name: i for i, name in enumerate(order)},

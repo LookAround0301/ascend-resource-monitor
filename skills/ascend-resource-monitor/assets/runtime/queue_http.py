@@ -30,7 +30,7 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
             if response.status!=200: raise ControlError(response.status,result.get('message','主机状态暂不可用'))
             return result
 
-    unified=UnifiedQueue(store, config['nodes'], settings.get('reservation_buffer_seconds',600)) if settings.get('unified_queue') is True else None
+    unified=UnifiedQueue(store, config['nodes'], settings.get('reservation_buffer_seconds',600), settings.get('timezone','UTC')) if settings.get('unified_queue') is True else None
     auto=AutoQueue(store,agent) if not unified and settings.get('auto_match_employee') else None
 
     async def actor(request,required=True):

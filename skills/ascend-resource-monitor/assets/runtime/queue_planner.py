@@ -72,12 +72,17 @@ def plan(nodes, busy, jobs, now, buffer_seconds=600):
         candidates.update(end for _, _, _, end in intervals if math.isfinite(end) and end >= earliest)
         chosen = None
         for start in sorted(candidates):
+            if job.get('finish_before') and start + job['seconds'] > job['finish_before']:
+                continue
             available = options(job, start)
             if available:
                 chosen = (start, available[0])
                 break
         if chosen is None:
             planned.append({'id': job['id'], 'start': None, 'allocations': {}})
+            if job.get('finish_before'):
+                # An out-of-window request cannot reserve resources or block others.
+                continue
             # Without a bound for this job, accepting later work can starve it.
             planned.extend({'id': later['id'], 'start': None, 'allocations': {}} for later in jobs[len(planned):])
             break
