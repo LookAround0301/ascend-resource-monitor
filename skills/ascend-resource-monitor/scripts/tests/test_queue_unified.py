@@ -115,6 +115,17 @@ class UnifiedWindowTests(unittest.TestCase):
         with patch('queue_unified.time.time', return_value=self.now):
             self.assertEqual(next(r for r in reopened.view(self.user)['tasks'] if r['id'] == waiting)['machine'], 'a')
 
+    def test_auto_single_uses_available_other_node(self):
+        with patch('queue_unified.time.time', return_value=self.now):
+            full = self.add(machine='a', cards=8)
+            self.queue.action(self.user, full, 'claim')
+            job = self.add(machine='auto', cards=3)
+            row = next(r for r in self.queue.view(self.user)['tasks'] if r['id'] == job)
+        self.assertEqual(row['machine'], 'auto')
+        self.assertEqual(row['fixed_node'], '')
+        self.assertEqual(set(row['allocations']), {'b'})
+        self.assertEqual(len(row['allocations']['b']), 3)
+
     def test_all_dual_totals_split_evenly_and_release_both_nodes(self):
         with patch('queue_unified.time.time', return_value=self.now):
             for total in (2, 4, 8, 16):

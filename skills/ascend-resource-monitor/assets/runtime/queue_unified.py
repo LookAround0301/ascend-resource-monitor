@@ -136,15 +136,15 @@ class UnifiedQueue:
             raise ControlError(400, '请选择有效的机器和卡数')
         if 'machine' in data:
             machine = data['machine']
-            if not isinstance(machine, str) or machine not in (*self.nodes, 'dual'):
-                raise ControlError(400, '请选择已配置的单机或双机')
+            if not isinstance(machine, str) or machine not in (*self.nodes, 'auto', 'dual'):
+                raise ControlError(400, '请选择任意单机、指定单机或双机')
             dual = machine == 'dual'
             if dual:
                 if cards not in (2, 4, 8, 16):
                     raise ControlError(400, '双机合计卡数只能选择 2、4、8、16，每台平均分配')
                 cards //= 2
             else:
-                fixed_node = machine
+                fixed_node = '' if machine == 'auto' else machine
                 if not 1 <= cards <= 8:
                     raise ControlError(400, '单机卡数只能选择 1–8')
         elif not 1 <= cards <= 8 or (dual and cards != 8):

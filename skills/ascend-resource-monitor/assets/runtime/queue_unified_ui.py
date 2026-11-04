@@ -60,10 +60,10 @@ HOME_JS = r'''"use strict";
   function date(value){return value?new Date(value*1000).toLocaleString():'—';}
   function resourceFields(){
    const nodes=(state&&state.nodes)||[],signature=JSON.stringify(nodes),machine=$('machine'),cards=$('cards');
-   if(signature!==machineNodes){const selected=machine.value;machine.replaceChildren();for(const node of nodes){const option=element('option','单机 '+node.replace(/^A5-/,'') );option.value=node;machine.append(option);}const dual=element('option','双机');dual.value='dual';machine.append(dual);if([...machine.options].some(o=>o.value===selected))machine.value=selected;machineNodes=signature;}
+   if(signature!==machineNodes){const selected=machine.value;machine.replaceChildren();const auto=element('option','单机任意机器');auto.value='auto';machine.append(auto);for(const node of nodes){const option=element('option','单机 '+node.replace(/^A5-/,'') );option.value=node;machine.append(option);}const dual=element('option','双机');dual.value='dual';machine.append(dual);if([...machine.options].some(o=>o.value===selected))machine.value=selected;machineNodes=signature;}
    const dual=machine.value==='dual',sizes=dual?[2,4,8,16]:[1,2,3,4,5,6,7,8],selected=Number(cards.value);
    if([...cards.options].map(o=>Number(o.value)).join()!==sizes.join()){cards.replaceChildren();for(const count of sizes){const option=element('option',count+' 卡');option.value=String(count);cards.append(option);}if(sizes.includes(selected))cards.value=String(selected);}
-   $('resource-hint').textContent=dual?'双机合计 '+cards.value+' 卡，每台 '+Number(cards.value)/2+' 卡；具体卡号按队列可用情况分配。':'使用 '+machine.value+'，具体卡号按队列可用情况分配。';
+   $('resource-hint').textContent=dual?'双机合计 '+cards.value+' 卡，每台 '+Number(cards.value)/2+' 卡；具体卡号按队列可用情况分配。':machine.value==='auto'?'自动选择可用单机，按队列分配机器和卡号。':'使用 '+machine.value+'，具体卡号按队列可用情况分配。';
   }
   function duration(seconds){const minutes=Math.round(seconds/60),hours=Math.floor(minutes/60),rest=minutes%60;return (hours?hours+' 小时':'')+(hours&&rest?' ':'')+(rest?rest+' 分钟':'')||'0 分钟';}
   function localInput(value){const d=new Date(value*1000);return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')+'T'+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');}
