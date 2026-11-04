@@ -21,7 +21,8 @@ class ClaimHTTPTests(unittest.IsolatedAsyncioTestCase):
         self.temp=tempfile.TemporaryDirectory();self.now=time.time()
         clock_patch=patch('queue_unified.time.time',return_value=self.now)
         self.clock=clock_patch.start();self.addCleanup(clock_patch.stop)
-        async def identity(request):return {'admin':False}
+        async def identity(request):return {'admin':request.headers.get('Authorization')=='fixture-admin','user':{'id':1,'login':'admin'}}
+        self.admin=False
         async def admin(request):raise AssertionError('No admin operation expected')
         cfg={'nodes':{'a':{},'b':{}},'audit_log':str(Path(self.temp.name)/'audit.jsonl'),
              'task_queue':{'database':str(Path(self.temp.name)/'queue.db'),'unified_queue':True}}
@@ -33,7 +34,9 @@ class ClaimHTTPTests(unittest.IsolatedAsyncioTestCase):
         await self.client.close();self.temp.cleanup()
 
     def headers(self):
-        return {'Origin':str(self.client.make_url('')).rstrip('/'),'X-A5-Queue':'queue-v1','Cookie':COOKIE+'='+self.token}
+        result={'Origin':str(self.client.make_url('')).rstrip('/'),'X-A5-Queue':'queue-v1','Cookie':COOKIE+'='+self.token}
+        if self.admin:result['Authorization']='fixture-admin'
+        return result
 
     async def post(self,operation,data,status=200):
         r=await self.client.post('/a5-queue/api/'+operation,json=data,headers=self.headers())
@@ -75,6 +78,21 @@ class ClaimHTTPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([r['id'] for r in rows],[second,first])
         self.assertEqual(rows[0]['state'],'ready')
         self.assertEqual(rows[1]['missed_claims'],1)
+
+    async def test_priority_api_requires_verified_admin(self):
+        first=await self.enqueue();row=(await self.state())['tasks'][0]
+        await self.post('unified-action',{'job':first,'action':'claim','confirmed':True,'offer_id':row['offer_id']})
+        a=await self.enqueue();b=await self.enqueue()
+        request={'job':b,'action':'priority-up','confirmed':True,'admin':True}
+        await self.post('unified-action',request,403)
+        self.admin=True;await self.post('unified-action',request)
+        self.assertEqual([r['id'] for r in (await self.state())['tasks']],[first,b,a])
+        self.admin=False
+        request={'job':a,'action':'priority-top','confirmed':True,'admin':True}
+        await self.post('unified-action',request,403)
+        self.admin=True;response=await self.post('unified-action',request)
+        self.assertIn('置顶',response['message'])
+        self.assertEqual([r['id'] for r in (await self.state())['tasks']],[first,a,b])
 
 
 if __name__=='__main__':unittest.main()

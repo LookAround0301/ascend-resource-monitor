@@ -16,6 +16,8 @@ This guide describes the repository source as of 2026-11-04. Basic monitoring ca
 | Persistent guard | When explicitly enabled, intercept NPU containers with a valid employee ID but no mapped name; allowlist exemptions take precedence |
 | Navigation | One canonical homepage, including old-home redirects, preserved query parameters and Grafana client-side navigation |
 | Refresh | 1/5/10/30-second choices, default 1 second; queue polling follows the choice and pauses when automatic refresh is Off |
+| Queue operations | Administrator-only top/up/down waiting-priority adjustment, owner/next-user overdue notices and optional daily 09:00 reservation reset |
+| Registration checks | Read-only process/queue matching, with unregistered-use annotations and online notifications; no automatic Stop |
 | Windows access | `Open-Monitor.cmd` for a local SSH tunnel, optional `Open-Web.cmd` for verified HTTPS, and a separate user guide |
 
 Page refresh is not sampling frequency: resource scraping is normally every five seconds and process collection every ten seconds. A displayed name or origin is evidence from configured sources, not independent corporate identity verification.
@@ -27,12 +29,13 @@ Page refresh is not sampling frequency: resource scraping is normally every five
 | Single node | Any available node or one specified node, 1–8 cards |
 | Two nodes | 2/4/8/16 cards in total, split 1+1 / 2+2 / 4+4 / 8+8 |
 | Card placement | Use available queue capacity; requests for 1–4 cards per node stay in one four-card group |
-| Duration | Whole hours plus 0/5/10/…/55 minutes; normal tasks are at most two hours |
+| Duration | Defaults to 0 hours and 30 minutes; whole hours plus 0/5/10/…/55 minutes; normal tasks are at most two hours |
 | Reservation horizon | New tasks must start and finish by 09:00 on the next calendar day in the configured timezone |
 | Claiming | Click Start use directly within at most ten minutes of allocation; an earlier scheduling deadline still applies |
 | Reminders | At allocation, then after 2, 4, 6, 8 and 9 minutes; keep the page open, signed in and notifications enabled |
 | Unclaimed offer | Release that allocation and move back one waiting position, preserving the original application time |
 | Completion | Stop the workload yourself, then confirm Finish registration; the button releases the reservation without stopping processes or containers |
+| Daily reset | When enabled, clear all reservation records at 09:00 without stopping workloads; prior registered container instances can continue |
 
 Application time remains visible after a task starts. Offer deadlines and order are persisted; reloads or proxy restarts do not reset them. A stale offer ID cannot claim a new allocation. Consecutive simultaneous misses pass the next reservation as one block, moving each missed reservation one position; a trailing reservation stays at the end when nobody follows it.
 
@@ -105,7 +108,11 @@ These use the central proxy and mTLS host agents; the base wizard does not enabl
     "database": "/data/operator/ascend-monitor/lab-monitor/data/task-queue/queue.db",
     "timezone": "Asia/Shanghai",
     "metric_prefix": "ascend",
-    "reservation_buffer_seconds": 600
+    "reservation_buffer_seconds": 600,
+    "daily_reset": true,
+    "monitor_processes": true,
+    "prometheus_url": "http://127.0.0.1:9090",
+    "process_metric_prefix": "ascend_process_"
   }
 }
 ```
@@ -113,10 +120,13 @@ These use the central proxy and mTLS host agents; the base wizard does not enabl
 - Configure exactly two eight-card nodes in the proxy's `nodes`, matching monitoring labels. The canonical path must belong to the same dashboard UID.
 - Install matching versions of the proxy, queue, planner and dependencies from `assets/runtime/`. Run `control_proxy.py --config .../proxy.json` centrally and `container_agent.py --config .../agent.json` on each host under their established service accounts.
 - Use `patch_dashboard.add_queue_home_panel(dashboard, nodes)` to add the unified region. Preserve existing panels, datasource UIDs, selectors and control links. The proxy supports both old and new Grafana dashboard APIs.
+- With `monitor_processes` enabled, also apply `patch_dashboard.add_registration_status(dashboard, prefix)` to add the process table's registration-status column. Match the queue metric prefix and validate `*_queue_process_source_up` on every node. This is a read-only match of current employee/node registrations; ambiguous or stale evidence remains unverified, and no container is stopped.
 - Install personnel modules per the [roster reference](personnel-roster.md). Enable automatic interception only under the separately authorized [guard procedure](container-guard.md), after reviewing candidates and protected workloads.
 - Scrape queue metrics at `/a5-queue/metrics`. Two nodes with three exporters each plus queue metrics normally produce seven targets; the configured topology is authoritative.
 - Set Grafana `[dashboards] min_refresh_interval = 1s`, dashboard `refresh` to `1s`, and `timepicker.refresh_intervals` to `1s/5s/10s/30s`.
 - Keep process-exporter, Prometheus and guard prefixes aligned. The exporter defaults to `ascend_`; preserve a custom namespace with `--metric-prefix <prefix>` and matching guard `<prefix>_process_`. A healthy scrape does not prove query compatibility.
+
+Use device-wide `npu_chip_info_overall_utilization` for the NPU headline and per-card usage when available, falling back to AICore utilization on older exporters. These are distinct metrics in the [official metric definition](https://github.com/Ascend/mind-cluster/blob/master/docs/zh/scheduling/06_api/00_npu_exporter/01_prometheus_metrics_api.md). AICore may report zero while device-wide usage is nonzero; HBM occupancy is not a substitute for compute usage.
 
 See [control deployment](container-control.md) for permissions and [HTTPS entry](web-entry.md) for certificates, cookies and WebSockets. Unified Start/Finish does not invoke the legacy browser Stop workflow; keep their instructions separate.
 
@@ -152,9 +162,13 @@ python skills/ascend-resource-monitor/scripts/build_windows_package.py --mode cl
 | Exempt containers mixed into active interception | Filter the active table while retaining stored marks |
 | Process/guard tables disappeared after collector updates | Configurable metric namespace and validation of actual returned series |
 | Inconsistent polling/access instructions | One-second default, four refresh choices, CMD fallback and synchronized handoff documentation |
+| Overdue use and rigid waiting order | Current/next-user notices, visible overdue status and administrator-only top/up/down priority adjustment |
+| Stale daily reservations and awkward duration defaults | Optional 09:00 clearing without workload interruption; 0-hour/30-minute defaults |
+| AICore-only headline remained zero | Prefer device-wide utilization, with per-card fallback for older exporters |
+| Unregistered NPU use was hard to see | Fresh-source registration matching, informational status and online notices, with no automatic Stop |
 
 ## 6. Validation scope
 
-Use `python tools/check.py` and the required commit-range `pre-commit` checks. This iteration verified an existing two-node deployment's pages, permissions, entry points and all seven scrape targets. The latest isolated Linux backend suite ran 167 tests with three skips. Allocation, claim expiry, exact queue movement, restart persistence, stale offers, reminders and direct claiming were tested in isolation or with browser fixtures; production workloads were not stopped for testing.
+Use `python tools/check.py` and the required commit-range `pre-commit` checks. This iteration verified an existing two-node deployment's pages, permissions, entry points and all seven scrape targets. The latest isolated Linux backend suite ran 178 tests with three skips. Allocation, claim expiry, exact queue movement, restart persistence, stale offers, reminders, direct claiming, daily-reset boundaries, priority authorization and process-source freshness were tested in isolation or with browser fixtures; production workloads were not stopped for testing. The next live 09:00 reset is not forced as an acceptance test.
 
 Fresh-host installation, other hardware profiles and different corporate network/certificate policies still require their own acceptance checks. Skipped tests are not reported as passed.

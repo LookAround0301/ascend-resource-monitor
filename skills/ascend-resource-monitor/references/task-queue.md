@@ -16,6 +16,12 @@ While the homepage remains open, send desktop reminders on allocation and after 
 
 The dashboard refresh menu offers 1, 5, 10 and 30 seconds, defaulting to 1 second. Configure Grafana's minimum dashboard refresh interval to 1 second. The embedded queue follows the selected refresh interval and pauses its polling when the dashboard is set to Off; user actions can still refresh it immediately. This controls page polling, not the exporters' collection or Prometheus scrape cadence.
 
+Set `task_queue.daily_reset: true` to clear all reservation records, including active records, at 09:00 in the configured timezone. It preserves accounts, sessions and running workloads. Previously registered people/nodes are remembered for informational classification of container instances started before that reset; their continuing runs are not reported as new unregistered use. A first-time enablement starts the schedule at the next 09:00, while an existing scheduler catches up after downtime. The UI defaults to zero hours and thirty minutes.
+
+Only a verified Grafana administrator can move a queued reservation up/down one waiting position. This preserves its original application time and does not preempt active or already allocated work. Overdue active rows are marked in the table; desktop/page notices go to their owner and the next applicable waiting account.
+
+Set `task_queue.monitor_processes: true` for read-only registration checks from local Prometheus. Optional `prometheus_url` defaults to `http://127.0.0.1:9090` and must remain loopback; `process_metric_prefix` must match the process collector. The proxy emits `*_queue_process_registration`, joined to process rows by node and process lifetime key using `patch_dashboard.add_registration_status`. Known named processes without a matching active registration are marked as unregistered/suspected queue jumping and broadcast to online users. Unknown, inconsistent or stale inventory is marked for verification, not attributed to a guessed person. The feature does not stop containers; teams may have coordinated use outside the queue.
+
 ## Legacy per-node reservations and Stop
 
 The remaining sections describe the older per-node workflow, not unified mode. Reuse the existing [control proxy and mutual-TLS host agents](container-control.md). The default deployment wizard remains read-only. This legacy implementation reserves whole nodes in FIFO order and does not allocate individual cards. Its confirmed Stop/finish behavior must not be applied to the current unified queue.

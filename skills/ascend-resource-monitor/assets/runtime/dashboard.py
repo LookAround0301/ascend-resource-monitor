@@ -3,6 +3,11 @@ import json
 import re
 from process_panels import add_process_panels
 
+def utilization_query(selector):
+    """Prefer device-wide usage; older exporters may expose AICore only."""
+    return (f'(max by (node,id) (npu_chip_info_overall_utilization{{{selector}}}) '
+            f'or on(node,id) max by (node,id) (npu_chip_info_utilization{{{selector}}}))')
+
 def dashboard(c):
     q = lambda text: json.dumps(text, ensure_ascii=False)
     mounts = '|'.join(re.escape(p) for p in c['shared_mounts']) or 'a^'
@@ -21,11 +26,11 @@ def dashboard(c):
     node='node=~"$node"'
     panel('在线主机',f'sum(up{{job="node",{node}}})',0,0,4,4,'stat','none',thresholds=[{'color':'red','value':None},{'color':'green','value':len(c['nodes'])}])
     panel('健康 NPU',f'sum(machine_healthy_npu_nums{{{node}}})',4,0,4,4,'stat','none',thresholds=[{'color':'orange','value':None},{'color':'green','value':1}])
-    panel('NPU 平均利用率',f'avg(npu_chip_info_utilization{{{node}}})',8,0,4,4,'stat')
+    panel('NPU 平均利用率',f'avg({utilization_query(node)})',8,0,4,4,'stat')
     panel('HBM 总使用量',f'sum(npu_chip_info_hbm_used_memory{{{node}}}) * 1024 * 1024',12,0,4,4,'stat','bytes')
     panel('共享盘剩余容量',f'max(node_filesystem_avail_bytes{{{node},mountpoint=~{q(mounts)}}})',16,0,4,4,'stat','bytes')
     panel('共享盘使用率',f'100 * (1 - max(node_filesystem_avail_bytes{{{node},mountpoint=~{q(mounts)}}}) / max(node_filesystem_size_bytes{{{node},mountpoint=~{q(mounts)}}}))',20,0,4,4,'stat')
-    panel('NPU 利用率 · 每张卡',f'npu_chip_info_utilization{{{node}}}',0,4,12,9,legend='{{node}} · NPU {{id}}')
+    panel('NPU 利用率 · 每张卡',utilization_query(node),0,4,12,9,legend='{{node}} · NPU {{id}}')
     panel('HBM 使用率 · 每张卡',f'100 * npu_chip_info_hbm_used_memory{{{node}}} / npu_chip_info_hbm_total_memory{{{node}}}',12,4,12,9,legend='{{node}} · NPU {{id}}')
     panel('NPU 温度',f'npu_chip_info_temperature{{{node}}}',0,13,12,8,unit='celsius',legend='{{node}} · NPU {{id}}')
     panel('NPU 功耗',f'npu_chip_info_power{{{node}}}',12,13,12,8,unit='watt',legend='{{node}} · NPU {{id}}')

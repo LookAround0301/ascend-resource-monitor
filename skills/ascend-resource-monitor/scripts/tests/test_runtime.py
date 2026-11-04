@@ -42,6 +42,9 @@ class RuntimeTests(unittest.TestCase):
         c=example(); d=dashboard(c)
         self.assertEqual(d['refresh'],'1s')
         self.assertEqual(d['timepicker']['refresh_intervals'],['1s','5s','10s','30s'])
+        utilization=next(p for p in d['panels'] if p['title']=='NPU 平均利用率')['targets'][0]['expr']
+        self.assertIn('npu_chip_info_overall_utilization',utilization)
+        self.assertIn('or on(node,id)',utilization)
         self.assertEqual(len(d['panels']),20)
         self.assertEqual(d['templating']['list'][0]['query'],'a,b')
         for p in d['panels']:
