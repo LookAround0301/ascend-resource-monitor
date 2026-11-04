@@ -100,5 +100,69 @@ class UnifiedWindowTests(unittest.TestCase):
         self.assertEqual(row['requested_seconds'], 5400)
         self.assertEqual(row['finish_before'], 0)
 
+    def test_fixed_single_node_is_persisted_and_never_falls_back(self):
+        with patch('queue_unified.time.time', return_value=self.now):
+            full = self.add(machine='a', cards=8)
+            self.queue.action(self.user, full, 'claim')
+            waiting = self.add(machine='a', cards=1)
+            other = self.add(machine='b', cards=3)
+            rows = {r['id']: r for r in self.queue.view(self.user)['tasks']}
+        self.assertEqual(rows[waiting]['state'], 'queued')
+        self.assertEqual(rows[waiting]['fixed_node'], 'a')
+        self.assertEqual(set(rows[waiting]['planned_allocations']), {'a'})
+        self.assertEqual(set(rows[other]['allocations']), {'b'})
+        reopened = UnifiedQueue(self.store, ['a', 'b'], timezone='Asia/Shanghai')
+        with patch('queue_unified.time.time', return_value=self.now):
+            self.assertEqual(next(r for r in reopened.view(self.user)['tasks'] if r['id'] == waiting)['machine'], 'a')
+
+    def test_all_dual_totals_split_evenly_and_release_both_nodes(self):
+        with patch('queue_unified.time.time', return_value=self.now):
+            for total in (2, 4, 8, 16):
+                with self.subTest(total=total):
+                    job = self.add(machine='dual', cards=total)
+                    row = self.queue.view(self.user)['tasks'][0]
+                    self.assertEqual(row['total_cards'], total)
+                    self.assertEqual(row['cards'], total // 2)
+                    self.assertEqual(set(row['allocations']), {'a', 'b'})
+                    self.assertTrue(all(len(cards) == total // 2 for cards in row['allocations'].values()))
+                    self.queue.action(self.user, job, 'claim')
+                    self.queue.action(self.user, job, 'finish')
+                    self.assertEqual(self.queue.view(self.user)['tasks'], [])
+
+    def test_rejects_unknown_machine_and_invalid_sizes(self):
+        with patch('queue_unified.time.time', return_value=self.now):
+            for data in ({'machine':'unknown'}, {'machine':[]}, {'machine':'a','cards':9},
+                         {'machine':'dual','cards':3}, {'machine':'dual','cards':1},
+                         {'machine':'dual','cards':True}, {'machine':'dual','cards':32}):
+                with self.subTest(data=data), self.assertRaises(ControlError): self.add(**data)
+
+    def test_old_dual_payload_and_rows_keep_sixteen_card_meaning(self):
+        with patch('queue_unified.time.time', return_value=self.now):
+            job = self.add(dual=True, cards=8)
+            row = self.queue.view(self.user)['tasks'][0]
+            self.assertEqual(row['id'], job)
+            self.assertEqual(row['total_cards'], 16)
+            self.assertEqual([len(v) for v in row['allocations'].values()], [8, 8])
+
+    def test_dual_planning_avoids_busy_cards_and_keeps_four_card_groups(self):
+        nodes = {'a': list(range(8)), 'b': list(range(8))}
+        busy = [{'node':'a','cards':[0,1,2,3],'start':0,'end':None},
+                {'node':'b','cards':[4,5,6,7],'start':0,'end':None}]
+        jobs = [{'id':'dual','cards':2,'dual':True,'seconds':300}]
+        row = plan(nodes, busy, jobs, 1000)[0]
+        self.assertEqual(row['start'], 1000)
+        self.assertTrue(set(row['allocations']['a']) <= {4,5,6,7})
+        self.assertTrue(set(row['allocations']['b']) <= {0,1,2,3})
+        jobs[0]['cards'] = 8
+        self.assertIsNone(plan(nodes, busy, jobs, 1000)[0]['start'])
+
+    def test_two_small_dual_jobs_do_not_overlap(self):
+        nodes = {'a': list(range(8)), 'b': list(range(8))}
+        jobs = [{'id':str(i),'cards':2,'dual':True,'seconds':300} for i in range(2)]
+        first, second = plan(nodes, [], jobs, 1000)
+        self.assertEqual([first['start'], second['start']], [1000, 1000])
+        for node in nodes:
+            self.assertFalse(set(first['allocations'][node]) & set(second['allocations'][node]))
+
 
 if __name__ == '__main__': unittest.main()

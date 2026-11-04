@@ -120,6 +120,8 @@ class UnifiedQueue:
             row['window_expired'] = bool(row['finish_before'] and now + row['requested_seconds'] > row['finish_before'] and row['state'] != 'active')
             row['planned_allocations'] = prediction.get('allocations', {}) if row['state'] == 'queued' else {}
             row['node'] = ', '.join(row['allocations']) or row['fixed_node'] or '待分配'
+            row['machine'] = 'dual' if row['dual'] else row['fixed_node'] or 'auto'
+            row['total_cards'] = row['cards'] * (2 if row['dual'] else 1)
         return {'user': user, 'tasks': rows, 'nodes': list(self.nodes), 'server_time': now, 'unified': True,
                 'reservation_window': {'start': now, 'end': self.cutoff(now), 'timezone': str(self.timezone)}}
 
@@ -129,10 +131,25 @@ class UnifiedQueue:
         cards, seconds = data.get('cards'), data.get('requested_seconds')
         dual, night, start = data.get('dual', False), data.get('night', False), data.get('not_before', 0)
         now = time.time()
-        if type(dual) is not bool or type(night) is not bool or type(cards) is not int or not 1 <= cards <= 8:
-            raise ControlError(400, '请选择 1–8 卡或双机整机')
-        if dual and cards != 8:
-            raise ControlError(400, '双机任务需要每台 8 卡')
+        fixed_node = ''
+        if type(dual) is not bool or type(night) is not bool or type(cards) is not int:
+            raise ControlError(400, '请选择有效的机器和卡数')
+        if 'machine' in data:
+            machine = data['machine']
+            if not isinstance(machine, str) or machine not in (*self.nodes, 'dual'):
+                raise ControlError(400, '请选择已配置的单机或双机')
+            dual = machine == 'dual'
+            if dual:
+                if cards not in (2, 4, 8, 16):
+                    raise ControlError(400, '双机合计卡数只能选择 2、4、8、16，每台平均分配')
+                cards //= 2
+            else:
+                fixed_node = machine
+                if not 1 <= cards <= 8:
+                    raise ControlError(400, '单机卡数只能选择 1–8')
+        elif not 1 <= cards <= 8 or (dual and cards != 8):
+            # Old clients used cards=8, dual=true for two full nodes.
+            raise ControlError(400, '旧版请求请使用单机 1–8 卡或双机各 8 卡')
         if type(seconds) is not int or seconds < 60 or seconds % 60 or (not night and seconds > 7200):
             raise ControlError(400, '请按整分钟填写时长，至少 1 分钟；普通任务最长 2 小时')
         if type(start) not in (int, float) or not math.isfinite(start) or start < 0:
@@ -149,8 +166,8 @@ class UnifiedQueue:
             if count >= 5:
                 raise ControlError(409, '每人最多保留 5 个未结束预约')
             job = secrets.token_hex(16)
-            db.execute('''INSERT INTO unified_tasks(id,account,title,state,created,requested_seconds,cards,dual,not_before,finish_before)
-                VALUES (?,?,?,'queued',?,?,?,?,?,?)''', (job, user['id'], '', now, seconds, cards, int(dual), start, finish_before))
+            db.execute('''INSERT INTO unified_tasks(id,account,title,state,created,requested_seconds,cards,dual,not_before,finish_before,fixed_node)
+                VALUES (?,?,?,'queued',?,?,?,?,?,?,?)''', (job, user['id'], '', now, seconds, cards, int(dual), start, finish_before, fixed_node))
             self._schedule(db, now)
         return job
 

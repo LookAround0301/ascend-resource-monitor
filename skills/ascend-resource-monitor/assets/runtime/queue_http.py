@@ -110,7 +110,7 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
         rows=store.view(None)['tasks'] if not unified else unified.view(None)['tasks']
         if unified:
             rows=[{**row,'node':node,'state':'queued' if row['state']=='ready' else row['state'], 'container':'',
-                   'title':'双机各 8 卡' if row['dual'] else '单机 '+str(row['cards'])+' 卡'}
+                   'title':('双机共 '+str(row['total_cards'])+' 卡（各 '+str(row['cards'])+' 卡）') if row['dual'] else '单机 '+str(row['cards'])+' 卡'}
                   for row in rows for node in (list(row['allocations']) or ([row['fixed_node']] if row['fixed_node'] else []))]
         return web.Response(text=render_queue_metrics(rows,list(config['nodes']),time.time(),
                             settings.get('metric_prefix','ascend'),settings.get('timezone','UTC')),

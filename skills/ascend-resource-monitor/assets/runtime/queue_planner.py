@@ -16,7 +16,8 @@ def plan(nodes, busy, jobs, now, buffer_seconds=600):
     occupied or reserved resources; remove them only after explicit release.
     An overdue entry has unknown release time, regardless of its old estimate.
     Jobs have id, cards,
-    seconds, optional ``not_before``, and optional ``dual`` (both full nodes).
+    seconds, optional ``not_before``, and optional ``dual`` (equal card counts
+    on both nodes, with ``cards`` specifying the count per node).
     Returned times are estimates based on declared durations, not guarantees.
     """
     if len(nodes) != 2 or any(len(cards) != 8 or len(set(cards)) != 8 for cards in nodes.values()):
@@ -41,30 +42,38 @@ def plan(nodes, busy, jobs, now, buffer_seconds=600):
                 used.update(cards)
         return [card for card in nodes[node] if card not in used]
 
+    def card_choices(node, count, available):
+        choices = []
+        ordered = nodes[node]
+        groups = (ordered[:4], ordered[4:]) if count <= 4 else (ordered,)
+        for group in groups:
+            for choice in combinations([card for card in group if card in available], count):
+                remaining = set(available) - set(choice)
+                intact_groups = sum(set(g) <= remaining for g in (ordered[:4], ordered[4:]))
+                choices.append(((-intact_groups, tuple(map(str, choice))), list(choice)))
+        return sorted(choices, key=lambda pair: pair[0])
+
     def options(job, start):
         end = start + job['seconds'] + buffer_seconds
         available = {node: free(node, start, end) for node in nodes}
-        if job.get('dual'):
-            return [{node: list(cards) for node, cards in nodes.items()}] if all(len(v) == 8 for v in available.values()) else []
         count = job['cards']
+        if job.get('dual'):
+            choices = {node: card_choices(node, count, cards) for node, cards in available.items()}
+            return [{node: cards[0][1] for node, cards in choices.items()}] if all(choices.values()) else []
         choices = []
         allowed = job.get('allowed_nodes', nodes)
-        for node, ordered in nodes.items():
+        for node in nodes:
             if node not in allowed:
                 continue
-            cards = available[node]
-            groups = (ordered[:4], ordered[4:]) if count <= 4 else (ordered,)
-            for group in groups:
-                for choice in combinations([card for card in group if card in cards], count):
-                    remaining = set(cards) - set(choice)
-                    # Fill the more occupied node/group first to leave whole groups available.
-                    intact_groups = sum(set(g) <= remaining for g in (ordered[:4], ordered[4:]))
-                    choices.append(((len(cards), -intact_groups, str(node), tuple(map(str, choice))), {node: list(choice)}))
+            for score, choice in card_choices(node, count, available[node]):
+                # Fill the more occupied node first, preserving whole card groups.
+                choices.append(((len(available[node]), score[0], str(node), score[1]), {node: choice}))
         return [choice for _, choice in sorted(choices, key=lambda pair: pair[0])]
 
     planned = []
     for job in jobs:
         if (type(job.get('cards')) is not int or not 1 <= job['cards'] <= 8
+                or (job.get('dual') and job['cards'] not in (1, 2, 4, 8))
                 or type(job.get('seconds')) is not int or job['seconds'] <= 0):
             raise ValueError('invalid job size or duration')
         earliest = max(now, job.get('not_before', now))
