@@ -36,7 +36,7 @@ def guard_metrics(path):
         result = ['# TYPE ascend_container_guard_info gauge']
         for cid, entry in state['entries'].items():
             if not re.fullmatch('[0-9a-f]{64}', cid): continue
-            policy = '白名单' if entry['whitelisted'] else ('持续拦截' if entry.get('marked_at') else '未标记')
+            policy = '白名单' if entry['whitelisted'] or entry.get('personnel_whitelisted') else ('持续拦截' if entry.get('marked_at') else '未标记')
             labels = {'container_id': cid, 'container': entry['container'], 'guard_state': policy,
                       'employee_ids': ','.join(entry.get('employee_ids', [])),
                       'guard_result': entry.get('last_result', '')}

@@ -209,6 +209,9 @@ def create_app(config, agent_override=None, describe_override=None, guard_overri
     async def personalized_dashboard(data,request):
         # Grafana can load either the legacy DTO or a Kubernetes-style resource.
         model=data.get('dashboard') or data.get('spec') or {}
+        panels=model.get('panels', [])+[p.get('spec', {}) for p in model.get('elements', {}).values()]
+        for panel in panels:
+            if panel.get('title')=='容器管控 · 持续拦截与白名单': panel['title']='容器管控 · 持续拦截'
         for link in model.get('links', []):
             if link.get('url') == '/a5-control/guard': link['title'] = '人员白名单'
         if (config.get('task_queue',{}).get('unified_queue') is True

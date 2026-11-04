@@ -77,6 +77,27 @@ class GuardTests(unittest.TestCase):
         self.allow(False); self.guard.next_discovery = 0; self.guard.scan()
         self.assertEqual(self.docker.calls, [CID])
 
+    def test_personnel_allowlist_overrides_existing_mark_and_deletion_restores(self):
+        owners=Path(self.temp.name)/'owners.json'
+        owners.write_text(json.dumps({'employee_names':{'a12345678':'Existing'}}),encoding='utf-8')
+        self.config['guard']['owners_file']=str(owners)
+        self.guard.scan()
+        self.assertEqual(len(self.docker.calls),1)
+        owners.write_text(json.dumps({'employee_names':{'a12345678':'Existing','z12345678':'Allowed'}}),encoding='utf-8')
+        self.docker.info['State']={'Running':True,'StartedAt':'2026-11-03T02:00:00Z'}
+        self.guard.scan()
+        self.assertEqual(len(self.docker.calls),1)
+        self.assertEqual(self.guard.policy(CID),'白名单')
+        self.assertIn('guard_state="白名单"','\n'.join(guard_metrics(self.path)))
+        self.assertTrue(self.guard.entries()[CID]['marked_at'])
+        owners.write_text('{broken',encoding='utf-8')
+        self.guard.scan()
+        self.assertEqual(len(self.docker.calls),1)
+        owners.write_text(json.dumps({'employee_names':{'a12345678':'Existing'}}),encoding='utf-8')
+        self.guard.scan()
+        self.assertEqual(len(self.docker.calls),2)
+        self.assertEqual(self.guard.policy(CID),'持续拦截')
+
     def test_disabled_stale_foreign_protected_and_non_npu_are_not_marked(self):
         variants = ['disabled', 'stale', 'foreign', 'protected', 'k8s', 'non_npu', 'reused_pid']
         for variant in variants:

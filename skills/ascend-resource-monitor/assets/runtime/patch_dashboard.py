@@ -78,7 +78,7 @@ def add_queue_panels(dashboard,nodes,prefix='ascend'):
     titles={node:node+' 排队情况' for node in nodes}
     existing={p['title']:p for p in result['panels'] if p.get('title') in titles.values()}
     missing=[node for node in nodes if titles[node] not in existing]
-    anchor=next((p['gridPos']['y']+p['gridPos']['h'] for p in result['panels'] if p.get('title')=='容器管控 · 持续拦截与白名单'),4)
+    anchor=next((p['gridPos']['y']+p['gridPos']['h'] for p in result['panels'] if p.get('title') in {'容器管控 · 持续拦截与白名单','容器管控 · 持续拦截'}),4)
     for panel in result['panels']:
         if panel['gridPos']['y']>=anchor:panel['gridPos']['y']+=len(missing)*7
     next_id=max((p['id'] for p in result['panels']),default=0)+1
@@ -115,7 +115,9 @@ def add_guard_panel(dashboard, prefix='ascend'):
     result['links'] = [x for x in result.get('links', []) if x.get('url') != '/a5-control/guard'] + [
         {'type': 'link', 'title': '人员白名单', 'url': '/a5-control/guard',
          'targetBlank': True, 'includeVars': False, 'keepTime': False, 'icon': 'external link'}]
-    title = '容器管控 · 持续拦截与白名单'
+    title = '容器管控 · 持续拦截'
+    for panel in result['panels']:
+        if panel.get('title') == '容器管控 · 持续拦截与白名单': panel['title'] = title
     if any(p.get('title') == title for p in result['panels']): return result
     panel_id = max(p['id'] for p in result['panels']) + 1
     for panel in result['panels']:

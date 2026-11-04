@@ -17,8 +17,7 @@ The existing container guard state and administrator-only control APIs remain in
   is atomically installed and audited. An identical retry performs no write.
 - Cross-host writes are not a distributed transaction. Partial failures name the
   unconfirmed nodes, retain successful additions, and allow the same ID/name to be retried.
-- A newly recognized employee avoids future missing-name selection; a container already
-  marked by the persistent guard still requires a separate administrator whitelist action.
+- A recognized employee avoids automatic interception, including existing marks whose recorded employee IDs are all in the valid roster. Marks remain stored; removing the person restores enforcement. No container is automatically started.
 
 ## Upgrade and validation
 

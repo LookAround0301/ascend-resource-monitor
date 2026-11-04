@@ -10,7 +10,7 @@ def guard_page(user, dashboard_uid):
 <form id="add-form"><label>工号<input id="employee" pattern="[A-Za-z][0-9]{8}" maxlength="9" placeholder="例如 u12345678" required></label>
 <label>姓名<input id="name" maxlength="120" placeholder="填写姓名" required></label>
 <button id="add-button" type="submit">添加到白名单</button></form>
-<p class="help">保存后同步到两台服务器。此前已拦截的容器仍需单独处理。</p></section>''' if user else ''
+<p class="help">保存后同步到两台服务器。名单内人员跳过自动拦截；已停止的容器不会自动重启。</p></section>''' if user else ''
     return '''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>人员白名单</title><style>''' + STYLE + '''
 *{box-sizing:border-box}main{width:min(900px,94vw)}button{background:#2869bd}h1{margin-bottom:8px}h2{font-size:19px}
