@@ -22,6 +22,8 @@ This guide describes the repository source as of 2026-11-04. Basic monitoring ca
 
 Page refresh is not sampling frequency: resource scraping is normally every five seconds and process collection every ten seconds. A displayed name or origin is evidence from configured sources, not independent corporate identity verification.
 
+Registration checks tolerate an exporter timestamp up to 15 seconds ahead of the central server to avoid false unverified status from small host clock differences. Samples more than 30 seconds old, clock differences beyond that tolerance, and a local cache older than 20 seconds remain invalid. Keep host time synchronization healthy.
+
 ### Unified queue rules
 
 | Setting | Rule |

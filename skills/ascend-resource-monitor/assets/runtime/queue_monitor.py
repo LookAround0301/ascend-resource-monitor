@@ -8,6 +8,7 @@ from datetime import datetime
 from urllib.parse import urlsplit
 
 EMPLOYEE = re.compile(r'[a-z][0-9]{8}\Z')
+MAX_FUTURE_SKEW_SECONDS = 15
 
 
 class QueueMonitor:
@@ -62,7 +63,7 @@ class QueueMonitor:
         valid=set()
         for node,values in scalars.items():
             if (values.get('inventory_success')==1 and values.get('inventory_truncated')==0
-                    and 0<=now-values.get('inventory_timestamp_seconds',0)<=30
+                    and -MAX_FUTURE_SKEW_SECONDS<=now-values.get('inventory_timestamp_seconds',0)<=30
                     and 0<=values.get('container_metadata_age_seconds',1e9)<=45
                     and values.get('inventory_processes')==len(rows[node])
                     and len({r['process_key'] for r in rows[node]})==len(rows[node])):
@@ -71,7 +72,7 @@ class QueueMonitor:
         self.inventory_times={node:scalars[node]['inventory_timestamp_seconds'] for node in valid}
 
     def fresh_nodes(self,now):
-        return {node for node in self.valid if 0<=now-self.sampled<=20 and 0<=now-self.inventory_times.get(node,0)<=30}
+        return {node for node in self.valid if 0<=now-self.sampled<=20 and -MAX_FUTURE_SKEW_SECONDS<=now-self.inventory_times.get(node,0)<=30}
 
     def current(self, now):
         valid=self.fresh_nodes(now)

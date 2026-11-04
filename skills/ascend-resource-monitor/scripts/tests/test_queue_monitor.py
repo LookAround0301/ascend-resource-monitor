@@ -44,6 +44,17 @@ class MonitorTests(unittest.TestCase):
     def test_cached_data_expires_by_inventory_timestamp(self):
         self.monitor.ingest(inventory(self.now,stamp=self.now-25),self.now)
         self.assertFalse(self.monitor.decorate({**self.state(),'server_time':self.now+6})['alerts'])
+    def test_small_future_clock_skew_keeps_registered_process_status(self):
+        task={'state':'active','employee':'u12345678','allocations':{'a':[0]}}
+        for ahead in (1,10,15):
+            with self.subTest(ahead=ahead):
+                self.monitor.ingest(inventory(self.now,stamp=self.now+ahead),self.now)
+                self.assertFalse(self.monitor.decorate(self.state([task]))['process_monitor_errors'])
+                self.assertIn('已登记使用',self.monitor.metrics([task],self.now))
+                self.assertFalse(self.monitor.current(self.now+21))
+        self.monitor.ingest(inventory(self.now,stamp=self.now+16),self.now)
+        self.assertTrue(self.monitor.decorate(self.state([task]))['process_monitor_errors'])
+        self.assertNotIn('已登记使用',self.monitor.metrics([task],self.now))
     def test_process_panel_join_is_idempotent_and_preserves_cpu_series(self):
         source=dashboard(example());result=add_registration_status(source)
         panel=next(p for p in result['panels'] if p['title']=='NPU 进程归属与工作目录')
