@@ -14,7 +14,7 @@ try:
     from aiohttp.test_utils import TestClient,TestServer
 except ImportError:
     raise unittest.SkipTest('Claim HTTP tests require aiohttp')
-from queue_http import install_queue,COOKIE
+from queue_http import install_queue,session_cookie_name
 
 
 class ClaimHTTPTests(unittest.IsolatedAsyncioTestCase):
@@ -34,13 +34,14 @@ class ClaimHTTPTests(unittest.IsolatedAsyncioTestCase):
             return {'node':node,'people':self.roster[node]}
         app=web.Application();self.store=install_queue(app,cfg,identity,admin,node_agent)
         self.client=TestClient(TestServer(app));await self.client.start_server()
+        self.cookie=session_cookie_name(self.store.session_namespace,self.client.make_url('').authority)
         self.token=self.store.register('u12345678','Fixture','test-password-only')
 
     async def asyncTearDown(self):
         await self.client.close();self.temp.cleanup()
 
     def headers(self):
-        result={'Origin':str(self.client.make_url('')).rstrip('/'),'X-A5-Queue':'queue-v1','Cookie':COOKIE+'='+self.token}
+        result={'Origin':str(self.client.make_url('')).rstrip('/'),'X-A5-Queue':'queue-v1','Cookie':self.cookie+'='+self.token}
         if self.admin:result['Authorization']='fixture-admin'
         return result
 
@@ -59,7 +60,7 @@ class ClaimHTTPTests(unittest.IsolatedAsyncioTestCase):
         job=await self.enqueue()
         response=await self.client.post('/a5-queue/api/login',json={'employee':'U12345678','name':'Fixture','admin':True},headers=self.headers())
         self.assertEqual(response.status,200,await response.text())
-        new_token=response.cookies[COOKIE].value
+        new_token=response.cookies[self.cookie].value
         self.assertEqual(self.store.user(new_token),self.store.user(self.token))
         self.token=new_token
         row=(await self.state())['tasks'][0]
@@ -70,7 +71,7 @@ class ClaimHTTPTests(unittest.IsolatedAsyncioTestCase):
     async def test_first_passwordless_login_creates_account(self):
         response=await self.client.post('/a5-queue/api/login',json={'employee':'u12345670','name':'New user'},headers=self.headers())
         self.assertEqual(response.status,200,await response.text())
-        person=self.store.user(response.cookies[COOKIE].value)
+        person=self.store.user(response.cookies[self.cookie].value)
         self.assertEqual((person['employee'],person['name']),('u12345670','New user'))
         await self.post('login',{'employee':'u12345671','name':''},400)
 

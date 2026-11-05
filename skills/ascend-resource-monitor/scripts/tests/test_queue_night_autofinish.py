@@ -16,7 +16,7 @@ try:
     from aiohttp.test_utils import TestClient,TestServer
 except ImportError:
     web=None
-from queue_http import install_queue, COOKIE
+from queue_http import install_queue, session_cookie_name
 
 
 def stamp(value):
@@ -169,7 +169,8 @@ class NightAutoFinishHTTPTests(unittest.IsolatedAsyncioTestCase):
         await self.client.close();self.temp.cleanup()
 
     async def test_background_loop_finishes_night_without_browser_polling(self):
-        headers={'Origin':str(self.client.make_url('')).rstrip('/'),'X-A5-Queue':'queue-v1','Cookie':COOKIE+'='+self.token}
+        cookie=session_cookie_name(self.store.session_namespace,self.client.make_url('').authority)
+        headers={'Origin':str(self.client.make_url('')).rstrip('/'),'X-A5-Queue':'queue-v1','Cookie':cookie+'='+self.token}
         response=await self.client.post('/a5-queue/api/enqueue',headers=headers,json={
             'machine':'a','cards':8,'requested_seconds':3600,'night':True,'not_before':self.start,'notifications_ready':True})
         self.assertEqual(response.status,200);job=(await response.json())['job']

@@ -23,6 +23,7 @@ class QueueStore:
                 CREATE TABLE IF NOT EXISTS accounts(id TEXT PRIMARY KEY, employee TEXT UNIQUE NOT NULL,
                     name TEXT NOT NULL, salt TEXT NOT NULL, digest TEXT NOT NULL, created REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY, account TEXT NOT NULL, expires REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS queue_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS reservations(id TEXT PRIMARY KEY, account TEXT NOT NULL,
                     node TEXT NOT NULL, container_id TEXT NOT NULL, container TEXT NOT NULL,
                     title TEXT NOT NULL, state TEXT NOT NULL, created REAL NOT NULL, activated REAL,
@@ -36,6 +37,10 @@ class QueueStore:
                 CREATE TABLE IF NOT EXISTS confirmations(token TEXT PRIMARY KEY, account TEXT NOT NULL,
                     job TEXT NOT NULL, action TEXT NOT NULL, payload TEXT NOT NULL, expires REAL NOT NULL);
             ''')
+            db.execute("INSERT OR IGNORE INTO queue_meta VALUES ('session_namespace',?)", (secrets.token_hex(16),))
+            self.session_namespace=db.execute("SELECT value FROM queue_meta WHERE key='session_namespace'").fetchone()[0]
+            if not re.fullmatch(r'[0-9a-f]{32}',self.session_namespace):
+                raise ValueError('Invalid persisted queue session namespace')
             columns={r['name'] for r in db.execute('PRAGMA table_info(reservations)')}
             if 'cancel_since' not in columns: db.execute('ALTER TABLE reservations ADD COLUMN cancel_since REAL')
             if 'requested_seconds' not in columns:db.execute('ALTER TABLE reservations ADD COLUMN requested_seconds INTEGER NOT NULL DEFAULT 0')

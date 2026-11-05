@@ -1,5 +1,6 @@
 """Same-origin reservation UI/API with separate personal account sessions."""
 import asyncio
+import hashlib
 from collections import defaultdict, deque
 import secrets
 import time
@@ -13,7 +14,15 @@ from queue_auto import AutoQueue
 from queue_unified import UnifiedQueue
 from queue_unified_ui import HOME_JS
 
+# Read-only compatibility name. New sessions never write or delete this cookie.
 COOKIE='a5_queue_session'
+
+
+def session_cookie_name(namespace, authority):
+    # Browsers share cookies across ports. The database namespace also separates
+    # independent deployments; the authority separates copied DBs/tunnel entries.
+    scope=hashlib.sha256((namespace+'\0'+authority.lower()).encode()).hexdigest()[:24]
+    return COOKIE+'_'+scope
 
 
 def install_queue(app,config,read_identity,admin_identity,agent_override=None):
@@ -115,8 +124,21 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                 return await response.json()
         monitor=QueueMonitor(config['nodes'],settings,fetch_inventory)
 
+    def cookie_name(request):
+        return session_cookie_name(store.session_namespace,request.host)
+
+    def session_token(request):
+        # An empty/invalid scoped cookie must not fall back to an older login.
+        name=cookie_name(request)
+        return request.cookies[name] if name in request.cookies else request.cookies.get(COOKIE,'')
+
+    def set_session_cookie(response,request,token):
+        response.set_cookie(cookie_name(request),token,path='/a5-queue',httponly=True,
+                            secure=request.secure,samesite='Strict',max_age=7*86400)
+        response.headers['Cache-Control']='no-store'
+
     async def actor(request,required=True):
-        person=store.user(request.cookies.get(COOKIE))
+        person=store.user(session_token(request))
         try: identity=await read_identity(request)
         except ControlError: identity={'admin':False}
         if identity.get('admin'):
@@ -261,12 +283,15 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                 elif operation=='register':token=await asyncio.to_thread(store.register,data.get('employee'),data.get('name'),data.get('password'))
                 else:token=await asyncio.to_thread(store.login,data.get('employee'),data.get('password'))
                 response=web.json_response({'message':'登录成功'})
-                response.set_cookie(COOKIE,token,path='/a5-queue',httponly=True,secure=request.secure,samesite='Strict',max_age=7*86400)
+                set_session_cookie(response,request,token)
                 response.headers['Cache-Control']='no-store';return response
             person=await actor(request)
             if operation=='logout':
-                store.logout(request.cookies.get(COOKIE,''));response=web.json_response({'message':'个人账号已退出'})
-                response.del_cookie(COOKIE,path='/a5-queue');return response
+                store.logout(session_token(request));response=web.json_response({'message':'个人账号已退出'})
+                # Keep a scoped logged-out marker until any old legacy login has
+                # expired. Deleting the shared legacy cookie would log out another
+                # deployment that has not upgraded yet.
+                set_session_cookie(response,request,'');return response
             if unified:
                 if operation in ('unified-allowed-lookup','unified-allowed-search','unified-allowed-names','unified-allowed'):
                     if not person.get('registered'):raise ControlError(401,'请先登录预约申请人的个人账号')
@@ -371,12 +396,23 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
         except (ValueError,TypeError,KeyError):return web.json_response({'message':'参数无效，请刷新后重试'},status=400)
         except Exception:return web.json_response({'message':'操作结果暂不能确认，请刷新队列核实，不要连续提交'},status=503)
 
+    async def session_api(request):
+        response=await api(request)
+        name=cookie_name(request)
+        if response.status<400 and name not in request.cookies and name not in response.cookies:
+            legacy=request.cookies.get(COOKIE)
+            if store.user(legacy):
+                # Adopt only a token validated by this DB; leave the shared legacy
+                # cookie untouched so an older A5/A3 deployment can coexist.
+                set_session_cookie(response,request,legacy)
+        return response
+
     app.router.add_get('/a5-queue',page)
     app.router.add_get('/a5-queue/control',page)
     app.router.add_get('/a5-queue/home',page)
     app.router.add_get('/a5-queue/queue.js',javascript)
     app.router.add_get('/a5-queue/home.js',javascript)
     app.router.add_get('/a5-queue/metrics',metrics)
-    app.router.add_route('GET','/a5-queue/api/{operation}',api)
-    app.router.add_route('POST','/a5-queue/api/{operation}',api)
+    app.router.add_route('GET','/a5-queue/api/{operation}',session_api)
+    app.router.add_route('POST','/a5-queue/api/{operation}',session_api)
     return store

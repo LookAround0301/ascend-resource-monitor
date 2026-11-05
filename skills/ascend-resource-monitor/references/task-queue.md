@@ -28,6 +28,30 @@ Owners may move their queued or ready reservations down one position within the 
 
 Set `task_queue.monitor_processes: true` for read-only registration checks from local Prometheus. Optional `prometheus_url` defaults to `http://127.0.0.1:9090` and must remain loopback; `process_metric_prefix` must match the process collector. The proxy emits `*_queue_process_registration`, joined to process rows by node and process lifetime key using `patch_dashboard.add_registration_status`. Known named processes without a matching active registration are marked as unregistered/suspected queue jumping. Desktop alerts are sent only to the named account itself and owners of ready/active reservations overlapping the process's node and NPU cards; invalid card IDs do not produce targeted alerts. Unknown, inconsistent or stale inventory is marked for verification, not attributed to a guessed person. The feature does not stop containers; teams may have coordinated use outside the queue.
 
+## Concurrent logins to multiple deployments
+
+Personal queue sessions use a cookie name scoped to a persisted random database
+namespace and the request's host/port. This lets A5 and A3 SSH tunnels share
+`127.0.0.1` without replacing each other's login cookie. Cookies themselves are
+not isolated by TCP port; the different names prevent accidental collisions,
+not attacks by an untrusted service sharing the same browser host.
+
+The namespace is created once in `queue_meta` and survives proxy restarts and
+normal database backups. Account IDs, existing sessions and reservations remain
+unchanged. New logins write only the scoped cookie. A valid old
+`a5_queue_session` is adopted into the local scope after a successful API
+request, without deleting or rewriting that shared cookie; an unupgraded
+deployment can therefore coexist. Tokens issued by another database are never
+adopted. A scoped cookie, including an invalid one, takes precedence over the
+legacy cookie.
+
+Logout revokes only the selected token and leaves a scoped logged-out marker
+for seven days, preventing fallback to an older valid legacy login. It never
+deletes another deployment's cookie. If an old login was already overwritten,
+sign in once again after upgrade. Refresh existing tabs; the Windows tunnel
+launcher and employee ID/name do not need to change. This scopes personal queue
+sessions; Grafana administrator authentication remains managed separately.
+
 ## Card capacity and A3 migration
 
 `task_queue.cards_per_node` in the central proxy configuration defaults to `8`.

@@ -7,7 +7,7 @@ import unittest
 sys.path.insert(0,str(Path(__file__).resolve().parents[2]/'assets/runtime'))
 from aiohttp import web
 from aiohttp.test_utils import TestClient,TestServer
-from queue_http import install_queue,COOKIE
+from queue_http import install_queue,session_cookie_name
 
 
 class Logical16HTTPTests(unittest.IsolatedAsyncioTestCase):
@@ -20,7 +20,8 @@ class Logical16HTTPTests(unittest.IsolatedAsyncioTestCase):
         app=web.Application();self.store=install_queue(app,cfg,identity,forbidden,forbidden)
         self.client=TestClient(TestServer(app));await self.client.start_server()
         token=self.store.register('u12345678','Fixture','fixture-password')
-        self.headers={'Origin':str(self.client.make_url('')).rstrip('/'),'X-A5-Queue':'queue-v1','Cookie':COOKIE+'='+token}
+        cookie=session_cookie_name(self.store.session_namespace,self.client.make_url('').authority)
+        self.headers={'Origin':str(self.client.make_url('')).rstrip('/'),'X-A5-Queue':'queue-v1','Cookie':cookie+'='+token}
 
     async def asyncTearDown(self):
         await self.client.close();self.temp.cleanup()

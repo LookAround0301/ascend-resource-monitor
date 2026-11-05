@@ -13,7 +13,7 @@ try:
 except ImportError:
     raise unittest.SkipTest('HTTP tests require aiohttp')
 from control_proxy import create_app
-from queue_http import COOKIE
+from queue_http import session_cookie_name
 from queue_store import QueueStore
 
 CID='a'*64
@@ -52,6 +52,7 @@ class QueueHTTPTests(unittest.IsolatedAsyncioTestCase):
         cfg['task_queue']['auto_match_employee']=getattr(self,'auto_match',False)
         self.client=TestClient(TestServer(create_app(cfg,agent_override=True,queue_override=agent)))
         await self.client.start_server();self.store=QueueStore(self.path)
+        self.cookie=session_cookie_name(self.store.session_namespace,self.client.make_url('').authority)
         self.one=await self.register('u12345678');self.two=await self.register('u12345679')
 
     async def asyncTearDown(self):
@@ -59,7 +60,7 @@ class QueueHTTPTests(unittest.IsolatedAsyncioTestCase):
 
     def headers(self,token=None,admin=False):
         h={'Origin':str(self.client.make_url('')).rstrip('/'),'X-A5-Queue':'queue-v1'}
-        if token:h['Cookie']=COOKIE+'='+token
+        if token:h['Cookie']=self.cookie+'='+token
         if admin:h['Authorization']='Admin'
         return h
 
@@ -69,8 +70,8 @@ class QueueHTTPTests(unittest.IsolatedAsyncioTestCase):
 
     async def register(self,employee):
         r=await self.client.post('/a5-queue/api/register',json={'employee':employee,'name':'Fixture','password':'fixture-password-only'},headers=self.headers())
-        self.assertEqual(r.status,200,await r.text());token=r.cookies[COOKIE].value
-        self.assertTrue(r.cookies[COOKIE]['httponly']);self.assertEqual(r.cookies[COOKIE]['samesite'],'Strict')
+        self.assertEqual(r.status,200,await r.text());token=r.cookies[self.cookie].value
+        self.assertTrue(r.cookies[self.cookie]['httponly']);self.assertEqual(r.cookies[self.cookie]['samesite'],'Strict')
         self.client.session.cookie_jar.clear();return token
 
     async def job(self):
