@@ -604,10 +604,11 @@ class UnifiedQueue:
         if not isinstance(job,str):
             raise ControlError(400, '无效的预约')
         with self.store.db() as db:
-            row=db.execute('SELECT account,state FROM unified_tasks WHERE id=?', (job,)).fetchone()
+            row=db.execute('SELECT account,state,allowed_employees FROM unified_tasks WHERE id=?', (job,)).fetchone()
             if not row:raise ControlError(404,'预约不存在')
             if row['account']!=user['id']:raise ControlError(403,'只有预约申请人可以管理允许用户')
             if row['state'] not in ('queued','ready','active'):raise ControlError(409,'预约已结束')
+            return json.loads(row['allowed_employees'])
 
     def allowed_user(self, user, job, employee, operation):
         if not isinstance(job, str) or operation not in ('add', 'remove'):

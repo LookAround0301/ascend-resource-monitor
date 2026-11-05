@@ -211,6 +211,19 @@ class ClaimHTTPTests(unittest.IsolatedAsyncioTestCase):
         await self.post('unified-allowed',payload,503)
         self.assertEqual((await self.state())['tasks'][0]['allowed_employees'],[])
 
+    async def test_allowed_names_are_owner_only_and_use_consistent_rosters(self):
+        job=await self.enqueue()
+        await self.post('unified-allowed',{'job':job,'employee':'u12345679','change':'add','confirmed':True,'confirmed_name':'Other'})
+        self.assertEqual(await self.post('unified-allowed-names',{'job':job}),{'names':{'u12345679':'Other'}})
+        self.roster['b'][0]['name']='Changed'
+        self.assertEqual(await self.post('unified-allowed-names',{'job':job}),{'names':{}})
+        self.roster['b']=None
+        await self.post('unified-allowed-names',{'job':job},503)
+        self.assertEqual((await self.state())['tasks'][0]['allowed_employees'],['u12345679'])
+        self.token=self.store.register('u99999999','Another','test-password-only')
+        await self.post('unified-allowed-names',{'job':job},403)
+        self.admin=True;await self.post('unified-allowed-names',{'job':job},403)
+
     async def test_allowed_search_finds_only_consistent_whitelist_entries_for_owner(self):
         job=await self.enqueue()
         self.roster['a'] += [{'employee':'u33345670','name':'Same'}, {'employee':'u33345671','name':'Only A'},

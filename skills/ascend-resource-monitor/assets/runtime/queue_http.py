@@ -80,6 +80,29 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
         return [{'employee':employee,'name':name} for employee,name in sorted(rosters[0].items())
                 if all(roster.get(employee)==name for roster in rosters[1:])][:8]
 
+    async def allowed_names(employees):
+        from personnel_roster import personnel
+        wanted=set(employees)
+        if not wanted:return {}
+        async def read(node):
+            try:
+                source=await asyncio.wait_for(agent(node,'/roster'),timeout=5)
+                if source.get('node')!=node or not isinstance(source.get('people'),list):raise ValueError('invalid roster')
+                matches={}
+                for entry in source['people']:
+                    employee=entry.get('employee')
+                    if employee in wanted:
+                        found,name=personnel(employee,entry.get('name'))
+                        if found!=employee or found in matches:raise ValueError('invalid roster entry')
+                        matches[found]=name
+                return matches
+            except Exception as exc:
+                raise ControlError(503,'人员白名单暂不可用') from exc
+        rosters=await asyncio.gather(*(read(node) for node in config['nodes']))
+        if not rosters:return {}
+        return {employee:name for employee,name in rosters[0].items()
+                if all(roster.get(employee)==name for roster in rosters[1:])}
+
     unified=UnifiedQueue(store, config['nodes'], settings.get('reservation_buffer_seconds',600), settings.get('timezone','UTC'), settings.get('daily_reset',False)) if settings.get('unified_queue') is True else None
     auto=AutoQueue(store,agent) if not unified and settings.get('auto_match_employee') else None
     monitor=None
@@ -245,10 +268,16 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                 store.logout(request.cookies.get(COOKIE,''));response=web.json_response({'message':'个人账号已退出'})
                 response.del_cookie(COOKIE,path='/a5-queue');return response
             if unified:
-                if operation in ('unified-allowed-lookup','unified-allowed-search','unified-allowed'):
+                if operation in ('unified-allowed-lookup','unified-allowed-search','unified-allowed-names','unified-allowed'):
                     if not person.get('registered'):raise ControlError(401,'请先登录预约申请人的个人账号')
                     job=data.get('job')
-                    unified.check_owner(person,job)
+                    employees=unified.check_owner(person,job)
+                    if operation=='unified-allowed-names':
+                        now=time.monotonic();history=limits[('roster_names',person['id'])]
+                        while history and history[0]<now-300:history.popleft()
+                        if len(history)>=300:raise ControlError(429,'查询次数过多，请稍后重试')
+                        history.append(now)
+                        return web.json_response({'names':await allowed_names(employees)},headers={'Cache-Control':'no-store'})
                     if operation in ('unified-allowed-lookup','unified-allowed-search') or data.get('change')=='add':
                         now=time.monotonic();history=limits[('roster_lookup',person['id'])]
                         while history and history[0]<now-300:history.popleft()
