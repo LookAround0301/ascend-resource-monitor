@@ -100,7 +100,7 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
             if person: return {**person,'admin':True,'registered':True}
             return {'id':'grafana:'+str(identity['user']['id']),'employee':'','name':identity['user']['login'],'admin':True,'registered':False}
         if person: return {**person,'admin':False,'registered':True}
-        if required: raise ControlError(401,'请先使用工号和个人密码登录')
+        if required: raise ControlError(401,'请先使用工号和姓名登录' if unified else '请先使用工号和个人密码登录')
         return None
 
     async def snapshot(row):
@@ -234,7 +234,8 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                     while history and history[0]<now-300:history.popleft()
                     if len(history)>=maximum:raise ControlError(429,'尝试次数过多，请五分钟后重试')
                 for key,_ in keys:limits[key].append(now)
-                if operation=='register':token=await asyncio.to_thread(store.register,data.get('employee'),data.get('name'),data.get('password'))
+                if unified:token=await asyncio.to_thread(store.login_without_password,data.get('employee'),data.get('name'))
+                elif operation=='register':token=await asyncio.to_thread(store.register,data.get('employee'),data.get('name'),data.get('password'))
                 else:token=await asyncio.to_thread(store.login,data.get('employee'),data.get('password'))
                 response=web.json_response({'message':'登录成功'})
                 response.set_cookie(COOKIE,token,path='/a5-queue',httponly=True,secure=request.secure,samesite='Strict',max_age=7*86400)

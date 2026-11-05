@@ -55,6 +55,25 @@ class ClaimHTTPTests(unittest.IsolatedAsyncioTestCase):
     async def enqueue(self):
         return (await self.post('enqueue',{'machine':'a','cards':8,'requested_seconds':3600,'notifications_ready':True}))['job']
 
+    async def test_passwordless_login_preserves_jobs_and_admin_checks(self):
+        job=await self.enqueue()
+        response=await self.client.post('/a5-queue/api/login',json={'employee':'U12345678','name':'Fixture','admin':True},headers=self.headers())
+        self.assertEqual(response.status,200,await response.text())
+        new_token=response.cookies[COOKIE].value
+        self.assertEqual(self.store.user(new_token),self.store.user(self.token))
+        self.token=new_token
+        row=(await self.state())['tasks'][0]
+        self.assertEqual(row['id'],job);self.assertTrue(row['mine'])
+        await self.post('unified-action',{'job':job,'action':'priority-top','confirmed':True,'admin':True},403)
+        await self.post('login',{'employee':'u12345678','name':'Wrong'},401)
+
+    async def test_first_passwordless_login_creates_account(self):
+        response=await self.client.post('/a5-queue/api/login',json={'employee':'u12345670','name':'New user'},headers=self.headers())
+        self.assertEqual(response.status,200,await response.text())
+        person=self.store.user(response.cookies[COOKIE].value)
+        self.assertEqual((person['employee'],person['name']),('u12345670','New user'))
+        await self.post('login',{'employee':'u12345671','name':''},400)
+
     async def test_claim_requires_current_offer_and_preserves_application_time(self):
         job=await self.enqueue();row=(await self.state())['tasks'][0]
         self.assertFalse((await self.state())['night_auto_finish_enabled'])

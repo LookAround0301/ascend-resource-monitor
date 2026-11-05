@@ -48,6 +48,28 @@ class StoreTests(unittest.TestCase):
         with self.assertRaises(ControlError):self.store.login('u12345678','wrong-password')
         self.store.logout(self.token);self.assertIsNone(self.store.user(self.token))
 
+    def test_passwordless_login_preserves_existing_account_and_reservation(self):
+        job=self.grant_job()
+        with self.store.db() as db:
+            credentials=tuple(db.execute('SELECT salt,digest FROM accounts WHERE id=?',(self.one['id'],)).fetchone())
+        logged_in=self.store.user(self.store.login_without_password(' U12345678 ', ' One '))
+        self.assertEqual(logged_in,self.one)
+        self.assertEqual(self.store.own(logged_in,job)['id'],job)
+        self.assertEqual(self.store.user(self.token),self.one)
+        with self.store.db() as db:
+            self.assertEqual(tuple(db.execute('SELECT salt,digest FROM accounts WHERE id=?',(self.one['id'],)).fetchone()),credentials)
+        with self.assertRaises(ControlError):self.store.login_without_password('u12345678','Wrong name')
+
+    def test_passwordless_first_login_creates_one_account_and_validates_input(self):
+        first=self.store.user(self.store.login_without_password('u12345670','New user'))
+        second=self.store.user(self.store.login_without_password('U12345670','New user'))
+        self.assertEqual(first,second)
+        with self.store.db() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM accounts WHERE employee=?',('u12345670',)).fetchone()[0],1)
+        for employee,name in [('bad','Name'),('u12345671',''),('u12345671','Name\nx')]:
+            with self.subTest(employee=employee,name=name),self.assertRaises(ControlError):
+                self.store.login_without_password(employee,name)
+
     def test_self_service_container_cannot_be_taken_from_unfinished_task(self):
         self.grant_job()
         with self.assertRaises(ControlError):self.store.enqueue(self.two,'a',CID,'test')
