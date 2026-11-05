@@ -75,6 +75,31 @@ class NightPriorityTests(unittest.TestCase):
             row = db.execute('SELECT state,activated,claim_before FROM unified_tasks WHERE id=?', (job,)).fetchone()
         self.assertEqual((row['state'], row['activated'], row['claim_before']), ('active', start, 0))
 
+    def test_queued_night_predictions_replan_and_match_unchanged_start(self):
+        start=stamp('2026-11-04T20:00:00')
+        first=self.add(machine='auto',night=True,not_before=start)
+        second=self.add(machine='auto',night=True,not_before=start)
+        rows={row['id']:row for row in self.queue.view(self.user)['tasks']}
+        for row in (rows[first],rows[second]):
+            self.assertEqual(row['state'],'queued');self.assertEqual(row['allocations'],{})
+            self.assertEqual(row['estimated_start'],start);self.assertEqual(len(row['planned_allocations']),1)
+        self.assertNotEqual(set(rows[first]['planned_allocations']),set(rows[second]['planned_allocations']))
+        original=rows[second]['planned_allocations']
+        self.queue.action(self.user,first,'cancel')
+        revised=next(row for row in self.queue.view(self.user)['tasks'] if row['id']==second)
+        self.assertNotEqual(revised['planned_allocations'],original)
+        self.clock.return_value=start
+        active=next(row for row in self.queue.view(self.user)['tasks'] if row['id']==second)
+        self.assertEqual(active['state'],'active');self.assertEqual(active['allocations'],revised['planned_allocations'])
+
+    def test_unknown_release_does_not_claim_a_night_prediction(self):
+        active=self.add(requested_seconds=60)
+        self.queue.action(self.user,active,'claim',self.queue.view(self.user)['tasks'][0]['offer_id'])
+        self.clock.return_value=self.now+61
+        night=self.add(night=True,not_before=stamp('2026-11-04T20:00:00'))
+        row=next(row for row in self.queue.view(self.user)['tasks'] if row['id']==night)
+        self.assertIsNone(row['estimated_start']);self.assertEqual(row['planned_allocations'],{})
+
     def test_preexisting_ready_night_preserves_allocation_and_becomes_active(self):
         start = stamp('2026-11-04T20:00:00')
         job = self.add(night=True, not_before=start)
