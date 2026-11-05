@@ -11,7 +11,7 @@ This guide describes the repository source as of 2026-11-04. Basic monitoring ca
 | Resource monitoring | Host CPU, RAM, disks, shared storage and networking; per-NPU utilization, HBM, temperature, power and collection health |
 | NPU processes | Only processes reported by NPU Exporter, with employee evidence, optional name, container, working directory and host mount mapping |
 | Summaries and origin | Group by person, directory, node and container; show current process duration and evidence-based job origin |
-| Unified reservations | A pool of two eight-card nodes, with personal login, queuing, allocation, claiming, cancellation and completion |
+| Unified reservations | A pool of two equal-capacity nodes (8 by default; opt-in 16), with personal login, queuing, allocation, claiming, cancellation and completion |
 | Personnel allowlist | Search/add/remove only for verified Grafana administrators, synchronized across host rosters |
 | Persistent guard | When explicitly enabled, intercept NPU containers with a valid employee ID but no mapped name; allowlist exemptions take precedence |
 | Navigation | One canonical homepage, including old-home redirects, preserved query parameters and Grafana client-side navigation |
@@ -27,6 +27,8 @@ Page refresh is not sampling frequency: resource scraping is normally every five
 Registration checks tolerate an exporter timestamp up to 15 seconds ahead of the central server to avoid false unverified status from small host clock differences. Samples more than 30 seconds old, clock differences beyond that tolerance, and a local cache older than 20 seconds remain invalid. Keep host time synchronization healthy.
 
 ### Unified queue rules
+
+The table below describes the default A5 eight-card profile. With explicit `task_queue.cards_per_node: 16`, single-node requests allow 1–16 cards, balanced dual-node requests allow 2/4/8/16/32 total cards, and half-node groups contain eight cards. All other queue rules stay the same.
 
 | Setting | Rule |
 | --- | --- |
@@ -122,7 +124,7 @@ These use the central proxy and mTLS host agents; the base wizard does not enabl
 }
 ```
 
-- Configure exactly two eight-card nodes in the proxy's `nodes`, matching monitoring labels. The canonical path must belong to the same dashboard UID.
+- Configure exactly two equal-capacity nodes in the proxy's `nodes`, matching monitoring labels. Keep `task_queue.cards_per_node` omitted or `8` for A5. Set it explicitly to `16` for A3 logical IDs 0–15; use the [card-capacity migration procedure](task-queue.md#card-capacity-and-a3-migration) only for a verified old paired-card A3 layout. The canonical path must belong to the same dashboard UID.
 - Install matching versions of the proxy, queue, planner and dependencies from `assets/runtime/`. Run `control_proxy.py --config .../proxy.json` centrally and `container_agent.py --config .../agent.json` on each host under their established service accounts.
 - Use `patch_dashboard.add_queue_home_panel(dashboard, nodes)` to add the unified region. Preserve existing panels, datasource UIDs, selectors and control links. The proxy supports both old and new Grafana dashboard APIs.
 - With `monitor_processes` enabled, also apply `patch_dashboard.add_registration_status(dashboard, prefix)` to add the process table's registration-status column. Match the queue metric prefix and validate `*_queue_process_source_up` on every node. This is a read-only match of current employee/node registrations; ambiguous or stale evidence remains unverified, and no container is stopped.

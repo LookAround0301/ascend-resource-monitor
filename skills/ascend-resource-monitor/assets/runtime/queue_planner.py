@@ -1,4 +1,4 @@
-"""Pure reservation planning for a two-node, eight-card resource pool.
+"""Pure reservation planning for a two-node resource pool with 8 or 16 cards per node.
 
 This module does not read hardware, start or stop jobs, or persist allocations.
 Callers must serialize planning and persistence and supply trustworthy intervals.
@@ -10,8 +10,8 @@ import math
 def plan(nodes, busy, jobs, now, buffer_seconds=600):
     """Plan jobs in submitted order, allowing non-delaying backfill.
 
-    ``nodes`` maps node names to eight ordered card identifiers; order defines
-    the two groups of four. Busy entries have node, cards, start and end;
+    ``nodes`` maps node names to 8 or 16 ordered card identifiers; order defines
+    two equal card groups. Busy entries have node, cards, start and end;
     ``None`` end means the release time is unknown. Entries represent still
     occupied or reserved resources; remove them only after explicit release.
     An overdue entry has unknown release time, regardless of its old estimate.
@@ -21,8 +21,10 @@ def plan(nodes, busy, jobs, now, buffer_seconds=600):
     on both nodes, with ``cards`` specifying the count per node).
     Returned times are estimates based on declared durations, not guarantees.
     """
-    if len(nodes) != 2 or any(len(cards) != 8 or len(set(cards)) != 8 for cards in nodes.values()):
-        raise ValueError('two nodes with eight distinct ordered cards each are required')
+    capacity = len(next(iter(nodes.values()), ()))
+    if len(nodes) != 2 or capacity not in (8, 16) or any(len(cards) != capacity or len(set(cards)) != capacity for cards in nodes.values()):
+        raise ValueError('two nodes with the same 8 or 16 distinct ordered cards each are required')
+    half = capacity // 2
     if buffer_seconds < 0 or not math.isfinite(now):
         raise ValueError('invalid planning time or buffer')
     intervals = []
@@ -49,12 +51,23 @@ def plan(nodes, busy, jobs, now, buffer_seconds=600):
     def card_choices(node, count, available):
         choices = []
         ordered = nodes[node]
-        groups = (ordered[:4], ordered[4:]) if count <= 4 else (ordered,)
+        groups = (ordered[:half], ordered[half:]) if count <= half else (ordered,)
         for group in groups:
-            for choice in combinations([card for card in group if card in available], count):
-                remaining = set(available) - set(choice)
-                intact_groups = sum(set(g) <= remaining for g in (ordered[:4], ordered[4:]))
-                choices.append(((-intact_groups, tuple(map(str, choice))), list(choice)))
+            if capacity == 8:
+                # Preserve A5 ordering and all original candidate choices exactly.
+                for choice in combinations([card for card in group if card in available], count):
+                    remaining = set(available) - set(choice)
+                    intact_groups = sum(set(g) <= remaining for g in (ordered[:4], ordered[4:]))
+                    choices.append(((-intact_groups, tuple(map(str, choice))), list(choice)))
+                continue
+            choice = [card for card in group if card in available][:count]
+            if len(choice) != count:
+                continue
+            # Within a group, every subset has the same intact-group score.
+            # Use configured card order without enumerating 16-card combinations.
+            remaining = set(available) - set(choice)
+            intact_groups = sum(set(g) <= remaining for g in (ordered[:half], ordered[half:]))
+            choices.append(((-intact_groups, tuple(map(str, choice))), choice))
         return sorted(choices, key=lambda pair: pair[0])
 
     def options(job, start):
@@ -76,8 +89,8 @@ def plan(nodes, busy, jobs, now, buffer_seconds=600):
 
     planned = []
     for job in jobs:
-        if (type(job.get('cards')) is not int or not 1 <= job['cards'] <= 8
-                or (job.get('dual') and job['cards'] not in (1, 2, 4, 8))
+        if (type(job.get('cards')) is not int or not 1 <= job['cards'] <= capacity
+                or (job.get('dual') and job['cards'] not in tuple(n for n in (1, 2, 4, 8, 16) if n <= capacity))
                 or type(job.get('seconds')) is not int or job['seconds'] <= 0):
             raise ValueError('invalid job size or duration')
         earliest = max(now, job.get('not_before', now))

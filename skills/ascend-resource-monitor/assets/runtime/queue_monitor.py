@@ -17,12 +17,31 @@ class QueueMonitor:
         self.sampled=0; self.next_poll=0;self.inventory_times={};self.night_empty={}
         self.prefix=settings.get('metric_prefix','ascend')
         self.process_prefix=settings.get('process_metric_prefix',self.prefix+'_process_')
+        self.capacity=settings.get('cards_per_node',8)
+        if type(self.capacity) is not int or self.capacity not in (8,16):
+            raise ValueError('cards_per_node must be 8 or 16')
+        self.npu_card_map=settings.get('npu_card_map')
+        if self.npu_card_map is not None:
+            if (not isinstance(self.npu_card_map,dict) or set(self.npu_card_map)!=set(self.nodes)
+                    or any(not isinstance(mapping,dict) or not mapping or any(
+                        not isinstance(chip,str) or not re.fullmatch(r'[0-9]+',chip)
+                        or type(card) is not int or not 0<=card<self.capacity
+                        for chip,card in mapping.items()) for mapping in self.npu_card_map.values())):
+                raise ValueError('Invalid per-node NPU chip-to-card mapping')
+
         if not re.fullmatch(r'[a-zA-Z_][a-zA-Z0-9_]*',self.prefix) or not re.fullmatch(r'[a-zA-Z_][a-zA-Z0-9_]*',self.process_prefix):
             raise ValueError('Invalid monitoring metric prefix')
         self.url=settings.get('prometheus_url','http://127.0.0.1:9090').rstrip('/')
         parsed=urlsplit(self.url)
         if parsed.scheme!='http' or parsed.hostname not in ('127.0.0.1','localhost','::1') or parsed.username or parsed.password or parsed.query or parsed.fragment:
             raise ValueError('Queue process monitoring requires a loopback Prometheus URL')
+
+    def physical_npu_ids(self,node,value):
+        if self.npu_card_map is None:return value
+        mapping=self.npu_card_map[node]
+        chips=value.split(',')
+        if not chips or any(chip not in mapping for chip in chips):return ''
+        return ','.join(str(card) for card in sorted({mapping[chip] for chip in chips}))
 
     @property
     def query(self):
@@ -57,7 +76,7 @@ class QueueMonitor:
                                   'employee':labels.get('employee_id','').strip().lower(),
                                   'name':labels.get('employee_name','').strip(),
                                   'container':labels.get('container',''),
-                                  'npu_ids':labels.get('npu_ids',''),
+                                  'npu_ids':self.physical_npu_ids(node,labels.get('npu_ids','')),
                                   'control_ref':labels.get('control_ref','')})
             else:
                 scalars[node][suffix]=value
@@ -90,7 +109,7 @@ class QueueMonitor:
             job=task['id'];allocations=task['allocations'];nodes=set(allocations)
             if (not isinstance(task['activated'],(int,float)) or not task['activated'] or task['requested_seconds']<=0 or
                     not nodes or not nodes <= valid or any(node not in self.nodes or not cards or
-                    any(type(card) is not int or not 0<=card<=7 for card in cards)
+                    any(type(card) is not int or not 0<=card<self.capacity for card in cards)
                     for node,cards in allocations.items())):
                 self.night_empty.pop(job,None);continue
             assigned={node:set(cards) for node,cards in allocations.items()}
@@ -110,10 +129,9 @@ class QueueMonitor:
                 finished.add(job);self.night_empty.pop(job,None)
         return observed,finished
 
-    @staticmethod
-    def cards(row):
+    def cards(self,row):
         raw=row.get('npu_ids','').split(',')
-        return {int(card) for card in raw} if raw and all(re.fullmatch(r'[0-7]',card) for card in raw) else None
+        return {int(card) for card in raw} if raw and all(re.fullmatch(r'0|[1-9][0-9]?',card) and int(card)<self.capacity for card in raw) else None
 
     @staticmethod
     def shared_cards(row, tasks, continuing=()):

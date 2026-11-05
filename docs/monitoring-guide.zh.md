@@ -11,7 +11,7 @@
 | 资源监控 | 主机 CPU、内存、磁盘、共享存储、网络；逐卡 NPU 利用率、HBM、温度、功耗和采集状态 |
 | NPU 进程 | 只展示 NPU Exporter 报告的进程，显示工号线索、姓名、容器、工作目录及宿主机映射目录 |
 | 汇总与来源 | 按人、目录、主机和容器汇总；显示当前进程使用时长，以及有证据支持的作业来源 |
-| 统一预约 | 两台各 8 卡的资源池；个人账号登录、申请、排队、分配、开始使用、取消和结束登记 |
+| 统一预约 | 两台同容量主机的资源池，默认每台 8 卡，可显式配置每台 16 卡；个人账号登录、申请、排队、分配、开始使用、取消和结束登记 |
 | 人员白名单 | 仅 Grafana 管理员可搜索、添加、删除；同步两台主机，普通用户不能读取名单 |
 | 持续拦截 | 明确启用后，管控有有效工号但未在人员表中匹配到姓名的 NPU 容器；白名单优先豁免 |
 | 页面入口 | 默认主页和旧主页地址跳到同一规范地址，保留时间范围等参数；支持 Grafana 页面内导航 |
@@ -24,6 +24,8 @@
 页面刷新不是采集周期：资源抓取通常为 5 秒，进程采集默认 10 秒。姓名和来源依赖已配置的证据，不代表独立的企业身份认证。
 
 ### 统一队列规则
+
+下表为默认 A5 每台 8 卡的规则。A3 使用 0–15 逻辑卡位时，显式设置代理配置 `task_queue.cards_per_node: 16`：单机可选 1–16 卡，双机合计 2 / 4 / 8 / 16 / 32 卡、平均分配，半机卡组为 8 卡。其余排队规则不变。已有 A5 数据不会自动扩展；旧 A3 两芯片合一的预约需按[显式迁移步骤](../skills/ascend-resource-monitor/references/task-queue.md#card-capacity-and-a3-migration)处理。
 
 | 项目 | 规则 |
 | --- | --- |
@@ -129,7 +131,7 @@ Windows 需要 PowerShell 5.1 和 OpenSSH Client，不需要 Python；主机需�
 }
 ```
 
-- 代理 `nodes` 必须对应两台各 8 卡主机，节点名与监控标签一致。规范地址必须属于同一 `dashboard_uid`。
+- 代理 `nodes` 必须对应两台同容量主机，节点名与监控标签一致。A5 保持 `task_queue.cards_per_node` 缺省或为 `8`；A3 的 0–15 逻辑卡位显式配置为 `16`。规范地址必须属于同一 `dashboard_uid`。
 - 安装当前 `assets/runtime/` 中的代理、队列、规划器和依赖模块，保持同一版本；按现有服务启动 `control_proxy.py --config .../proxy.json` 和各主机 `container_agent.py --config .../agent.json`。
 - 用 `patch_dashboard.add_queue_home_panel(dashboard, nodes)` 接入统一首页。保留已有面板、数据源 UID、筛选器和控制链接；代理也适配新旧 Grafana 面板 API。
 - 启用 `monitor_processes` 时，同时用 `patch_dashboard.add_registration_status(dashboard, prefix)` 增加进程表的“排队状态”列；使用队列指标前缀，并检查各节点 `*_queue_process_source_up`。核对依据为当前工号和机器登记；信息不明或采集过期时显示待核实，不停止容器。

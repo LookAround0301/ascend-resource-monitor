@@ -11,7 +11,7 @@ HOME_FRAGMENT = '''<style>
 <section><h3>个人账号与桌面通知</h3><p id="account-status"></p>
 <form id="account-form" class="row"><label>工号<input id="employee" autocomplete="username" pattern="[A-Za-z][0-9]{8}" required></label><label>姓名<input id="name" autocomplete="name" maxlength="60" required></label><button type="submit">登录</button></form>
 <div class="row"><button id="logout" class="secondary hidden" type="button">退出个人账号</button><button id="enable-notifications" type="button" disabled>开启并验证桌面通知</button></div><p id="notification-status" role="status">登录后开启并验证桌面通知，才能加入队列。</p></section>
-<section><h3>卡预约占用情况</h3><div id="card-grid" class="card-grid"></div></section>
+<section><h3>卡预约占用情况</h3><p id="card-capacity-hint">此处显示预约登记。</p><div id="card-grid" class="card-grid"></div></section>
 <section><h3>提交预约</h3><form id="join-form" class="row"><label>机器<select id="machine" required></select></label><label>卡数（合计）<select id="cards" required></select></label><label>预约类型<select id="kind"><option value="normal">普通任务</option><option value="night">夜间长任务</option></select></label><label id="duration-hour-label">预计时长（小时）<select id="hours" required></select></label><label id="duration-minute-label">分钟<select id="minutes" aria-label="预计时长（分钟）"></select></label><label id="start-date-label" class="hidden">预约开始日期<select id="start-date"><option value="">选择日期</option></select></label><label id="start-hour-label" class="hidden">开始时间（小时）<select id="start-hour"><option value="">选择小时</option></select></label><label id="start-minute-label" class="hidden">开始时间（分钟）<select id="start-minute"></select></label><button id="join" disabled>加入队列</button><span id="message" role="status"></span></form><p id="resource-hint"></p><p id="reservation-window"></p><p>普通任务最长 2 小时，分配后最多 10 分钟内点击“开始使用”，最迟须在凌晨 2 点前开始。夜间任务按排程自动开始登记，由本人设置的 agent 启动；夜间交接不检查进程，其他情况可在卡连续空闲后自动结束。每日 9 点清空普通任务登记并取消未开始的夜间预约；已开始的夜间任务保留原时间，用完后自行结束登记。实际任务不会被停止。</p></section>
 <div id="queue-alerts" class="hidden" role="status"></div><section><div class="scroll"><table><thead><tr><th>状态</th><th>工号 / 姓名</th><th>资源需求</th><th>机器与卡号</th><th>申请时间</th><th>开始时间</th><th>预计占用</th><th>预计结束时间</th><th>操作</th></tr></thead><tbody id="tasks"></tbody></table></div></section>'''
 
@@ -91,7 +91,7 @@ HOME_JS = r'''"use strict";
   function resourceFields(){
    const nodes=(state&&state.nodes)||[],signature=JSON.stringify(nodes),machine=$('machine'),cards=$('cards');
    if(signature!==machineNodes){const selected=machine.value;machine.replaceChildren();const auto=element('option','单机任意机器');auto.value='auto';machine.append(auto);for(const node of nodes){const option=element('option','单机 '+node.replace(/^A5-/,'') );option.value=node;machine.append(option);}const dual=element('option','双机');dual.value='dual';machine.append(dual);if([...machine.options].some(o=>o.value===selected))machine.value=selected;machineNodes=signature;}
-   const dual=machine.value==='dual',sizes=dual?[2,4,8,16]:[1,2,3,4,5,6,7,8],selected=Number(cards.value);
+   const capacity=state.cards_per_node||8,dual=machine.value==='dual',sizes=dual?[2,4,8,16,32].filter(n=>n<=2*capacity):Array.from({length:capacity},(_,i)=>i+1),selected=Number(cards.value);
    if([...cards.options].map(o=>Number(o.value)).join()!==sizes.join()){cards.replaceChildren();for(const count of sizes){const option=element('option',count+' 卡');option.value=String(count);cards.append(option);}if(sizes.includes(selected))cards.value=String(selected);}
    $('resource-hint').textContent=dual?'双机合计 '+cards.value+' 卡，每台 '+Number(cards.value)/2+' 卡；具体卡号按队列可用情况分配。':machine.value==='auto'?'自动选择可用单机，按队列分配机器和卡号。':'使用 '+machine.value+'，具体卡号按队列可用情况分配。';
   }
@@ -153,9 +153,9 @@ HOME_JS = r'''"use strict";
    }
   }
   function renderCards(){
-   const grid=$('card-grid');grid.replaceChildren();const now=state.server_time,buffer=state.reservation_buffer_seconds??600;
+   const grid=$('card-grid');grid.replaceChildren();const capacity=state.cards_per_node||8;$('card-capacity-hint').textContent='每台 '+capacity+' 个卡位（0–'+(capacity-1)+'），双机合计 '+2*capacity+' 卡。此处显示预约登记。';const now=state.server_time,buffer=state.reservation_buffer_seconds??600;
    for(const node of state.nodes||[]){const line=element('div','');line.className='card-node';line.append(element('strong',node));const list=element('div','');list.className='card-list';
-    for(let card=0;card<8;card++){const tile=element('div','');tile.className='card-tile';tile.append(element('strong',card+' 号卡'));const occupied=state.tasks.find(row=>['ready','active'].includes(row.state)&&((row.allocations||{})[node]||[]).includes(card));
+    for(let card=0;card<capacity;card++){const tile=element('div','');tile.className='card-tile';tile.append(element('strong',card+' 号卡'));const occupied=state.tasks.find(row=>['ready','active'].includes(row.state)&&((row.allocations||{})[node]||[]).includes(card));
      if(occupied){tile.classList.add('occupied');tile.append(element('span',occupied.state==='ready'?'已分配':'使用中'));}
      else{const future=state.tasks.filter(row=>row.state==='queued'&&row.estimated_start!=null&&((row.planned_allocations||{})[node]||[]).includes(card)).map(row=>row.estimated_start);const next=future.length?Math.min(...future):null;const unknown=state.tasks.some(row=>row.state==='queued'&&row.estimated_start==null);const until=next==null?null:next-buffer;let label=until!=null?(until<=now?'开始缓冲中':'预计空闲 '+overtimeDuration(until-now)):unknown?'空闲时间待确认':'暂无后续预约';if(unknown&&until!=null&&until>now)label='空闲时间待确认';if(until!=null&&until<=now)tile.classList.add('buffer');tile.append(element('span',label));}list.append(tile);}line.append(list);grid.append(line);}
   }
@@ -206,7 +206,7 @@ HOME_JS = r'''"use strict";
   $('logout').onclick=async()=>{try{await api('logout',{});verifiedUser=null;closeNotices();await refresh();}catch(err){report(err.message,true);}};
   $('machine').onchange=resourceFields;$('cards').onchange=resourceFields;
   $('kind').onchange=timeLimits;$('hours').onchange=timeLimits;$('minutes').onchange=timeLimits;for(const part of ['date','hour','minute'])$('start-'+part).onchange=timeLimits;timeLimits();
-  $('join-form').onsubmit=async e=>{e.preventDefault();timeLimits();if(!$('join-form').reportValidity())return;if(!ready()){gate();report('请先开启桌面通知并通过测试，才能加入队列。',true);return;}const night=$('kind').value==='night';submitting=true;gate();try{report((await api('enqueue',{machine:$('machine').value,cards:Number($('cards').value),night,not_before:night?selectedStart():0,requested_seconds:Number($('hours').value)*3600+Number($('minutes').value)*60,notifications_ready:true})).message);await refresh();}catch(err){report(err.message,true);}finally{submitting=false;gate();}};
+  $('join-form').onsubmit=async e=>{e.preventDefault();timeLimits();if(!$('join-form').reportValidity())return;if(!ready()){gate();report('请先开启桌面通知并通过测试，才能加入队列。',true);return;}const night=$('kind').value==='night';submitting=true;gate();try{report((await api('enqueue',{cards_per_node:state.cards_per_node||8,machine:$('machine').value,cards:Number($('cards').value),night,not_before:night?selectedStart():0,requested_seconds:Number($('hours').value)*3600+Number($('minutes').value)*60,notifications_ready:true})).message);await refresh();}catch(err){report(err.message,true);}finally{submitting=false;gate();}};
   function refreshDelay(){
    const control=document.querySelector('button[aria-label^="Choose refresh time interval"]');
    if(control&&control.textContent.trim()==='Off')return 0;

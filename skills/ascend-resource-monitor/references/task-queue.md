@@ -4,7 +4,7 @@ For the current feature matrix, deployment sequence and upgrade checklist, see [
 
 ## Unified homepage reservations
 
-When `task_queue.unified_queue` is enabled, use `queue_unified.py`, `queue_planner.py` and `queue_unified_ui.py` instead of the older whole-node workflow below. The homepage has separate machine and total-card selectors: choose a configured single node with 1–8 cards, or both nodes with 2, 4, 8 or 16 cards in total, split equally (1+1, 2+2, 4+4 or 8+8). A selected single node never falls back to the other node. Card IDs are chosen from available queue capacity, with up to four cards on each node kept in one four-card group. Manual start/finish does not execute or stop workloads. Duration uses hour and five-minute dropdowns. The UI requires at least five minutes; legacy minute-precision requests remain compatible. Normal jobs are limited to 2 hours and new night jobs to 13 hours; existing reservations retain their original duration.
+When `task_queue.unified_queue` is enabled, use `queue_unified.py`, `queue_planner.py` and `queue_unified_ui.py` instead of the older whole-node workflow below. The default eight-card profile has separate machine and total-card selectors: choose a configured single node with 1–8 cards, or both nodes with 2, 4, 8 or 16 cards in total, split equally (1+1, 2+2, 4+4 or 8+8). A selected single node never falls back to the other node. Card IDs are chosen from available queue capacity, with up to four cards on each node kept in one four-card group. Manual start/finish does not execute or stop workloads. Duration uses hour and five-minute dropdowns. The UI requires at least five minutes; legacy minute-precision requests remain compatible. Normal jobs are limited to 2 hours and new night jobs to 13 hours; existing reservations retain their original duration.
 
 The machine selector also offers **single node, any available** (`auto`), which lets the queue choose either node with suitable capacity. The new enqueue payload uses `machine` (`auto`, an exact configured node key, or `dual`) and `cards` (total count). Storage and planner `cards` remain the per-node count for dual requests, preserving earlier reservations. Older clients without `machine` keep automatic single-node selection and the original `dual: true, cards: 8` meaning of sixteen total cards. Do not reinterpret existing reservations during an upgrade.
 
@@ -27,6 +27,53 @@ Set `task_queue.daily_reset: true` to clear normal reservation records, includin
 Owners may move their queued or ready reservations down one position within the same task type. Verified administrators can reorder queued reservations. Neither operation preempts active work. Active reservations appear first in the table without changing queue order. A task is a bottleneck when releasing it immediately enables a waiter or its projected end determines a due waiter's estimated start. For overdue tasks, compare hypothetical releases to identify both individual dependencies and tasks jointly blocking a waiter; other active and offered allocations remain in the simulation. Do not claim that releasing one task makes a waiter start immediately when other allocations still block it. Non-bottleneck overtime allowances are estimates and may be unavailable; overdue tasks affecting a waiter do not display a speculative allowance. Normal bottlenecks receive advance reminders at 10 and 5 minutes where the duration permits. Overdue blockers are reminded every 5 minutes, other overdue owners every 15 minutes. After five minutes, notify only the nearest directly affected waiter, including simultaneous independent waiters where applicable. Notifications depend on the open, signed-in browser and permissions. These calculations do not guarantee that workloads have stopped.
 
 Set `task_queue.monitor_processes: true` for read-only registration checks from local Prometheus. Optional `prometheus_url` defaults to `http://127.0.0.1:9090` and must remain loopback; `process_metric_prefix` must match the process collector. The proxy emits `*_queue_process_registration`, joined to process rows by node and process lifetime key using `patch_dashboard.add_registration_status`. Known named processes without a matching active registration are marked as unregistered/suspected queue jumping. Desktop alerts are sent only to the named account itself and owners of ready/active reservations overlapping the process's node and NPU cards; invalid card IDs do not produce targeted alerts. Unknown, inconsistent or stale inventory is marked for verification, not attributed to a guessed person. The feature does not stop containers; teams may have coordinated use outside the queue.
+
+## Card capacity and A3 migration
+
+`task_queue.cards_per_node` in the central proxy configuration defaults to `8`.
+Omitting it preserves A5's IDs 0–7, single-node sizes 1–8, dual-node totals
+2/4/8/16, two groups of four, and the original allocation ordering. Existing
+A5 payloads without the new capacity field remain valid. Both configured nodes
+must have the same supported capacity, either 8 or 16.
+
+For A3 deployments exposing logical NPU IDs 0–15, set `cards_per_node: 16`.
+Single-node requests allow 1–16, dual-node totals allow 2/4/8/16/32, and
+half-node groups contain eight cards. The homepage renders 16 tiles per node.
+Process occupancy, shared-use card matching and night completion use the same
+0–15 IDs. Omit `npu_card_map` for direct logical IDs, or use a per-node identity
+map. An existing paired map such as `"15": 7` must be removed or changed to
+identity when switching to logical16. Invalid card IDs and stale inventories
+remain unverified and cannot establish that a night reservation is empty.
+
+The state API exposes `cards_per_node`. The updated UI includes it in enqueue
+requests. In 16-card mode a missing or mismatched value returns HTTP 409 with
+a refresh instruction, preventing an old eight-slot browser from silently
+submitting a different resource request. Refresh existing tabs after upgrade.
+
+Capacity is recorded in SQLite. Changing an existing database's capacity does
+not automatically resize or release reservations. A mismatch refuses startup;
+normal A5 upgrades preserve allocations, claim windows and active work.
+
+Only an old **A3 paired-eight layout**, where slot x represented logical IDs
+2x and 2x+1, can use the following opt-in migration. Do not run it on A5.
+Stop the central queue proxy and take a consistent SQLite backup first; keep
+workloads and collectors running. Deploy the new runtime and configure 16-card
+capacity with direct logical IDs, then run on the stopped queue database:
+
+```sh
+python assets/runtime/queue_a3_migration.py \
+  --database /path/on/data-volume/queue.db \
+  --nodes node-a node-b --from-layout a3-paired8
+```
+
+The transaction doubles each old per-node requested count and expands each
+allocation and shared continuing grant, preserving original physical coverage.
+It keeps account/session records, task IDs, timestamps, durations, claim/offer
+fields and priorities. A migration marker makes repeats a no-op; invalid old
+allocations roll back the transaction. The explicit source-layout argument is
+mandatory. Restart only the queue proxy, verify capacity 16 and the preserved
+allocations, and check both nodes' process-source freshness. Do not restore an
+old database after new reservations have been accepted without reconciling them.
 
 ## Legacy per-node reservations and Stop
 

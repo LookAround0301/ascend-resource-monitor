@@ -103,7 +103,7 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
         return {employee:name for employee,name in rosters[0].items()
                 if all(roster.get(employee)==name for roster in rosters[1:])}
 
-    unified=UnifiedQueue(store, config['nodes'], settings.get('reservation_buffer_seconds',600), settings.get('timezone','UTC'), settings.get('daily_reset',False)) if settings.get('unified_queue') is True else None
+    unified=UnifiedQueue(store, config['nodes'], settings.get('reservation_buffer_seconds',600), settings.get('timezone','UTC'), settings.get('daily_reset',False), settings.get('cards_per_node',8)) if settings.get('unified_queue') is True else None
     auto=AutoQueue(store,agent) if not unified and settings.get('auto_match_employee') else None
     monitor=None
     if unified and settings.get('monitor_processes'):

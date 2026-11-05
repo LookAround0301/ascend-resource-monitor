@@ -1,4 +1,4 @@
-"""Transactional, manual-only reservations across two eight-card nodes."""
+"""Transactional, manual-only reservations across two configurable 8/16-card nodes."""
 import json
 import secrets
 import time
@@ -12,11 +12,14 @@ from queue_planner import plan
 
 
 class UnifiedQueue:
-    def __init__(self, store, nodes, buffer_seconds=600, timezone='UTC', daily_reset=False):
+    def __init__(self, store, nodes, buffer_seconds=600, timezone='UTC', daily_reset=False, cards_per_node=8):
         self.store = store
         self.timezone = dt_timezone.utc if timezone == 'UTC' else ZoneInfo(timezone)
         self.daily_reset = daily_reset
-        self.nodes = {node: list(range(8)) for node in nodes}
+        if type(cards_per_node) is not int or cards_per_node not in (8, 16):
+            raise ValueError('cards_per_node must be 8 or 16')
+        self.capacity = cards_per_node
+        self.nodes = {node: list(range(self.capacity)) for node in nodes}
         if len(self.nodes) != 2:
             raise ValueError('unified queue requires exactly two nodes')
         self.buffer = buffer_seconds
@@ -44,6 +47,13 @@ class UnifiedQueue:
             db.execute('CREATE TABLE IF NOT EXISTS unified_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
             db.execute('CREATE TABLE IF NOT EXISTS unified_continuing (node TEXT, employee TEXT, cutoff REAL, PRIMARY KEY(node,employee))')
             db.execute('CREATE TABLE IF NOT EXISTS unified_shared_continuing (node TEXT, employee TEXT, cutoff REAL, cards TEXT, PRIMARY KEY(node,employee))')
+            stored_capacity = db.execute("SELECT value FROM unified_meta WHERE key='cards_per_node'").fetchone()
+            existing = (db.execute('SELECT 1 FROM unified_tasks LIMIT 1').fetchone()
+                        or db.execute('SELECT 1 FROM unified_shared_continuing LIMIT 1').fetchone())
+            previous_capacity = int(stored_capacity[0]) if stored_capacity else (8 if existing else self.capacity)
+            if previous_capacity != self.capacity:
+                raise ValueError('Queue card capacity changed; migrate reservations before startup')
+            db.execute("INSERT OR IGNORE INTO unified_meta VALUES ('cards_per_node',?)", (str(self.capacity),))
             if self.daily_reset:
                 db.execute("INSERT OR IGNORE INTO unified_meta VALUES ('reset_checkpoint',?)", (str(self.reset_boundary(time.time())),))
             if not db.execute("SELECT 1 FROM unified_meta WHERE key='legacy_imported'").fetchone():
@@ -58,7 +68,7 @@ class UnifiedQueue:
                          fixed_node,allocations,legacy)
                         VALUES (?,?,?,?,?,?,?,?,?,?,?,1)''',
                         (row['id'], row['account'], row['title'], row['state'], row['created'],
-                         row['activated'], row['finished'], row['requested_seconds'] or 0, 8,
+                         row['activated'], row['finished'], row['requested_seconds'] or 0, self.capacity,
                          row['node'], json.dumps(allocation)))
                 db.execute("INSERT INTO unified_meta VALUES ('legacy_imported','1')")
             db.execute("DELETE FROM confirmations WHERE job IN (SELECT id FROM unified_tasks WHERE state IN ('completed','cancelled'))")
@@ -533,7 +543,7 @@ class UnifiedQueue:
             pending=[r for r in rows if r['state'] in ('queued','ready') and bool(r['not_before'])==bool(row['not_before'])]
             row['can_raise_priority']=bool(user and user.get('admin') and row in waiting and waiting.index(row)>0)
             row['can_lower_priority']=bool(user and (row['mine'] or user.get('admin')) and row in pending and pending.index(row)<len(pending)-1)
-        return {'user': user, 'tasks': rows, 'nodes': list(self.nodes), 'server_time': now, 'unified': True,
+        return {'user': user, 'tasks': rows, 'nodes': list(self.nodes), 'cards_per_node': self.capacity, 'server_time': now, 'unified': True,
                 'alerts':alerts, 'daily_reset_enabled':self.daily_reset, 'last_daily_reset':reset,
                 'reservation_buffer_seconds': self.buffer,
                 'reservation_window': {'start': now, 'end': self.cutoff(now), 'timezone': str(self.timezone),
@@ -543,6 +553,8 @@ class UnifiedQueue:
     def enqueue(self, user, data):
         if data.get('notifications_ready') is not True:
             raise ControlError(400, '请先在主页开启桌面通知并通过测试，再加入队列')
+        if self.capacity != 8 and data.get('cards_per_node') != self.capacity:
+            raise ControlError(409, '卡位配置已更新，请刷新页面后重新预约')
         cards, seconds = data.get('cards'), data.get('requested_seconds')
         dual, night, start = data.get('dual', False), data.get('night', False), data.get('not_before', 0)
         now = time.time()
@@ -555,16 +567,16 @@ class UnifiedQueue:
                 raise ControlError(400, '请选择任意单机、指定单机或双机')
             dual = machine == 'dual'
             if dual:
-                if cards not in (2, 4, 8, 16):
-                    raise ControlError(400, '双机合计卡数只能选择 2、4、8、16，每台平均分配')
+                if cards not in tuple(n for n in (2, 4, 8, 16, 32) if n <= 2*self.capacity):
+                    raise ControlError(400, '双机合计卡数只能选择 '+ '、'.join(str(n) for n in (2,4,8,16,32) if n<=2*self.capacity)+'，每台平均分配')
                 cards //= 2
             else:
                 fixed_node = '' if machine == 'auto' else machine
-                if not 1 <= cards <= 8:
-                    raise ControlError(400, '单机卡数只能选择 1–8')
-        elif not 1 <= cards <= 8 or (dual and cards != 8):
-            # Old clients used cards=8, dual=true for two full nodes.
-            raise ControlError(400, '旧版请求请使用单机 1–8 卡或双机各 8 卡')
+                if not 1 <= cards <= self.capacity:
+                    raise ControlError(400, f'单机卡数只能选择 1–{self.capacity}')
+        elif not 1 <= cards <= self.capacity or (dual and cards != self.capacity):
+            # Legacy form uses a per-node count and supports full-node dual requests.
+            raise ControlError(400, f'旧版请求请使用单机 1–{self.capacity} 卡或双机各 {self.capacity} 卡')
         if type(seconds) is not int or seconds < 60 or seconds % 60 or (not night and seconds > 7200) or (night and seconds > 13*3600):
             raise ControlError(400, '请按整分钟填写时长，至少 1 分钟；普通任务最长 2 小时，夜间任务最长 13 小时')
         if type(start) not in (int, float) or not math.isfinite(start) or start < 0:
