@@ -18,6 +18,7 @@ The existing container guard state and administrator-only control APIs remain in
 - Cross-host writes are not a distributed transaction. Partial failures name the
   unconfirmed nodes, retain successful additions, and allow the same ID/name to be retried.
 - A recognized employee avoids automatic interception, including existing marks whose recorded employee IDs are all in the valid roster. Marks remain stored; removing the person restores enforcement. No container is automatically started.
+- The administrator can enable or disable automatic container stopping from the personnel page. New deployments start disabled; existing explicit settings are preserved during upgrade. Enabling requires readable synchronized rosters on all nodes. The switch persists per node, reports partial failures and does not erase guard marks.
 
 ## Upgrade and validation
 

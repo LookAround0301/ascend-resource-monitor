@@ -133,7 +133,7 @@ Windows 需要 PowerShell 5.1 和 OpenSSH Client，不需要 Python；主机需�
 - 安装当前 `assets/runtime/` 中的代理、队列、规划器和依赖模块，保持同一版本；按现有服务启动 `control_proxy.py --config .../proxy.json` 和各主机 `container_agent.py --config .../agent.json`。
 - 用 `patch_dashboard.add_queue_home_panel(dashboard, nodes)` 接入统一首页。保留已有面板、数据源 UID、筛选器和控制链接；代理也适配新旧 Grafana 面板 API。
 - 启用 `monitor_processes` 时，同时用 `patch_dashboard.add_registration_status(dashboard, prefix)` 增加进程表的“排队状态”列；使用队列指标前缀，并检查各节点 `*_queue_process_source_up`。核对依据为当前工号和机器登记；信息不明或采集过期时显示待核实，不停止容器。
-- 按[人员表参考](../skills/ascend-resource-monitor/references/personnel-roster.md)安装名单模块。持续拦截需按[guard 参考](../skills/ascend-resource-monitor/references/container-guard.md)另行明确启用；先检查候选、保护范围和禁用状态。
+- 按[人员表参考](../skills/ascend-resource-monitor/references/personnel-roster.md)安装名单模块。新部署的自动停止默认关闭；管理员配置并核对所有服务器的白名单和候选容器后，可在人员管理页开启。页面显示各服务器状态；关闭保留已有管控标记。已有部署的明确启用状态在升级时保持不变，详见[guard 参考](../skills/ascend-resource-monitor/references/container-guard.md)。
 - 队列指标由代理 `/a5-queue/metrics` 提供。两节点各三个采集目标再加队列时，通常应有 7 个目标；实际以配置为准。
 - Grafana 设置 `[dashboards] min_refresh_interval = 1s`；面板 `refresh` 为 `1s`，`timepicker.refresh_intervals` 为 `1s/5s/10s/30s`。
 - 进程采集器、Prometheus 查询和 guard 必须使用一致前缀。采集器默认 `ascend_`；既有自定义部署使用 `--metric-prefix <prefix>`，guard 使用对应的 `<prefix>_process_`。抓取健康不代表查询前缀正确。

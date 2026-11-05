@@ -151,6 +151,52 @@ def install_roster(app, config, read_identity, identity, node_call):
                                               for node, source in sources.items()]},
                                  headers={'Cache-Control': 'no-store', 'Vary': 'Cookie, Authorization'})
 
+    async def guard_switch(request):
+        try:
+            check_browser_request(request.headers, request.host, request.scheme)
+            actor = await identity(request)
+            if request.content_length is None or request.content_length > 4096:
+                raise ControlError(400, '无效请求长度')
+            data = await request.json()
+            if (not isinstance(data, dict) or set(data) != {'enabled', 'confirmed'}
+                    or type(data.get('enabled')) is not bool or data.get('confirmed') is not True):
+                raise ControlError(400, '请确认自动容器管控开关')
+            if not config['nodes']: raise ControlError(503, '没有可用的受管主机')
+            if data['enabled']:
+                sources = await snapshots()
+                if any(source.get('error') for source in sources.values()) or combine(sources)['issues']:
+                    raise ControlError(409, '请先核对并同步所有服务器的人员白名单')
+                async def check(node):
+                    try:
+                        result = await node_call(node, '/guard')
+                        return result.get('node') == node and type(result.get('enabled')) is bool and not result.get('error')
+                    except Exception: return False
+                if not all(await asyncio.gather(*(check(node) for node in config['nodes']))):
+                    raise ControlError(503, '主机管控状态不可用，未开启自动停止')
+            audit(config['audit_log'], {'action': 'container.guard.switch', 'actor': actor,
+                                        'enabled': data['enabled'], 'result': 'authorized'})
+            results, failures = [], []
+            for node in config['nodes']:
+                try:
+                    result = await node_call(node, '/guard/switch',
+                        {'node': node, 'enabled': data['enabled'], 'confirmed': True}, actor)
+                    if result.get('node') != node or result.get('enabled') is not data['enabled']:
+                        raise ValueError('invalid switch result')
+                    results.append({'node': node, 'enabled': result['enabled']})
+                except Exception: failures.append(node)
+            if failures:
+                return web.json_response({'message': '部分服务器的状态未确认：' + '、'.join(failures) +
+                    '。其他服务器可能已切换，请刷新核实并重试。', 'results': results}, status=503,
+                    headers={'Cache-Control': 'no-store'})
+            return web.json_response({'message': '自动停止已开启' if data['enabled'] else '自动停止已关闭',
+                                      'results': results}, headers={'Cache-Control': 'no-store'})
+        except ControlError as e:
+            return web.json_response({'message': e.message}, status=e.status, headers={'Cache-Control': 'no-store'})
+        except (ValueError, TypeError, KeyError):
+            return web.json_response({'message': '无效自动容器管控请求'}, status=400)
+        except Exception:
+            return web.json_response({'message': '切换结果暂不能确认，请刷新状态核实'}, status=503)
+
     async def add(request):
         try:
             remove = request.path.endswith('/remove')
@@ -196,3 +242,4 @@ def install_roster(app, config, read_identity, identity, node_call):
     app.router.add_get('/a5-control/roster', status)
     app.router.add_post('/a5-control/roster/add', add)
     app.router.add_post('/a5-control/roster/remove', add)
+    app.router.add_post('/a5-control/guard/switch', guard_switch)

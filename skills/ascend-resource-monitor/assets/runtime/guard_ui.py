@@ -10,7 +10,11 @@ def guard_page(user, dashboard_uid):
 <form id="add-form"><label>工号<input id="employee" pattern="[A-Za-z][0-9]{8}" maxlength="9" placeholder="例如 u12345678" required></label>
 <label>姓名<input id="name" maxlength="120" placeholder="填写姓名" required></label>
 <button id="add-button" type="submit">添加到白名单</button></form>
-<p class="help">保存后同步到两台服务器。名单内人员跳过自动拦截；已停止的容器不会自动重启。</p></section>''' if user else ''
+<p class="help">保存后同步到两台服务器。名单内人员跳过自动拦截；已停止的容器不会自动重启。</p></section>
+<section id="guard-panel"><h2>自动停止容器</h2>
+<p class="help">开启前请先配置并核对两台服务器的人员白名单。开启后，符合自动拦截规则的容器可能立即被停止；关闭后不再自动停止容器，已有标记保留。</p>
+<p id="guard-status" role="status">正在读取自动停止状态…</p>
+<div class="toolbar"><button id="guard-enable" type="button" disabled>开启自动停止</button><button id="guard-disable" type="button" disabled>关闭自动停止</button></div></section>''' if user else ''
     return '''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>人员白名单</title><style>''' + STYLE + '''
 *{box-sizing:border-box}main{width:min(900px,94vw)}button{background:#2869bd}h1{margin-bottom:8px}h2{font-size:19px}
@@ -35,7 +39,15 @@ button.remove{background:#8c3543;padding:7px 13px}td:last-child{width:95px}
 
 GUARD_JS = '''"use strict";
 const $=id=>document.getElementById(id);
-let people=[],busy=false,polling=false;
+let people=[],busy=false,polling=false,guardNodes=[],rosterReady=false;
+function renderGuard(){
+ if(!$('guard-panel'))return;
+ const valid=guardNodes.length>0&&guardNodes.every(n=>typeof n.enabled==='boolean'&&!n.error);
+ $('guard-status').textContent=guardNodes.length?guardNodes.map(n=>n.node+'：'+(n.error==='管控状态不可用'?'状态不可用':(n.enabled?'已开启':'已关闭')+(n.error?'（'+n.error+'）':''))).join('；'):'自动停止状态不可用';
+ $('guard-status').className=valid?'good':'error';
+ $('guard-enable').disabled=busy||!valid||!rosterReady||guardNodes.every(n=>n.enabled);
+ $('guard-disable').disabled=busy||(valid&&guardNodes.every(n=>!n.enabled));
+}
 function render(){
  const query=$('search').value.trim().toLowerCase(),rows=people.filter(p=>(p.employee+' '+p.name).toLowerCase().includes(query));
  $('people').replaceChildren();
@@ -51,9 +63,13 @@ async function refresh(){
   people=data.people;render();
   $('health').textContent=data.issues.length?data.issues.join('；'):'两台服务器的人员名单已同步';
   $('health').className=data.issues.length?'error':'good';
+  rosterReady=!data.issues.length&&data.sources.length>0&&data.sources.every(s=>s.available);
   if($('add-panel'))$('add-panel').hidden=!data.can_edit;
- }catch(e){$('health').textContent='读取失败，请稍后刷新：'+e.message;$('health').className='error';}
- finally{polling=false;}
+  const guardResponse=await fetch('/a5-control/guard/status',{credentials:'same-origin',cache:'no-store'}),guardData=await guardResponse.json();
+  if(!guardResponse.ok||!Array.isArray(guardData.nodes))throw Error(guardData.message||'自动停止状态读取失败');
+  guardNodes=guardData.nodes;
+ }catch(e){rosterReady=false;guardNodes=[];$('health').textContent='读取失败，请稍后刷新：'+e.message;$('health').className='error';}
+ finally{polling=false;renderGuard();}
 }
 $('search').addEventListener('input',render);
 async function change(action,person){
@@ -62,14 +78,27 @@ async function change(action,person){
  if(!name){$('result').textContent='请填写姓名';return;}
  const question=action==='remove'?'确认从人员白名单删除？删除后，该工号的作业可能被自动拦截。':'确认添加到人员白名单？';
  if(!window.confirm(question+'\\n工号：'+employee+'\\n姓名：'+name))return;
- busy=true;$('add-button').disabled=true;$('result').textContent='正在同步…';
+ busy=true;renderGuard();$('add-button').disabled=true;$('result').textContent='正在同步…';
  try{
   const response=await fetch('/a5-control/roster/'+action,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-A5-Control':'stop-v1'},body:JSON.stringify({employee,name,confirmed:true})});
   const data=await response.json();$('result').textContent=data.message;$('result').className=response.ok?'good':'error';
   if(response.ok&&action==='add')$('add-form').reset();await refresh();
  }catch(e){$('result').textContent='连接中断，请刷新名单核实后再重试。';$('result').className='error';}
- finally{busy=false;$('add-button').disabled=false;render();}
+ finally{busy=false;$('add-button').disabled=false;render();renderGuard();}
 }
+async function switchGuard(enabled){
+ if(busy)return;
+ const question=enabled?'确认开启自动停止容器？请先核对所有服务器的人员白名单；符合规则的容器可能立即被停止。':'确认关闭自动停止容器？现有拦截标记会保留。';
+ if(!window.confirm(question))return;
+ busy=true;renderGuard();$('result').textContent='正在同步自动停止状态…';
+ try{
+  const response=await fetch('/a5-control/guard/switch',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-A5-Control':'stop-v1'},body:JSON.stringify({enabled,confirmed:true})});
+  const data=await response.json();$('result').textContent=data.message;$('result').className=response.ok?'good':'error';
+ }catch(e){$('result').textContent='连接中断，请刷新各服务器状态后重试。';$('result').className='error';}
+ finally{await refresh();busy=false;renderGuard();}
+}
+if($('guard-enable'))$('guard-enable').onclick=()=>switchGuard(true);
+if($('guard-disable'))$('guard-disable').onclick=()=>switchGuard(false);
 if($('add-form'))$('add-form').addEventListener('submit',event=>{event.preventDefault();change('add',{employee:$('employee').value.trim().toLowerCase(),name:$('name').value.trim()});});
 refresh();setInterval(()=>{if(!busy)refresh();},10000);
 '''

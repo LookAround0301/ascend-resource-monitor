@@ -20,6 +20,7 @@ from personnel_roster import RosterStore
 class PersonnelHTTPTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory(); self.stores = {}; self.calls = []; self.fail_node = None
+        self.guard_states={'node-a':False,'node-b':False}
         for node in ['node-a', 'node-b']:
             path = Path(self.temp.name) / (node + '.json')
             path.write_text(json.dumps({'employee_names': {'u12345678': '原有人员'}, 'containers': {'untouched': 'u12345678'}}), encoding='utf-8')
@@ -35,6 +36,10 @@ class PersonnelHTTPTests(unittest.IsolatedAsyncioTestCase):
         self.grafana = TestServer(fake); await self.grafana.start_server()
         async def node_call(node, route, data, actor):
             self.calls.append((node, route, data))
+            if route == '/guard':return {'node':node,'enabled':self.guard_states[node],'error':'','entries':[]}
+            if route == '/guard/switch':
+                if node == self.fail_node:raise OSError('simulated unavailable node')
+                self.guard_states[node]=data['enabled'];return {'node':node,'enabled':data['enabled']}
             if route not in ('/roster','/roster/remove'): raise AssertionError(route)
             if data is None: return self.stores[node].snapshot()
             if node == self.fail_node: raise OSError('simulated unavailable node')
@@ -119,6 +124,25 @@ class PersonnelHTTPTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_last_entry_cannot_be_removed(self):
         await self.add(operation='remove',expected=409,data={'employee':'u12345678','name':'原有人员','confirmed':True})
+
+    async def test_guard_switch_admin_confirmation_sync_and_partial_failure(self):
+        async def switch(role='Admin', enabled=True, confirmed=True, expected=200, headers=None):
+            response=await self.client.post('/a5-control/guard/switch',json={'enabled':enabled,'confirmed':confirmed},headers=headers or self.headers(role))
+            data=await response.json();self.assertEqual(response.status,expected,data);return data
+        for role,code in [(None,401),('Viewer',403),('Editor',403)]:await switch(role=role,expected=code)
+        await switch(confirmed=False,expected=400)
+        await switch(headers={**self.headers('Admin'),'Origin':'http://other.invalid'},expected=403)
+        self.fail_node='node-b';result=await switch(expected=503)
+        self.assertIn('node-b',result['message']);self.assertEqual(self.guard_states,{'node-a':True,'node-b':False})
+        self.fail_node=None;await switch();self.assertTrue(all(self.guard_states.values()))
+        await switch(enabled=False);self.assertFalse(any(self.guard_states.values()))
+
+    async def test_guard_enable_rejects_unsynchronized_rosters_but_can_disable(self):
+        self.stores['node-a'].add({'node':'node-a','employee':'u12345679','name':'Extra','revision':self.stores['node-a'].snapshot()['revision'],'confirmed':True},{'id':1,'login':'admin'})
+        for enabled,expected in [(True,409),(False,200)]:
+            response=await self.client.post('/a5-control/guard/switch',json={'enabled':enabled,'confirmed':True},headers=self.headers('Admin'))
+            self.assertEqual(response.status,expected,await response.text())
+        self.assertFalse(any(self.guard_states.values()))
 
 
 if __name__ == '__main__': unittest.main()

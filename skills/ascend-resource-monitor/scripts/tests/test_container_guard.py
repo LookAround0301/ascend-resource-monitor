@@ -58,6 +58,45 @@ class GuardTests(unittest.TestCase):
     def allow(self, enabled):
         return self.guard.whitelist({'node': 'test', 'container_id': CID, 'allowed': enabled, 'confirmed': True}, ACTOR)
 
+    def test_switch_defaults_off_and_preserves_legacy_explicit_enable(self):
+        config = copy.deepcopy(self.config); config['guard'].pop('enabled')
+        engine = StopEngine(config, self.docker, lambda: {23}, self.events.append)
+        guard = ContainerGuard(engine, lambda: self.rows, lambda row: True)
+        self.assertFalse(guard.snapshot()['enabled']); guard.scan(); self.assertFalse(self.docker.calls)
+        self.assertTrue(self.guard.snapshot()['enabled'])
+        self.guard.set_enabled({'node':'test','enabled':False,'confirmed':True}, ACTOR)
+        reloaded = ContainerGuard(self.engine, lambda: self.rows, lambda row: True)
+        self.assertFalse(reloaded.snapshot()['enabled']); reloaded.scan(); self.assertFalse(self.docker.calls)
+        owners=Path(self.temp.name)/'owners.json'
+        owners.write_text(json.dumps({'employee_names':{'a12345678':'Known'}}), encoding='utf-8')
+        self.config['guard']['owners_file']=str(owners)
+        reloaded.set_enabled({'node':'test','enabled':True,'confirmed':True}, ACTOR)
+        self.assertTrue(ContainerGuard(self.engine,lambda: self.rows,lambda row: True).snapshot()['enabled'])
+        reloaded.scan();self.assertEqual(self.docker.calls,[CID])
+
+    def test_switch_requires_admin_confirmation_and_valid_roster_before_enabling(self):
+        self.guard.set_enabled({'node':'test','enabled':False,'confirmed':True}, ACTOR)
+        data={'node':'test','enabled':True,'confirmed':True}
+        for change in [{'node':'wrong'},{'enabled':1},{'confirmed':False}]:
+            with self.assertRaises(ControlError):self.guard.set_enabled({**data,**change}, ACTOR)
+        with self.assertRaises(ControlError):self.guard.set_enabled(data,{})
+        owners=Path(self.temp.name)/'owners.json';owners.write_text('{"employee_names":{}}')
+        self.config['guard']['owners_file']=str(owners)
+        with self.assertRaises(ControlError):self.guard.set_enabled(data,ACTOR)
+        self.guard.scan();self.assertFalse(self.docker.calls)
+
+    def test_disabling_preserves_existing_mark_without_stopping_on_restart(self):
+        self.guard.scan();self.assertEqual(self.docker.calls,[CID])
+        self.guard.set_enabled({'node':'test','enabled':False,'confirmed':True},ACTOR)
+        self.docker.info['State']={'Running':True,'StartedAt':'2026-11-03T02:00:00Z'}
+        reloaded=ContainerGuard(self.engine,lambda: [],lambda row: True)
+        reloaded.scan();self.assertEqual(self.docker.calls,[CID]);self.assertTrue(reloaded.entries()[CID]['marked_at'])
+        owners=Path(self.temp.name)/'owners.json'
+        owners.write_text(json.dumps({'employee_names':{'a12345678':'Known'}}),encoding='utf-8')
+        self.config['guard']['owners_file']=str(owners)
+        reloaded.set_enabled({'node':'test','enabled':True,'confirmed':True},ACTOR)
+        reloaded.scan();self.assertEqual(self.docker.calls,[CID,CID])
+
     def test_mark_stop_restart_and_rename_without_npu(self):
         self.guard.scan()
         self.assertEqual(self.docker.calls, [CID])

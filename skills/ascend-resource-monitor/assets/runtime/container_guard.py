@@ -69,6 +69,8 @@ class ContainerGuard:
         self.state = json.loads(self.path.read_text(encoding='utf-8'))
         if self.state.get('version') != 1 or not isinstance(self.state.get('entries'), dict):
             raise ValueError('Invalid container guard state')
+        if 'enabled' in self.state and type(self.state['enabled']) is not bool:
+            raise ValueError('Invalid container guard enabled state')
         for cid, entry in self.state['entries'].items():
             if not CONTAINER_ID.fullmatch(cid) or not isinstance(entry, dict) or type(entry.get('whitelisted')) is not bool:
                 raise ValueError('Invalid container guard entry')
@@ -105,6 +107,10 @@ class ContainerGuard:
     def entries(self):
         return self.state['entries']
 
+    def enabled(self):
+        # Legacy installations retain their explicit configuration until switched.
+        return self.state.get('enabled', self.config.get('enabled') is True)
+
     def policy(self, cid):
         entry = self.entries().get(cid)
         if not entry: return '未标记'
@@ -131,10 +137,32 @@ class ContainerGuard:
 
     def snapshot(self):
         with self.engine.lock:
-            return {'node': self.engine.config['node'], 'enabled': self.config.get('enabled') is True,
+            return {'node': self.engine.config['node'], 'enabled': self.enabled(),
                     'last_scan': self.last_scan, 'error': self.error,
                     'entries': [{'container_id': cid, **copy.deepcopy(entry), 'policy': self.policy(cid)}
                                 for cid, entry in self.entries().items()]}
+
+    def set_enabled(self, data, actor):
+        if (not isinstance(data, dict) or set(data) != {'node', 'enabled', 'confirmed'}
+                or data.get('node') != self.engine.config['node']
+                or type(data.get('enabled')) is not bool or data.get('confirmed') is not True):
+            raise ControlError(400, '无效自动容器管控开关请求')
+        if not isinstance(actor, dict) or not actor.get('id') or not actor.get('login'):
+            raise ControlError(403, '缺少经认证的管理员')
+        with self.engine.lock:
+            if self.stopped.is_set(): raise ControlError(503, '自动管控状态保存失败，请检查服务')
+            if data['enabled']:
+                from personnel_roster import RosterStore
+                RosterStore(self.engine).read()
+            if self.enabled() == data['enabled']:
+                return {'node': data['node'], 'enabled': self.enabled(), 'changed': False}
+            event = {'action': 'container.guard.switch', 'node': data['node'], 'actor': actor, 'enabled': data['enabled']}
+            self.engine.write_audit({**event, 'result': 'requested'})
+            self.state['enabled'] = data['enabled']
+            self.save()
+            self.engine.write_audit({**event, 'result': 'saved'})
+            if data['enabled']: self.next_discovery = 0
+            return {'node': data['node'], 'enabled': self.enabled(), 'changed': True}
 
     def whitelist(self, data, actor):
         if (not isinstance(data, dict) or set(data) != {'node', 'container_id', 'allowed', 'confirmed'}
@@ -167,7 +195,7 @@ class ContainerGuard:
     def discover(self):
         rows = self.candidates()  # never convert a source failure into unknown names
         self.error = ''
-        if self.config.get('enabled') is not True: return
+        if not self.enabled(): return
         groups = {}
         for row in rows: groups.setdefault(row['container_id'], []).append(row)
         devices = None
@@ -232,7 +260,7 @@ class ContainerGuard:
                 self.next_discovery = time.monotonic() + 10
                 try: self.discover()
                 except Exception: self.error = '新增标记已暂停：姓名表、采集数据或容器状态核验失败'
-            if self.config.get('enabled') is True:
+            if self.enabled():
                 for cid, entry in list(self.entries().items()):
                     try: self.enforce(cid, entry)
                     except Exception: self.error = '部分容器核验或审计失败；请检查服务日志'
