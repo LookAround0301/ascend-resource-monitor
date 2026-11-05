@@ -176,17 +176,18 @@ class UnifiedQueue:
                                'kind':'overdue' if bottleneck else 'overdue-joint' if jointly_blocking else 'overdue-dependent' if indirectly_blocking else 'overdue-nonblocking',
                                'message':label+'的预约已使用超时，'+message})
             if now-row['activated']-row['requested_seconds'] > 300:
+                minutes=max(1,math.ceil((now-row['activated']-row['requested_seconds'])/60))
                 for waiting in blocked.get(row['id'],[]):
                     if waiting['account']==user['id'] and user['id']!=row['account']:
                         result.append({'id':'usage-overdue:'+row['id']+':next:'+waiting['id'],'kind':'overdue-next',
-                                       'message':label+'的预约已超时超过 5 分钟；预计其释放资源后，你的预约可以立即开始。'})
+                                       'message':label+'的预约已超时 '+str(minutes)+' 分钟；预计其释放资源后，你的预约可以立即开始。'})
                 if not bottleneck:
                     for waiting in dependent.get(row['id'],[]):
                         if waiting['account']==user['id'] and user['id']!=row['account']:
                             shared=waiting in joint.get(row['id'],[])
                             result.append({'id':'usage-overdue:'+row['id']+':dependent-next:'+waiting['id'],
                                            'kind':'overdue-joint-next' if shared else 'overdue-dependent-next',
-                                           'message':label+'的预约已超时超过 5 分钟，'+('与其他超时任务共同影响你前方的资源安排' if shared else '可能影响你前方的资源安排，其他资源也可能尚未释放')+'；请按队列顺序等待，预计开始时间以页面为准。'})
+                                           'message':label+'的预约已超时 '+str(minutes)+' 分钟，'+('与其他超时任务共同影响你前方的资源安排' if shared else '可能影响你前方的资源安排，其他资源也可能尚未释放')+'；请按队列顺序等待，预计开始时间以页面为准。'})
         return result
 
     def _expire_offers(self, db, now):

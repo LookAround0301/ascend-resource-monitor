@@ -34,6 +34,13 @@ class QueueOperationTests(unittest.TestCase):
         following=self.queue.view(self.users[1])
         self.assertEqual(following['alerts'][0]['kind'],'overdue-next')
         self.assertIn(self.users[0]['employee'],following['alerts'][0]['message'])
+        self.assertIn('已超时 6 分钟',following['alerts'][0]['message'])
+        self.queue.daily_reset=False
+        self.clock.return_value=self.now+60+27*60+1
+        following=self.queue.view(self.users[1])
+        row=next(r for r in following['tasks'] if r['id']==first)
+        self.assertEqual((row['overdue_seconds']+59)//60,28)
+        self.assertIn('已超时 28 分钟',following['alerts'][0]['message'])
         self.assertFalse(self.queue.view(self.users[2])['alerts'])
     def test_active_bottleneck_is_detected_before_overdue_without_extra_alert(self):
         first=self.add(seconds=600);self.claim(first);self.add(self.users[1])
@@ -96,6 +103,8 @@ class QueueOperationTests(unittest.TestCase):
         self.assertEqual(self.queue.view(self.users[0])['alerts'][0]['kind'],'overdue-joint')
         waiter_alerts=self.queue.view(self.users[2])['alerts']
         self.assertEqual(sum(a['kind']=='overdue-joint-next' for a in waiter_alerts),2)
+        self.assertTrue(any('已超时 7 分钟' in a['message'] for a in waiter_alerts))
+        self.assertTrue(any('已超时 6 分钟' in a['message'] for a in waiter_alerts))
         self.assertNotIn('可以立即开始',waiter_alerts[0]['message'])
 
     def test_only_nearest_waiter_gets_overdue_dependency_notice(self):
@@ -112,6 +121,7 @@ class QueueOperationTests(unittest.TestCase):
         first=self.queue.view(users[0])
         self.assertTrue(any(a['kind']=='overdue-dependent-next' for a in first['alerts']))
         message=next(a['message'] for a in first['alerts'] if a['kind']=='overdue-dependent-next')
+        self.assertIn('已超时 6 分钟',message)
         self.assertIn('按队列顺序等待',message)
         self.assertNotIn('占用你的预约所需资源',message)
         for user in users[1:]:
