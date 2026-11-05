@@ -16,7 +16,8 @@ def plan(nodes, busy, jobs, now, buffer_seconds=600):
     occupied or reserved resources; remove them only after explicit release.
     An overdue entry has unknown release time, regardless of its old estimate.
     Jobs have id, cards,
-    seconds, optional ``not_before``, and optional ``dual`` (equal card counts
+    seconds, optional ``not_before``, optional exclusive ``start_before``,
+    and optional ``dual`` (equal card counts
     on both nodes, with ``cards`` specifying the count per node).
     Returned times are estimates based on declared durations, not guarantees.
     """
@@ -29,15 +30,18 @@ def plan(nodes, busy, jobs, now, buffer_seconds=600):
         node = item['node']
         cards = tuple(item['cards'])
         end = math.inf if item['end'] is None or item['end'] <= now else item['end']
+        direct_end = item.get('direct_end', item['end'])
+        direct_end = math.inf if direct_end is None or direct_end <= now else direct_end
         if node not in nodes or not cards or len(set(cards)) != len(cards) or not set(cards) <= set(nodes[node]):
             raise ValueError('invalid busy cards')
         if end <= item['start']:
             raise ValueError('invalid busy interval')
-        intervals.append((node, frozenset(cards), item['start'], end))
+        intervals.append((node, frozenset(cards), item['start'], end, direct_end))
 
-    def free(node, start, end):
+    def free(node, start, end, night):
         used = set()
-        for occupied_node, cards, begin, finish in intervals:
+        for occupied_node, cards, begin, buffered, direct in intervals:
+            finish = direct if night else buffered
             if occupied_node == node and begin < end and start < finish:
                 used.update(cards)
         return [card for card in nodes[node] if card not in used]
@@ -55,7 +59,7 @@ def plan(nodes, busy, jobs, now, buffer_seconds=600):
 
     def options(job, start):
         end = start + job['seconds'] + buffer_seconds
-        available = {node: free(node, start, end) for node in nodes}
+        available = {node: free(node, start, end, job.get('night', False)) for node in nodes}
         count = job['cards']
         if job.get('dual'):
             choices = {node: card_choices(node, count, cards) for node, cards in available.items()}
@@ -78,9 +82,12 @@ def plan(nodes, busy, jobs, now, buffer_seconds=600):
             raise ValueError('invalid job size or duration')
         earliest = max(now, job.get('not_before', now))
         candidates = {earliest}
-        candidates.update(end for _, _, _, end in intervals if math.isfinite(end) and end >= earliest)
+        candidates.update((direct if job.get('night') else end) for _, _, _, end, direct in intervals
+                          if math.isfinite(direct if job.get('night') else end) and (direct if job.get('night') else end) >= earliest)
         chosen = None
         for start in sorted(candidates):
+            if job.get('start_before') and start >= job['start_before']:
+                continue
             if job.get('finish_before') and start + job['seconds'] > job['finish_before']:
                 continue
             available = options(job, start)
@@ -89,8 +96,20 @@ def plan(nodes, busy, jobs, now, buffer_seconds=600):
                 break
         if chosen is None:
             planned.append({'id': job['id'], 'start': None, 'allocations': {}})
-            if job.get('finish_before'):
-                # An out-of-window request cannot reserve resources or block others.
+            if job.get('finish_before') or job.get('start_before'):
+                # A truly expired request cannot reserve resources. If a still
+                # eligible request is blocked by an unknown release, later jobs
+                # must not take resources it might need when that release occurs.
+                latest = min(job.get('start_before') or math.inf,
+                             (job['finish_before'] - job['seconds']) if job.get('finish_before') else math.inf)
+                allowed = set(nodes) if job.get('dual') else set(job.get('allowed_nodes', nodes))
+                unknown = any(node in allowed and not math.isfinite(direct if job.get('night') else end)
+                              for node, _, _, end, direct in intervals)
+                if latest > earliest and unknown:
+                    protect_until = latest + job['seconds'] + buffer_seconds
+                    for node in nodes:
+                        if node in allowed:
+                            intervals.append((node, frozenset(nodes[node]), earliest, protect_until, protect_until))
                 continue
             # Without a bound for this job, accepting later work can starve it.
             planned.extend({'id': later['id'], 'start': None, 'allocations': {}} for later in jobs[len(planned):])
@@ -98,6 +117,7 @@ def plan(nodes, busy, jobs, now, buffer_seconds=600):
         start, allocations = chosen
         finish = start + job['seconds'] + buffer_seconds
         for node, cards in allocations.items():
-            intervals.append((node, frozenset(cards), start, finish))
+            direct_end = start + job['seconds']
+            intervals.append((node, frozenset(cards), start, finish, direct_end))
         planned.append({'id': job['id'], 'start': start, 'allocations': allocations})
     return planned

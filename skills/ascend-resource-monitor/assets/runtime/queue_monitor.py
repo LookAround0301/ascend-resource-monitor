@@ -14,7 +14,7 @@ MAX_FUTURE_SKEW_SECONDS = 15
 class QueueMonitor:
     def __init__(self, nodes, settings, fetch):
         self.nodes=list(nodes); self.fetch=fetch; self.rows=[]; self.valid=set()
-        self.sampled=0; self.next_poll=0;self.inventory_times={}
+        self.sampled=0; self.next_poll=0;self.inventory_times={};self.night_empty={}
         self.prefix=settings.get('metric_prefix','ascend')
         self.process_prefix=settings.get('process_metric_prefix',self.prefix+'_process_')
         if not re.fullmatch(r'[a-zA-Z_][a-zA-Z0-9_]*',self.prefix) or not re.fullmatch(r'[a-zA-Z_][a-zA-Z0-9_]*',self.process_prefix):
@@ -57,6 +57,7 @@ class QueueMonitor:
                                   'employee':labels.get('employee_id','').strip().lower(),
                                   'name':labels.get('employee_name','').strip(),
                                   'container':labels.get('container',''),
+                                  'npu_ids':labels.get('npu_ids',''),
                                   'control_ref':labels.get('control_ref','')})
             else:
                 scalars[node][suffix]=value
@@ -78,30 +79,127 @@ class QueueMonitor:
         valid=self.fresh_nodes(now)
         return [r for r in self.rows if r['node'] in valid]
 
+    def night_completion_decisions(self, tasks, now):
+        active={task['id'] for task in tasks}
+        for job in set(self.night_empty)-active:
+            del self.night_empty[job]
+        observed,finished=set(),set()
+        valid=self.fresh_nodes(now)
+        rows=self.current(now)
+        for task in tasks:
+            job=task['id'];allocations=task['allocations'];nodes=set(allocations)
+            if (not isinstance(task['activated'],(int,float)) or not task['activated'] or task['requested_seconds']<=0 or
+                    not nodes or not nodes <= valid or any(node not in self.nodes or not cards or
+                    any(type(card) is not int or not 0<=card<=7 for card in cards)
+                    for node,cards in allocations.items())):
+                self.night_empty.pop(job,None);continue
+            assigned={node:set(cards) for node,cards in allocations.items()}
+            relevant=[row for row in rows if row['node'] in nodes]
+            if any(self.cards(row) is None for row in relevant):
+                self.night_empty.pop(job,None);continue
+            overlapping=[row for row in relevant if self.cards(row) & assigned[row['node']]]
+            authorized={task['employee'],*task['allowed_employees']}
+            if any(row['employee'] in authorized for row in overlapping):observed.add(job)
+            if overlapping or not (task['night_seen_usage'] or now >= task['activated']+task['requested_seconds']):
+                self.night_empty.pop(job,None);continue
+            item=self.night_empty.setdefault(job,{'since':now,'samples':{node:set() for node in nodes}})
+            if now<item['since'] or set(item['samples'])!=nodes:
+                self.night_empty.pop(job,None);continue
+            for node in nodes:item['samples'][node].add(self.inventory_times[node])
+            if now-item['since']>=20 and all(len(samples)>=3 for samples in item['samples'].values()):
+                finished.add(job);self.night_empty.pop(job,None)
+        return observed,finished
+
+    @staticmethod
+    def cards(row):
+        raw=row.get('npu_ids','').split(',')
+        return {int(card) for card in raw} if raw and all(re.fullmatch(r'[0-7]',card) for card in raw) else None
+
+    @staticmethod
+    def shared_cards(row, tasks, continuing=()):
+        cards=set()
+        for task in tasks:
+            if task['state']=='active' and row['employee'] in task.get('allowed_employees',[]):
+                cards.update(task['allocations'].get(row['node'],[]))
+        _,_,started=row.get('control_ref','').partition('@')
+        try:start=datetime.fromisoformat(started.replace('Z','+00:00')).timestamp()
+        except ValueError:return cards
+        for grant in continuing:
+            if 'cards' in grant and grant['node']==row['node'] and grant['employee']==row['employee'] and start<=grant['cutoff']:
+                cards.update(grant['cards'])
+        return cards
+
     def classification(self,row, tasks, continuing=()):
         if not EMPLOYEE.fullmatch(row['employee']) or not row['name'] or len(row['name'])>100 or any(ord(c)<32 for c in row['name']):
             return '待核实'
         matched=any(task['state']=='active' and task['employee']==row['employee']
                     and row['node'] in task['allocations'] for task in tasks)
         if matched:return '已登记使用'
+        shared=self.shared_cards(row,tasks)
+        process_cards=self.cards(row)
+        if shared and process_cards is None:return '待核实'
+        if shared and process_cards and process_cards <= shared:return '已登记使用'
         cid,_,started=row.get('control_ref','').partition('@')
         if not cid or not started:return '未登记使用（疑似插队）'
         try:start=datetime.fromisoformat(started.replace('Z','+00:00')).timestamp()
         except ValueError:return '待核实'
-        if any(g['node']==row['node'] and g['employee']==row['employee'] and start<=g['cutoff'] for g in continuing):
+        shared_total=self.shared_cards(row,tasks,continuing)
+        if process_cards and shared_total and process_cards <= shared_total:
             return '跨日继续使用'
+        for grant in continuing:
+            if grant['node']!=row['node'] or grant['employee']!=row['employee'] or start>grant['cutoff']:
+                continue
+            if 'cards' not in grant:return '跨日继续使用'
+            if process_cards is None:return '待核实'
+            if process_cards <= set(grant['cards']):return '跨日继续使用'
         return '未登记使用（疑似插队）'
 
     def decorate(self, state, continuing=()):
-        now=state['server_time']; grouped={}
+        now=state['server_time']; grouped={}; excess_grouped={}
+        owned={}; active_owned={}
+        if state.get('user'):
+            for task in state['tasks']:
+                if task.get('mine') and task['state'] in ('active','ready'):
+                    for node,cards in task['allocations'].items():
+                        owned.setdefault(node,set()).update(cards)
+                        if task['state']=='active':active_owned.setdefault(node,set()).update(cards)
         for row in self.current(now):
-            if self.classification(row,state['tasks'],continuing)=='未登记使用（疑似插队）':
-                grouped.setdefault((row['node'],row['employee'],row['name']),[]).append(row['process_key'])
+            classification=self.classification(row,state['tasks'],continuing)
+            if classification=='已登记使用' and state.get('user'):
+                cards=self.cards(row)
+                if cards is not None:
+                    permitted=set(self.shared_cards(row,state['tasks'],continuing))
+                    for task in state['tasks']:
+                        if task['state']=='active' and task['employee']==row['employee']:
+                            permitted.update(task['allocations'].get(row['node'],[]))
+                    overlap=(cards-permitted) & active_owned.get(row['node'],set())
+                    if overlap:
+                        group=excess_grouped.setdefault((row['node'],row['employee'],row['name']),{'keys':[],'cards':set()})
+                        group['keys'].append(row['process_key']);group['cards'].update(overlap)
+            if classification=='未登记使用（疑似插队）':
+                cards=self.cards(row)
+                if cards is None:
+                    continue
+                cards-=self.shared_cards(row,state['tasks'],continuing)
+                overlap=cards & owned.get(row['node'],set())
+                own=bool(state.get('user') and state['user'].get('employee','').lower()==row['employee'])
+                for role,matched in (('affected',overlap),('self',cards if own else set())):
+                    if matched:
+                        group=grouped.setdefault((row['node'],row['employee'],row['name'],role),{'keys':[],'cards':set()})
+                        group['keys'].append(row['process_key']);group['cards'].update(matched)
         alerts=list(state.get('alerts',[]))
-        for (node,employee,name),keys in sorted(grouped.items()):
-            digest=hashlib.sha256(('\0'.join(sorted(keys))).encode()).hexdigest()[:20]
-            alerts.append({'id':'unregistered:'+node+':'+employee+':'+digest,'kind':'unregistered',
-                           'message':'未登记使用提醒（疑似插队）：'+name+'（'+employee+'）在 '+node+' 有 NPU 进程，未匹配该机当前使用登记，请核对并登记。'})
+        for (node,employee,name,role),group in sorted(grouped.items()):
+            cards=sorted(group['cards'])
+            digest=hashlib.sha256(('\0'.join(sorted(group['keys']))+':'+','.join(map(str,cards))).encode()).hexdigest()[:20]
+            description = ('你在 '+node+' 的 '+ '、'.join(map(str,cards))+' 号卡有未登记进程，请核对并登记。'
+                           if role=='self' else name+'（'+employee+'）在 '+node+' 的 '+ '、'.join(map(str,cards))+' 号卡有未登记进程，占用了你的预约资源，请核对。')
+            alerts.append({'id':'unregistered:'+role+':'+node+':'+employee+':'+digest,'kind':'unregistered',
+                           'message':'未登记使用提醒（疑似插队）：'+description})
+        for (node,employee,name),group in sorted(excess_grouped.items()):
+            cards=sorted(group['cards'])
+            digest=hashlib.sha256(('\0'.join(sorted(group['keys']))+':'+','.join(map(str,cards))).encode()).hexdigest()[:20]
+            alerts.append({'id':'over-allocation:'+node+':'+employee+':'+digest,'kind':'over-allocation',
+                           'message':name+'（'+employee+'）在 '+node+' 的 '+ '、'.join(map(str,cards))+' 号卡使用超出其预约范围，占用了你的预约资源，请核对。'})
         valid=self.fresh_nodes(now)
         return {**state,'alerts':alerts,'process_monitor_errors':[node+' 的进程采集暂不可用，暂停插队判断' for node in self.nodes if node not in valid]}
 

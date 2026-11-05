@@ -2,13 +2,18 @@
 import json
 
 HOME_FRAGMENT = '''<style>
-:host{display:block;height:100%;overflow:auto;color:#d8d9da;font:14px system-ui,sans-serif}*{box-sizing:border-box}.row{display:flex;gap:10px;align-items:end;flex-wrap:wrap}section{padding:10px 4px;border-bottom:1px solid #34383f}h3{font-size:15px;margin:0 0 10px}label{display:grid;gap:5px}input,select{background:#111217;color:#eee;border:1px solid #555b66;border-radius:4px;padding:7px;font:inherit;min-width:110px}input[type=password]{max-width:200px}button{font:inherit;border:0;border-radius:4px;padding:8px 12px;background:#316bd6;color:#fff;cursor:pointer}.secondary{background:#343f51}button:disabled{opacity:.45;cursor:not-allowed}.hidden{display:none!important}p{margin:8px 0;line-height:1.5;color:#adb9cb}.good{color:#7ed9a9}.error{color:#ffabb7}.scroll{overflow:auto}table{width:100%;border-collapse:collapse}th,td{text-align:left;border-bottom:1px solid #34383f;padding:9px 7px;vertical-align:top;white-space:nowrap}th{color:#adb9cb;font-weight:500}small{color:#a4b1c4}td button{padding:6px 9px;margin:0 5px 4px 0}#message:empty{display:none}
+:host{display:block;height:100%;overflow:auto;color:#d8d9da;font:14px system-ui,sans-serif}*{box-sizing:border-box}.row{display:flex;gap:10px;align-items:end;flex-wrap:wrap}section{padding:10px 4px;border-bottom:1px solid #34383f}h3{font-size:15px;margin:0 0 10px}label{display:grid;gap:5px}input,select{background:#111217;color:#eee;border:1px solid #555b66;border-radius:4px;padding:7px;font:inherit;min-width:110px}input[type=password]{max-width:200px}button{font:inherit;border:0;border-radius:4px;padding:8px 12px;background:#316bd6;color:#fff;cursor:pointer}.secondary{background:#343f51}button:disabled{opacity:.45;cursor:not-allowed}.hidden{display:none!important}p{margin:8px 0;line-height:1.5;color:#adb9cb}.good{color:#7ed9a9}.error{color:#ff7886}.warning{color:#ffb457}.scroll{overflow:auto}table{width:100%;border-collapse:collapse}th,td{text-align:left;border-bottom:1px solid #34383f;padding:9px 7px;vertical-align:top;white-space:nowrap}th{color:#adb9cb;font-weight:500}small{color:#a4b1c4}.allowed-users{white-space:normal;max-width:320px;overflow-wrap:anywhere;line-height:1.5;margin:6px 0;color:#c6d2e0}td button{padding:6px 9px;margin:0 5px 4px 0}#message:empty{display:none}
+.allowed-editor{white-space:normal;width:210px;margin:7px 0}.allowed-chips{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:5px}.allowed-chips .allowed-chip{margin:0;padding:4px 7px;background:#343f51;font-size:12px}.allowed-input{width:100%;min-width:0;padding:6px}.allowed-results{display:grid;gap:3px;margin-top:4px}.allowed-results button{margin:0;text-align:left;background:#343f51;font-size:12px}.allowed-hint{display:block;margin-top:4px;white-space:normal;font-size:12px;color:#a4b1c4}
+.standby-status{white-space:normal;min-width:200px;max-width:220px;line-height:1.45;overflow-wrap:anywhere}
+.bottleneck{color:#f2d66d}
+.card-grid{display:grid;gap:8px}.card-node{display:grid;grid-template-columns:85px minmax(0,1fr);gap:10px;align-items:center}.card-list{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:8px}.card-tile{border:1px solid #466174;border-radius:8px;padding:9px 6px;background:#1b3038;min-width:0;text-align:center;white-space:normal;overflow-wrap:anywhere}.card-tile.occupied{background:#433332;border-color:#86594e}.card-tile.buffer{background:#423b28;border-color:#8d7949}.card-tile strong,.card-tile span{display:block}.card-tile span{font-size:12px;margin-top:4px;color:#c1cbd5}@media(max-width:700px){.card-node{grid-template-columns:1fr}.card-list{grid-template-columns:repeat(4,minmax(0,1fr))}}
 </style>
 <section><h3>个人账号与桌面通知</h3><p id="account-status"></p>
 <form id="account-form" class="row"><label>工号<input id="employee" autocomplete="username" pattern="[A-Za-z][0-9]{8}" required></label><label>姓名<input id="name" autocomplete="name"></label><label>个人密码<input id="password" type="password" autocomplete="current-password" minlength="10" maxlength="128" required></label><button name="login">登录</button><button name="register" class="secondary">首次注册</button></form>
 <div class="row"><button id="logout" class="secondary hidden" type="button">退出个人账号</button><button id="enable-notifications" type="button" disabled>开启并验证桌面通知</button></div><p id="notification-status" role="status">登录后开启并验证桌面通知，才能加入队列。</p></section>
-<section><h3>提交预约</h3><form id="join-form" class="row"><label>机器<select id="machine" required></select></label><label>卡数（合计）<select id="cards" required></select></label><label>预约类型<select id="kind"><option value="normal">普通任务</option><option value="night">夜间长任务</option></select></label><label>预计时长（小时）<input id="hours" type="number" min="0" max="2" step="1" value="0" required></label><label>分钟<select id="minutes" aria-label="预计时长（分钟）"></select></label><label id="start-label" class="hidden">预约开始时间<input id="start" type="datetime-local" step="60"></label><button id="join" disabled>加入队列</button></form><p id="resource-hint"></p><p id="reservation-window"></p><p>普通任务最长 2 小时，时长按 5 分钟一档选择；每台 1–4 卡位于同一四卡组。分配后 10 分钟内点击“开始使用”，超时向后顺延一位。用完后自行停止服务，再结束登记。每日 9 点清空普通任务登记，夜间任务保留；实际任务不会被停止。</p></section>
-<div id="queue-alerts" class="hidden" role="status"></div><section><div class="scroll"><table><thead><tr><th>状态</th><th>工号 / 姓名</th><th>资源需求</th><th>机器与卡号</th><th>申请时间</th><th>开始时间</th><th>预计占用</th><th>预计结束时间</th><th>操作</th></tr></thead><tbody id="tasks"></tbody></table></div></section><p id="message" role="status"></p>'''
+<section><h3>卡预约占用情况</h3><div id="card-grid" class="card-grid"></div></section>
+<section><h3>提交预约</h3><form id="join-form" class="row"><label>机器<select id="machine" required></select></label><label>卡数（合计）<select id="cards" required></select></label><label>预约类型<select id="kind"><option value="normal">普通任务</option><option value="night">夜间长任务</option></select></label><label id="duration-hour-label">预计时长（小时）<select id="hours" required></select></label><label id="duration-minute-label">分钟<select id="minutes" aria-label="预计时长（分钟）"></select></label><label id="start-date-label" class="hidden">预约开始日期<select id="start-date"><option value="">选择日期</option></select></label><label id="start-hour-label" class="hidden">开始时间（小时）<select id="start-hour"><option value="">选择小时</option></select></label><label id="start-minute-label" class="hidden">开始时间（分钟）<select id="start-minute"></select></label><button id="join" disabled>加入队列</button><span id="message" role="status"></span></form><p id="resource-hint"></p><p id="reservation-window"></p><p>普通任务最长 2 小时，分配后最多 10 分钟内点击“开始使用”，最迟须在凌晨 2 点前开始。夜间任务按排程自动开始登记，由本人设置的 agent 启动；夜间交接不检查进程，其他情况可在卡连续空闲后自动结束。每日 9 点清空普通任务登记并取消未开始的夜间预约；已开始的夜间任务保留原时间，用完后自行结束登记。实际任务不会被停止。</p></section>
+<div id="queue-alerts" class="hidden" role="status"></div><section><div class="scroll"><table><thead><tr><th>状态</th><th>工号 / 姓名</th><th>资源需求</th><th>机器与卡号</th><th>申请时间</th><th>开始时间</th><th>预计占用</th><th>预计结束时间</th><th>操作</th></tr></thead><tbody id="tasks"></tbody></table></div></section>'''
 
 HOME_JS = r'''"use strict";
 (()=>{
@@ -18,17 +23,41 @@ HOME_JS = r'''"use strict";
  function mount(host){
   const root=host.attachShadow({mode:'open'});root.innerHTML=fragment;
   const $=id=>root.getElementById(id);
-  for(let minute=0;minute<60;minute+=5){const option=document.createElement('option');option.value=String(minute);option.textContent=minute+' 分钟';option.selected=minute===30;$('minutes').append(option);}
-  let machineNodes='',state=null,polling=false,stopped=false,submitting=false,verifiedUser=null,verifying=false,version=0,lastRefreshAt=0;
-  let failure='';const delivered=new Map(),openNotices=new Set(),alertSeen=new Set();
+  let machineNodes='',state=null,polling=false,stopped=false,submitting=false,verifiedUser=null,verifying=false,version=0,lastRefreshAt=0,composingAllowed=false,autoCheckUser=null;
+  let failure='';const delivered=new Map(),openNotices=new Set(),alertSeen=new Set(),overdueNotices=new Map(),bottleneckStates=new Map(),allowedEditors=new Map();
+  function clearAllowedEditors(){for(const editor of allowedEditors.values())clearTimeout(editor.timer);allowedEditors.clear();}
+  function expandPanel(){
+   const item=host.closest('.react-grid-item'),grid=item&&item.parentElement,panel=host.closest('section[data-testid]');
+   if(!item||!grid||!panel||!item.contains(panel))return {update:()=>{},dispose:()=>{}};
+   const originals=new Map();let baseItem=parseFloat(item.style.height)||0,baseGrid=parseFloat(grid.style.height)||0,lastItem=0,lastGrid=0,frame=0;
+   function set(el,prop,value){let saved=originals.get(el);if(!saved){saved=new Map();originals.set(el,saved);}if(!saved.has(prop))saved.set(prop,[el.style.getPropertyValue(prop),el.style.getPropertyPriority(prop)]);if(el.style.getPropertyValue(prop)!==value||el.style.getPropertyPriority(prop)!=='important')el.style.setProperty(prop,value,'important');}
+   set(host,'height','auto');for(let el=host;el&&el!==panel;el=el.parentElement)set(el,'overflow','visible');
+   function layout(){
+    frame=0;if(stopped||!item.isConnected)return;
+    const height=parseFloat(item.style.height)||0,gridHeight=parseFloat(grid.style.height)||0;
+    if(height&&height!==lastItem)baseItem=height;if(gridHeight&&gridHeight!==lastGrid)baseGrid=gridHeight;
+    const content=host.getBoundingClientRect(),container=panel.getBoundingClientRect(),needed=Math.ceil(content.height+content.top-container.top+12);
+    const expanded=Math.max(baseItem,needed),extra=Math.max(0,expanded-baseItem);lastItem=expanded;lastGrid=baseGrid+extra;
+    set(item,'height',expanded+'px');set(panel,'height',expanded+'px');set(grid,'height',lastGrid+'px');
+    const y=el=>{const match=(el.style.transform||'').match(/translate\(\s*[-\d.]+px\s*,\s*([-\d.]+)px\s*\)/);return match?Number(match[1]):null;};
+    const top=y(item);if(top!==null)for(const sibling of grid.children){if(sibling===item||!sibling.classList.contains('react-grid-item'))continue;const position=y(sibling);if(position!==null&&position>=top+baseItem-1)set(sibling,'translate','0px '+extra+'px');}
+   }
+   function schedule(){if(!frame)frame=requestAnimationFrame(layout);}
+   const observer=typeof ResizeObserver==='function'?new ResizeObserver(schedule):null;if(observer)observer.observe(host);window.addEventListener('resize',schedule);schedule();
+   return {update:layout,dispose:()=>{if(observer)observer.disconnect();window.removeEventListener('resize',schedule);if(frame)cancelAnimationFrame(frame);for(const [el,values] of originals)for(const [prop,[value,priority]] of values){if(value)el.style.setProperty(prop,value,priority);else el.style.removeProperty(prop);}}};
+  }
+  const expansion=expandPanel();
   const registered=()=>!!(state&&state.user&&state.user.registered);
   const supported=()=>window.isSecureContext&&('Notification' in window);
   const permission=()=>supported()?Notification.permission:'unsupported';
   const ready=()=>registered()&&verifiedUser===state.user.id&&permission()==='granted';
+  function verificationSaved(user){try{return localStorage.getItem('a5-notification-verified-v1:'+user)==='1';}catch(e){return false;}}
+  function saveVerification(user,valid){if(!user)return;try{const key='a5-notification-verified-v1:'+user;if(valid)localStorage.setItem(key,'1');else localStorage.removeItem(key);}catch(e){}}
   function element(tag,text){const el=document.createElement(tag);el.textContent=text;return el;}
   function report(text,error=false){$('message').textContent=text;$('message').className=error?'error':'good';}
   function gate(){
-   if(permission()!=='granted')verifiedUser=null;
+   if(permission()!=='granted'){if(registered())saveVerification(state.user.id,false);verifiedUser=null;autoCheckUser=null;}
+   else if(registered()&&!verifying&&!failure&&verificationSaved(state.user.id))verifiedUser=state.user.id;
    $('join').disabled=!ready()||submitting;
    $('enable-notifications').disabled=!registered()||verifying||!supported();
    $('enable-notifications').textContent=verifying?'正在验证通知…':ready()?'重新验证桌面通知':'开启并验证桌面通知';
@@ -39,11 +68,11 @@ HOME_JS = r'''"use strict";
    const response=await fetch('/a5-queue/api/'+name,{method:data===undefined?'GET':'POST',credentials:'same-origin',cache:'no-store',headers:data===undefined?{}:{'Content-Type':'application/json','X-A5-Queue':'queue-v1'},body:data===undefined?undefined:JSON.stringify(data)});
    const body=await response.json();if(!response.ok)throw new Error(body.message||'操作失败');return body;
   }
-  function invalidate(text){verifiedUser=null;failure=text;gate();}
+  function invalidate(text){if(registered())saveVerification(state.user.id,false);verifiedUser=null;failure=text;gate();}
   function closeNotices(){for(const n of openNotices)n.close();openNotices.clear();}
   $('enable-notifications').onclick=async()=>{
    if(!registered()||verifying||!supported())return;
-   const user=state.user.id,check=++version;verifying=true;verifiedUser=null;failure='';gate();
+   const user=state.user.id,check=++version;verifying=true;verifiedUser=null;saveVerification(user,false);failure='';gate();
    try{
     if(Notification.permission!=='granted')await Notification.requestPermission();
     if(Notification.permission!=='granted')throw new Error('通知未开启，请在浏览器站点设置中允许通知。');
@@ -53,11 +82,12 @@ HOME_JS = r'''"use strict";
      n.onshow=()=>{clearTimeout(timer);setTimeout(()=>{n.close();openNotices.delete(n);},2000);resolve();};
      n.onerror=()=>{clearTimeout(timer);n.close();openNotices.delete(n);reject(new Error('测试通知发送失败，请开启浏览器和系统通知后重试。'));};
     });
-    if(!stopped&&check===version&&registered()&&state.user.id===user)verifiedUser=user;
+    if(!stopped&&check===version&&registered()&&state.user.id===user){verifiedUser=user;saveVerification(user,true);}
    }catch(e){if(check===version)failure=e.message;}
    finally{if(check===version){verifying=false;gate();if(state)notify();}}
   };
-  function date(value){return value?new Date(value*1000).toLocaleString():'—';}
+  function date(value){return value?new Date(value*1000).toLocaleString('zh-CN',{timeZone:(state&&state.reservation_window&&state.reservation_window.timezone)||'Asia/Shanghai'}):'—';}
+  function dateMinute(value){return value?new Intl.DateTimeFormat('zh-CN',{timeZone:(state&&state.reservation_window&&state.reservation_window.timezone)||'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(new Date(value*1000)):'—';}
   function resourceFields(){
    const nodes=(state&&state.nodes)||[],signature=JSON.stringify(nodes),machine=$('machine'),cards=$('cards');
    if(signature!==machineNodes){const selected=machine.value;machine.replaceChildren();const auto=element('option','单机任意机器');auto.value='auto';machine.append(auto);for(const node of nodes){const option=element('option','单机 '+node.replace(/^A5-/,'') );option.value=node;machine.append(option);}const dual=element('option','双机');dual.value='dual';machine.append(dual);if([...machine.options].some(o=>o.value===selected))machine.value=selected;machineNodes=signature;}
@@ -66,68 +96,113 @@ HOME_JS = r'''"use strict";
    $('resource-hint').textContent=dual?'双机合计 '+cards.value+' 卡，每台 '+Number(cards.value)/2+' 卡；具体卡号按队列可用情况分配。':machine.value==='auto'?'自动选择可用单机，按队列分配机器和卡号。':'使用 '+machine.value+'，具体卡号按队列可用情况分配。';
   }
   function duration(seconds){const minutes=Math.round(seconds/60),hours=Math.floor(minutes/60),rest=minutes%60;return (hours?hours+' 小时':'')+(hours&&rest?' ':'')+(rest?rest+' 分钟':'')||'0 分钟';}
-  function localInput(value){const d=new Date(value*1000);return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')+'T'+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');}
+  function overtimeDuration(seconds){return seconds>0&&seconds<60?'不足 1 分钟':duration(Math.floor(Math.max(0,seconds)/60)*60);}
+  function localDate(value){const d=new Date(value*1000);return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}
+  let timestampZone='',timestampFormatter=null;const timestampCache=new Map();
+  function zonedTimestamp(day,hour,minute){if(!day||hour===''||minute==='')return NaN;const zone=(state&&state.reservation_window&&state.reservation_window.timezone)||'Asia/Shanghai';if(zone!==timestampZone){timestampZone=zone;timestampFormatter=new Intl.DateTimeFormat('en-CA',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'});timestampCache.clear();}const key=day+'T'+hour+':'+minute;if(timestampCache.has(key))return timestampCache.get(key);const utc=Date.parse(key+':00Z');let guess=utc;for(let i=0;i<2;i++){const parts=timestampFormatter.formatToParts(new Date(guess));const get=type=>parts.find(p=>p.type===type).value;guess=utc-(Date.UTC(+get('year'),+get('month')-1,+get('day'),+get('hour'),+get('minute'),+get('second'))-guess);}if(timestampCache.size>3000)timestampCache.clear();timestampCache.set(key,guess/1000);return guess/1000;}
+  const pad=n=>String(n).padStart(2,'0');
+  function selectedStart(){return zonedTimestamp($('start-date').value,$('start-hour').value,$('start-minute').value);}
+  function setOptions(select,items,preferred,placeholder){const signature=JSON.stringify([items,placeholder]);if(select.dataset.options===signature){if(!select.value&&!placeholder&&items.length)select.value=items.some(item=>item[0]===preferred)?preferred:items[0][0];return;}const old=select.value;select.replaceChildren();if(placeholder){const option=element('option',placeholder);option.value='';select.append(option);}for(const [value,label] of items){const option=element('option',label);option.value=value;select.append(option);}const values=items.map(item=>item[0]);select.value=values.includes(old)?old:values.includes(preferred)?preferred:placeholder?'':values[0]||'';select.dataset.options=signature;}
+  function updateDates(){if(!state||!state.reservation_window)return;const days=state.reservation_window.start_dates||[];setOptions($('start-date'),days.map((day,i)=>[day,(i?'明天':'今天')+'（'+day+'）']),days[0],null);}
+  let lastStartChoice=null,startExpired=false;
+  function updateNightOptions(){
+   const w=state&&state.reservation_window;if(!w)return;const day=$('start-date').value,valid={},previousHour=$('start-hour').value,previousMinute=$('start-minute').value;
+   for(let hour=0;hour<24;hour++)for(let minute=0;minute<60;minute+=5){const value=zonedTimestamp(day,pad(hour),pad(minute));if(value>state.server_time&&(w.night_windows||[]).some(range=>value>=range.start&&value<range.end))(valid[pad(hour)]||=([])).push(pad(minute));}
+   const hours=Object.keys(valid);setOptions($('start-hour'),hours.map(h=>[h,h+' 点']),'','选择小时');let selectedHour=$('start-hour').value;
+   const changed=!!lastStartChoice&&(day!==lastStartChoice.day||previousHour!==lastStartChoice.hour);
+   if(changed){startExpired=false;$('start-minute').value='';}
+   else if(lastStartChoice&&lastStartChoice.hour&&(selectedHour!==previousHour||!(valid[selectedHour]||[]).includes(previousMinute))){$('start-hour').value='';selectedHour='';startExpired=true;}
+   const minutes=selectedHour?(valid[selectedHour]||[]):['00'];setOptions($('start-minute'),minutes.map(m=>[m,m+' 分']),'00',null);lastStartChoice={day,hour:selectedHour};
+  }
   function timeLimits(){
-   const night=$('kind').value==='night',seconds=Number($('hours').value)*3600+Number($('minutes').value)*60,window=state&&state.reservation_window;
-   $('start-label').classList.toggle('hidden',!night);$('start').required=night;$('hours').max=night?'33':'2';
-   const start=night?new Date($('start').value).getTime()/1000:state&&state.server_time;
-   let error=!Number.isInteger(seconds)||seconds<300?'预计时长至少 5 分钟':!night&&seconds>7200?'普通任务最长 2 小时':'';
+   updateDates();const night=$('kind').value==='night',window=state&&state.reservation_window;
+   for(const part of ['date','hour','minute']){const el=$('start-'+part);$('start-'+part+'-label').classList.toggle('hidden',!night);el.required=night;el.disabled=!night;}
+   const maxHours=night?13:2;setOptions($('hours'),Array.from({length:maxHours+1},(_,h)=>[String(h),h+' 小时']),'0',null);
+   const hours=Number($('hours').value),minuteValues=hours===maxHours?[0]:Array.from({length:12},(_,i)=>i*5).filter(m=>hours!==0||m>0);
+   setOptions($('minutes'),minuteValues.map(m=>[String(m),m+' 分钟']),'30',null);
+   if(night)updateNightOptions();const start=night?selectedStart():state&&state.server_time,seconds=hours*3600+Number($('minutes').value)*60;
+   let error=!Number.isInteger(seconds)||seconds<300?'预计时长至少 5 分钟':seconds>maxHours*3600?(night?'夜间任务最长 13 小时':'普通任务最长 2 小时'):'';
    if(!error&&!night&&window&&Number.isFinite(start)&&start+seconds>window.end)error='预计结束时间不能超过次日上午 9 点';
    $('minutes').setCustomValidity(error);
-   const selected=night&&window&&Number.isFinite(start)?(window.night_windows||[]).find(w=>start>=w.start&&start<=w.end):null;
-   $('start').setCustomValidity(night&&$('start').value&&!selected?'夜间任务开始时间须在晚上 20:00 至次日 09:00 之间':'');
-   if(window){$('start').min=localInput(Math.ceil(window.start/60)*60);$('start').max=localInput(Math.floor(window.end/60)*60);$('reservation-window').textContent=night?'夜间任务开始时间为 20:00 至次日 09:00；普通任务优先。'+(selected&&start+seconds>selected.end?'预计结束时间超出次日 9 点，仍可预约。':''):'普通任务预计结束时间不晚于 '+date(window.end)+'。';}
+   const selected=night&&window&&Number.isFinite(start)?(window.night_windows||[]).find(w=>start>=w.start&&start<w.end):null;
+   $('start-date').setCustomValidity(night&&Number.isFinite(start)&&!selected?'夜间任务开始时间须在晚上 20:00 至次日 09:00 前':'');
+   if(window){$('reservation-window').textContent=night?(startExpired?'所选开始时间已过，请重新选择。':$('start-hour').options.length===1?'当前日期没有可选的开始时间，请选择其他日期。':'')+'夜间任务开始时间为 20:00 至次日 09:00 前，最长 13 小时；分钟按 5 分钟选择；后来的预约需避开已有排程。'+(selected&&start+seconds>selected.end?'预计结束时间超出次日 9 点，仍可预约。':''):'普通任务预计结束时间不晚于 '+date(window.end)+'。';}
   }
+
   function resource(allocation){return Object.entries(allocation||{}).map(([node,cards])=>node+'：'+cards.join('、')).join('；')||'待分配';}
   function notifyAlerts(){
    const alerts=state.alerts||[],live=new Set(alerts.map(a=>a.id));for(const id of alertSeen)if(!live.has(id))alertSeen.delete(id);
-   if(!registered()||permission()!=='granted')return;
-   for(const alert of alerts){if(alertSeen.has(alert.id))continue;alertSeen.add(alert.id);try{const n=new Notification(alert.kind==='unregistered'?'A5 插队提醒':alert.kind==='reset'?'A5 预约清空通知':'A5 使用超时提醒',{body:alert.message,tag:'a5-alert:'+alert.id});openNotices.add(n);n.onclose=()=>openNotices.delete(n);n.onclick=()=>{window.focus();host.scrollIntoView({block:'center'});n.close();};}catch(e){failure='通知发送失败，请检查浏览器通知权限。';}}
+   const jobs=new Set(state.tasks.map(row=>row.id));for(const id of overdueNotices.keys())if(!jobs.has(id))overdueNotices.delete(id);
+   if(!registered()||permission()!=='granted'||failure)return;
+   for(const alert of alerts){const repeating=!!(alert.job&&alert.repeat_seconds),previous=repeating&&overdueNotices.get(alert.job),noticeUser=state.user.id,escalated=!!(previous&&previous.kind==='overdue-nonblocking'&&['overdue','overdue-joint','overdue-dependent'].includes(alert.kind));if(repeating){if(previous&&state.server_time-previous.at<alert.repeat_seconds&&!escalated)continue;}else if(alertSeen.has(alert.id))continue;try{const n=new Notification(escalated?(alert.kind==='overdue-joint'?'A5 超时任务共同阻塞':alert.kind==='overdue-dependent'?'A5 超时任务阻塞后续预约':'A5 超时任务已转为瓶颈'):alert.kind==='unregistered'?'A5 插队提醒':alert.kind==='over-allocation'?'A5 预约资源占用提醒':alert.kind==='reset'?'A5 预约清空通知':'A5 使用超时提醒',{body:escalated?(alert.kind==='overdue-joint'?'你的超时预约与其他超时任务共同影响后续预约，请尽快处理。':alert.kind==='overdue-dependent'?'你的超时预约占用后续预约所需资源，请尽快处理。':'你的超时预约已由非瓶颈转为瓶颈，正在阻挡后续预约，请尽快处理。'):alert.message,tag:'a5-alert:'+alert.id});if(repeating)overdueNotices.set(alert.job,{at:state.server_time,kind:alert.kind});else alertSeen.add(alert.id);openNotices.add(n);n.onerror=()=>{if(repeating)overdueNotices.delete(alert.job);else alertSeen.delete(alert.id);if(registered()&&state.user.id===noticeUser)invalidate('通知发送失败，请重新验证桌面通知。');};n.onclose=()=>openNotices.delete(n);n.onclick=()=>{window.focus();host.scrollIntoView({block:'center'});n.close();};}catch(e){invalidate('通知发送失败，请重新验证桌面通知。');break;}}
   }
   function notify(){
    notifyAlerts();
    if(!ready())return;
-   const live=new Set(state.tasks.map(row=>row.id));for(const id of delivered.keys())if(!live.has(id))delivered.delete(id);
+   const live=new Set(state.tasks.map(row=>row.id));for(const id of delivered.keys())if(!live.has(id))delivered.delete(id);for(const id of bottleneckStates.keys())if(!live.has(id))bottleneckStates.delete(id);
    for(const row of state.tasks){
     if(!row.mine)continue;
     let event='',title='',body='';
     const seen=delivered.get(row.id)||new Set();
+    if(row.state==='active'&&row.activated&&row.requested_seconds){const remaining=row.activated+row.requested_seconds-state.server_time,previous=bottleneckStates.get(row.id);if(row.bottleneck&&previous===false){if(remaining<=600)seen.add('bottleneck-ending:10');if(remaining<=300)seen.add('bottleneck-ending:5');delivered.set(row.id,seen);}bottleneckStates.set(row.id,!!row.bottleneck);}
     if(row.missed_claims&&!seen.has('deferred:'+row.missed_claims)){event='deferred:'+row.missed_claims;title='A5 预约已顺延一位';body='超过 10 分钟未开始，这次分配已释放，预约向后顺延一位。请查看新的排队状态。';}
-    else if(row.state==='ready'&&row.can_claim){const remaining=Math.max(0,row.claim_before-state.server_time),elapsed=Math.max(0,state.server_time-(row.ready_since||state.server_time));const phase=remaining<=60?'last-minute':([0,120,240,360,480,540].filter(t=>t<=elapsed).pop()||0);event='ready:'+(row.offer_id||row.ready_since||row.claim_before)+':'+phase;title=phase===0?'A5 资源已分配':'A5 提醒：请及时开始使用';body=resource(row.allocations)+'，剩余 '+Math.ceil(remaining/60)+' 分钟。请点击“开始使用”，超时预约将向后顺延一位。';}
-    else if(row.state==='active'&&row.activated&&row.requested_seconds){const remaining=row.activated+row.requested_seconds-state.server_time;const warning=Math.min(row.not_before?3600:900,Math.max(60,row.requested_seconds/4));if(remaining<=0){if(!state.alerts){event='overdue';title='A5 预约已到预计结束时间';body='请自行停止服务，并在主页结束登记。';}}else if(remaining<=warning){event='ending';title='A5 预约即将到期';body='预计剩余 '+Math.ceil(remaining/60)+' 分钟，请准备释放资源。';}}
+    else if(row.state==='ready'&&row.can_claim){const remaining=Math.max(0,row.claim_before-state.server_time),elapsed=Math.max(0,state.server_time-(row.ready_since||state.server_time));const phase=remaining<=60?'last-minute':Math.floor(elapsed/60);event='ready:'+(row.offer_id||row.ready_since||row.claim_before)+':'+phase;title=phase===0?'A5 资源已分配':'A5 提醒：请及时开始使用';body=resource(row.allocations)+'，剩余 '+Math.ceil(remaining/60)+' 分钟。请点击“开始使用”，超时预约将向后顺延一位。';}
+    else if(row.state==='active'&&row.activated&&row.requested_seconds){const remaining=row.activated+row.requested_seconds-state.server_time,elapsed=state.server_time-row.activated,started='started:'+row.activated;if(elapsed>=0&&elapsed<30&&!seen.has(started)){event=started;title='A5 已开始使用';body=resource(row.allocations)+'。'+(row.bottleneck?'当前是瓶颈任务，预计结束时间会影响等待中的预约，请按时释放。':'请留意预计结束时间。');}else if(remaining<=0){if(!state.alerts){event='overdue';title='A5 预约已到预计结束时间';body='请自行停止服务，并在主页结束登记。';}}else if(!row.not_before&&row.bottleneck&&remaining<=300&&row.requested_seconds>300){event='bottleneck-ending:5';title='A5 瓶颈任务即将到期';body='预计剩余 '+Math.ceil(remaining/60)+' 分钟；预计结束时间会影响等待中的预约。';}else if(!row.not_before&&row.bottleneck&&remaining>300&&remaining<=600&&row.requested_seconds>600){event='bottleneck-ending:10';title='A5 瓶颈任务即将到期';body='预计剩余 '+Math.ceil(remaining/60)+' 分钟；预计结束时间会影响等待中的预约。';}}
     if(!event||(delivered.get(row.id)||new Set()).has(event))continue;
-    try{const n=new Notification(title,{body,tag:'a5-queue:'+row.id+':'+event});openNotices.add(n);const seen=delivered.get(row.id)||new Set();seen.add(event);delivered.set(row.id,seen);n.onerror=()=>{seen.delete(event);invalidate('桌面通知发送失败，请重新验证通知后再提交预约。');};n.onclose=()=>openNotices.delete(n);n.onclick=()=>{window.focus();host.scrollIntoView({block:'center'});n.close();};}catch(e){invalidate('桌面通知发送失败，请重新开启并验证。');break;}
+    try{const noticeUser=state.user.id,n=new Notification(title,{body,tag:'a5-queue:'+row.id+':'+event});openNotices.add(n);const seen=delivered.get(row.id)||new Set();seen.add(event);delivered.set(row.id,seen);n.onerror=()=>{seen.delete(event);if(registered()&&state.user.id===noticeUser)invalidate('桌面通知发送失败，请重新验证通知后再提交预约。');};n.onclose=()=>openNotices.delete(n);n.onclick=()=>{window.focus();host.scrollIntoView({block:'center'});n.close();};}catch(e){invalidate('桌面通知发送失败，请重新开启并验证。');break;}
    }
   }
+  function renderCards(){
+   const grid=$('card-grid');grid.replaceChildren();const now=state.server_time,buffer=state.reservation_buffer_seconds??600;
+   for(const node of state.nodes||[]){const line=element('div','');line.className='card-node';line.append(element('strong',node));const list=element('div','');list.className='card-list';
+    for(let card=0;card<8;card++){const tile=element('div','');tile.className='card-tile';tile.append(element('strong',card+' 号卡'));const occupied=state.tasks.find(row=>['ready','active'].includes(row.state)&&((row.allocations||{})[node]||[]).includes(card));
+     if(occupied){tile.classList.add('occupied');tile.append(element('span',occupied.state==='ready'?'已分配':'使用中'));}
+     else{const future=state.tasks.filter(row=>row.state==='queued'&&row.estimated_start!=null&&((row.planned_allocations||{})[node]||[]).includes(card)).map(row=>row.estimated_start);const next=future.length?Math.min(...future):null;const unknown=state.tasks.some(row=>row.state==='queued'&&row.estimated_start==null);const until=next==null?null:next-buffer;let label=until!=null?(until<=now?'开始缓冲中':'预计空闲 '+overtimeDuration(until-now)):unknown?'空闲时间待确认':'暂无后续预约';if(unknown&&until!=null&&until>now)label='空闲时间待确认';if(until!=null&&until<=now)tile.classList.add('buffer');tile.append(element('span',label));}list.append(tile);}line.append(list);grid.append(line);}
+  }
   function render(){
+   if(composingAllowed)return;
    $('account-status').textContent=state.user?'已登录：'+(state.user.employee||'')+' '+state.user.name:'未登录';
-   $('account-form').classList.toggle('hidden',registered());$('logout').classList.toggle('hidden',!registered());gate();notify();resourceFields();timeLimits();
-   const alerts=$('queue-alerts');alerts.replaceChildren();for(const alert of state.alerts||[]){const p=element('p',alert.message);p.className=alert.kind==='reset'?'good':'error';alerts.append(p);}for(const text of state.process_monitor_errors||[])alerts.append(element('p',text));alerts.classList.toggle('hidden',!alerts.children.length);
-   const body=$('tasks');body.replaceChildren();
-   for(const row of state.tasks){
+   $('account-form').classList.toggle('hidden',registered());$('logout').classList.toggle('hidden',!registered());gate();notify();resourceFields();timeLimits();renderCards();
+   const alerts=$('queue-alerts');alerts.replaceChildren();for(const alert of state.alerts||[]){if(alert.kind==='unregistered')continue;const p=element('p',alert.message);p.className=alert.kind==='reset'?'good':alert.kind==='overdue-nonblocking'?'warning':'error';alerts.append(p);}for(const text of state.process_monitor_errors||[])alerts.append(element('p',text));alerts.classList.toggle('hidden',!alerts.children.length);
+   const body=$('tasks'),active=root.activeElement,focusJob=active&&active.dataset.allowedFor,selection=focusJob?[active.selectionStart,active.selectionEnd]:null;body.replaceChildren();
+   for(const row of [...state.tasks].sort((a,b)=>Number(b.state==='active')-Number(a.state==='active'))){
     if(!['queued','ready','active'].includes(row.state))continue;
     const tr=document.createElement('tr');tr.dataset.job=row.id;
-    const status=element('td',row.overdue?'使用中 · 已超时 '+Math.max(1,Math.ceil(row.overdue_seconds/60))+' 分钟':({queued:'等待中 · 第 '+row.position+' 位',ready:'已分配，待开始',active:'使用中'})[row.state]);if(row.overdue)status.className='error';if(row.normal_start_after_two){status.append(document.createElement('br'),element('strong','无法在凌晨 2 点前开始'));}else if(row.normal_start_unknown){status.append(document.createElement('br'),element('strong','无法确定能否在凌晨 2 点前开始'));}
+    const status=element('td',row.overdue?'使用中 · 已超时 '+Math.max(1,Math.ceil(row.overdue_seconds/60))+' 分钟 · '+(row.overdue_bottleneck?'阻塞后续预约':row.overdue_joint_blocker?'与其他超时任务共同阻塞':row.overdue_pending_blocker?'阻塞后续预约（尚有其他占用）':'当前非瓶颈'):row.state==='active'&&row.bottleneck?'使用中 · 瓶颈任务':({queued:'等待中 · 第 '+row.position+' 位',ready:'已分配，待开始',active:'使用中'})[row.state]);if(row.overdue)status.className=row.overdue_bottleneck||row.overdue_joint_blocker||row.overdue_pending_blocker?'error':'warning';else if(row.state==='active'&&row.bottleneck)status.className='bottleneck';if(row.mine&&row.normal_start_after_two){status.classList.add('standby-status');status.append(document.createElement('br'),element('strong','预计无法在凌晨 2 点前开始，候补中'));status.append(document.createElement('br'),element('span','资源提前释放时可替补；可考虑申请夜间任务，并自行设置自己的 agent 定时拉起任务。'));}
+    if(row.state==='active'&&!row.bottleneck&&!row.overdue_joint_blocker&&!row.overdue_pending_blocker){const remaining=row.overtime_remaining_seconds,info=element('small',typeof remaining==='number'&&Number.isFinite(remaining)?'预计还可超时 '+overtimeDuration(remaining):'可超时余量待确认');info.title='按争用同一批等待资源的任务预计结束时间计算，不含确认缓冲；实际结束时间可能变化。';status.append(document.createElement('br'),info);}
     tr.append(status,element('td',row.employee+' / '+row.name),element('td',row.dual?'双机共 '+(row.total_cards||row.cards*2)+' 卡（各 '+row.cards+' 卡）':(row.fixed_node||'单机')+' · '+row.cards+' 卡'));
-    const allocation=element('td',resource(row.allocations));if(row.claim_before&&row.state==='ready'){const remaining=Math.max(0,Math.ceil(row.claim_before-state.server_time));allocation.append(document.createElement('br'),element('small','请在 '+Math.floor(remaining/60)+'分'+remaining%60+'秒内开始'));}if(row.missed_claims)allocation.append(document.createElement('br'),element('small','超时顺延 '+row.missed_claims+' 次'));tr.append(allocation);
-    tr.append(element('td',date(row.created)));
-    const start=row.activated?date(row.activated):row.window_expired?'时段已过，请取消后重新预约':row.state==='ready'?'可立即开始':row.estimated_start?'预计 '+date(row.estimated_start):row.not_before?'预计时间待确认':row.finish_before?'截止前暂无可用时段':'预计时间待确认';const end=element('td',row.activated&&row.requested_seconds?date(row.activated+row.requested_seconds):row.state==='ready'?date(state.server_time+row.requested_seconds):row.estimated_start?date(row.estimated_start+row.requested_seconds):'—');if(row.night_end_overdue)end.append(document.createElement('br'),element('strong','结束时间超出次日 9 点'));tr.append(element('td',start),element('td',duration(row.requested_seconds)),end);
+    const allocation=element('td','');const allocations=Object.entries(row.allocations||{});if(allocations.length){for(const [node,cards] of allocations){if(allocation.childNodes.length)allocation.append(document.createElement('br'));allocation.append(document.createTextNode(node+'：'+cards.join('、')));}}else allocation.textContent='待分配';if(row.claim_before&&row.state==='ready'){const remaining=Math.max(0,Math.ceil(row.claim_before-state.server_time));allocation.append(document.createElement('br'),element('small','请在 '+Math.floor(remaining/60)+'分'+remaining%60+'秒内开始'));}if(row.missed_claims)allocation.append(document.createElement('br'),element('small','超时顺延 '+row.missed_claims+' 次'));tr.append(allocation);
+    tr.append(element('td',dateMinute(row.created)));
+    const start=row.activated?dateMinute(row.activated):row.window_expired?'时段已过，请取消后重新预约':row.state==='ready'?'可立即开始':row.estimated_start?'预计 '+dateMinute(row.estimated_start):row.mine&&row.normal_start_after_two?'候补：凌晨 2 点前未排到':'预计时间待确认';const end=element('td',row.activated&&row.requested_seconds?dateMinute(row.activated+row.requested_seconds):row.state==='ready'?dateMinute(state.server_time+row.requested_seconds):row.estimated_start?dateMinute(row.estimated_start+row.requested_seconds):'—');if(row.night_end_overdue)end.append(document.createElement('br'),element('strong','结束时间超出次日 9 点'));tr.append(element('td',start),element('td',duration(row.requested_seconds)),end);
     const actions=element('td','');function button(label,action){const b=element('button',label);b.onclick=async()=>{if((action==='finish'||action==='cancel')&&!window.confirm(action==='finish'?'确认已自行停止服务并释放这些卡，结束登记？':label+'？'))return;b.disabled=true;try{report((await api('unified-action',{job:row.id,action,offer_id:row.offer_id,confirmed:true})).message);await refresh();}catch(e){report(e.message,true);}finally{b.disabled=false;}};actions.append(b);}
-    if(state.user&&(row.mine||state.user.admin)){if(row.state==='ready')button('开始使用','claim');if(row.state==='queued'||row.state==='ready')button('取消预约','cancel');if(row.state==='active')button('结束登记','finish');}tr.append(actions);body.append(tr);
+    if(state.user&&(row.mine||state.user.admin)){if(row.state==='ready')button('开始使用','claim');if(row.state==='queued'||row.state==='ready')button('取消预约','cancel');if(row.state==='active'&&(!row.not_before||row.morning_carryover||!state.night_auto_finish_enabled))button('结束登记','finish');}tr.append(actions);body.append(tr);
     if(state.user&&state.user.admin&&row.state==='queued'){button('置顶','priority-top');actions.lastElementChild.disabled=!row.can_raise_priority;button('↑ 调高','priority-up');actions.lastElementChild.disabled=!row.can_raise_priority;}
     if(state.user&&(row.mine||state.user.admin)&&['queued','ready'].includes(row.state)){button('↓ 调低','priority-down');actions.lastElementChild.disabled=!row.can_lower_priority;}
+    if(state.user&&row.mine){
+     const allowed=row.allowed_employees||[];let editor=allowedEditors.get(row.id);if(!editor){editor={query:'',matches:[],loading:false,saving:false,error:'',seq:0,timer:null,open:false};allowedEditors.set(row.id,editor);}
+     const box=element('div','');box.className='allowed-editor';const chips=element('div','');chips.className='allowed-chips';
+     async function changeAllowed(employee,change,name){if(editor.saving)return;editor.saving=true;editor.seq++;clearTimeout(editor.timer);editor.loading=false;editor.matches=[];editor.error='';render();try{const result=await api('unified-allowed',{job:row.id,employee,change,confirmed:true,confirmed_name:name});editor.query='';report(result.message);await refresh();}catch(e){editor.error=e.message;}finally{editor.saving=false;if(!stopped&&allowedEditors.get(row.id)===editor)render();}}
+     for(const employee of allowed){const chip=element('button',employee+' ×');chip.type='button';chip.className='allowed-chip';chip.title='点击移除 '+employee;chip.setAttribute('aria-label','移除允许用户 '+employee);chip.disabled=editor.saving;chip.onclick=()=>changeAllowed(employee,'remove');chips.append(chip);}if(allowed.length){box.append(element('small','允许用户（点击移除）'),chips);}
+     const toggle=element('button',editor.open?'收起共同使用人':'登记共同使用人');toggle.type='button';toggle.className='secondary';toggle.onclick=()=>{editor.open=!editor.open;editor.seq++;clearTimeout(editor.timer);editor.query='';editor.matches=[];editor.loading=false;editor.error='';render();};box.append(toggle);if(editor.open){
+     const input=document.createElement('input');input.className='allowed-input';input.dataset.allowedFor=row.id;input.placeholder='搜索工号或姓名';input.setAttribute('aria-label','搜索允许用户工号或姓名');input.autocomplete='off';input.maxLength=120;input.value=editor.query;input.disabled=editor.saving;
+     function search(value){editor.query=value;editor.seq++;clearTimeout(editor.timer);editor.matches=[];editor.error='';editor.loading=false;const query=editor.query.trim();if(query&&/^[\x00-\x7f]+$/.test(query)&&query.length<(/[0-9]/.test(query)?3:2))editor.error='请输入姓名或至少 3 位工号';else if(query&&!/^[\p{L}\p{N} ·.'-]+$/u.test(query))editor.error='请输入有效的工号或姓名';else if(query){const seq=editor.seq;editor.loading=true;editor.timer=setTimeout(async()=>{try{const result=await api('unified-allowed-search',{job:row.id,query});if(stopped||allowedEditors.get(row.id)!==editor||editor.seq!==seq)return;editor.matches=result.people;editor.error=result.people.length?'':'未找到匹配用户';}catch(err){if(!stopped&&allowedEditors.get(row.id)===editor&&editor.seq===seq)editor.error=err.message;}finally{if(!stopped&&allowedEditors.get(row.id)===editor&&editor.seq===seq){editor.loading=false;render();}}},300);}render();}
+     input.addEventListener('compositionstart',()=>{composingAllowed=true;editor.seq++;clearTimeout(editor.timer);editor.loading=false;editor.matches=[];});input.addEventListener('compositionend',()=>{composingAllowed=false;search(input.value);});input.oninput=e=>{if(!e.isComposing&&!composingAllowed)search(input.value);};
+     box.append(input);const results=element('div','');results.className='allowed-results';for(const person of editor.matches){if(allowed.includes(person.employee))continue;const item=element('button',person.name+' · '+person.employee);item.type='button';item.disabled=editor.saving;item.onclick=()=>changeAllowed(person.employee,'add',person.name);results.append(item);}box.append(results);if(editor.loading||editor.error){const hint=element('small',editor.loading?'正在查询…':editor.error);hint.className='allowed-hint';box.append(hint);}}actions.append(box);
+    }
    }
    if(!body.children.length){const tr=element('tr',''),td=element('td','暂无排队或使用中的预约。');td.colSpan=9;tr.append(td);body.append(tr);}
+   if(focusJob){const input=[...body.querySelectorAll('input[data-allowed-for]')].find(el=>el.dataset.allowedFor===focusJob);if(input&&!input.disabled){input.focus({preventScroll:true});input.setSelectionRange(...selection);}}
+   expansion.update();
   }
   async function refresh(){
    if(polling||stopped)return;polling=true;lastRefreshAt=Date.now();
-   try{const next=await api('state');if(stopped)return;if((state&&state.user&&state.user.id)!==(next.user&&next.user.id)){version++;verifiedUser=null;verifying=false;failure='';delivered.clear();alertSeen.clear();closeNotices();}state=next;render();}catch(e){if(!stopped)report(e.message,true);}finally{polling=false;}
+   try{const next=await api('state');if(stopped)return;if((state&&state.user&&state.user.id)!==(next.user&&next.user.id)){version++;verifiedUser=null;verifying=false;autoCheckUser=null;composingAllowed=false;failure='';delivered.clear();alertSeen.clear();overdueNotices.clear();bottleneckStates.clear();clearAllowedEditors();closeNotices();}state=next;const live=new Set(state.tasks.filter(row=>row.mine).map(row=>row.id));for(const [id,editor] of allowedEditors)if(!live.has(id)){clearTimeout(editor.timer);allowedEditors.delete(id);if(root.activeElement&&root.activeElement.dataset.allowedFor===id)composingAllowed=false;}render();if(registered()&&permission()==='granted'&&!ready()&&!verifying&&!failure&&autoCheckUser!==state.user.id){autoCheckUser=state.user.id;$('enable-notifications').click();}}catch(e){if(!stopped)report(e.message,true);}finally{polling=false;}
   }
   $('account-form').onsubmit=async e=>{e.preventDefault();try{const result=await api(e.submitter.name,{employee:$('employee').value,name:$('name').value,password:$('password').value});$('password').value='';report(result.message);await refresh();}catch(err){report(err.message,true);}};
   $('logout').onclick=async()=>{try{await api('logout',{});verifiedUser=null;closeNotices();await refresh();}catch(err){report(err.message,true);}};
   $('machine').onchange=resourceFields;$('cards').onchange=resourceFields;
-  $('kind').onchange=timeLimits;$('hours').oninput=timeLimits;$('minutes').onchange=timeLimits;$('start').oninput=timeLimits;timeLimits();
-  $('join-form').onsubmit=async e=>{e.preventDefault();timeLimits();if(!$('join-form').reportValidity())return;if(!ready()){gate();report('请先开启桌面通知并通过测试，才能加入队列。',true);return;}const night=$('kind').value==='night';submitting=true;gate();try{report((await api('enqueue',{machine:$('machine').value,cards:Number($('cards').value),night,not_before:night?new Date($('start').value).getTime()/1000:0,requested_seconds:Number($('hours').value)*3600+Number($('minutes').value)*60,notifications_ready:true})).message);await refresh();}catch(err){report(err.message,true);}finally{submitting=false;gate();}};
+  $('kind').onchange=timeLimits;$('hours').onchange=timeLimits;$('minutes').onchange=timeLimits;for(const part of ['date','hour','minute'])$('start-'+part).onchange=timeLimits;timeLimits();
+  $('join-form').onsubmit=async e=>{e.preventDefault();timeLimits();if(!$('join-form').reportValidity())return;if(!ready()){gate();report('请先开启桌面通知并通过测试，才能加入队列。',true);return;}const night=$('kind').value==='night';submitting=true;gate();try{report((await api('enqueue',{machine:$('machine').value,cards:Number($('cards').value),night,not_before:night?selectedStart():0,requested_seconds:Number($('hours').value)*3600+Number($('minutes').value)*60,notifications_ready:true})).message);await refresh();}catch(err){report(err.message,true);}finally{submitting=false;gate();}};
   function refreshDelay(){
    const control=document.querySelector('button[aria-label^="Choose refresh time interval"]');
    if(control&&control.textContent.trim()==='Off')return 0;
@@ -135,7 +210,7 @@ HOME_JS = r'''"use strict";
   }
   refresh();const interval=setInterval(()=>{const delay=refreshDelay();if(delay&&Date.now()-lastRefreshAt>=delay)refresh();},1000);
   const focus=()=>{gate();refresh();};window.addEventListener('focus',focus);
-  return ()=>{stopped=true;version++;clearInterval(interval);window.removeEventListener('focus',focus);closeNotices();};
+  return ()=>{stopped=true;version++;clearInterval(interval);clearAllowedEditors();expansion.dispose();window.removeEventListener('focus',focus);closeNotices();};
  }
  function attach(){const marker=document.querySelector('a[href="/a5-queue/home"]');const host=marker?marker.parentElement:document.getElementById('a5-queue-home');if(host===currentHost)return;if(dispose)dispose();dispose=null;currentHost=host;if(host&&!host.shadowRoot){host.id='a5-queue-home';dispose=mount(host);}}
  new MutationObserver(attach).observe(document.documentElement,{childList:true,subtree:true});attach();

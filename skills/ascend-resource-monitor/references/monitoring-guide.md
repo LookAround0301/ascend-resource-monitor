@@ -17,7 +17,9 @@ This guide describes the repository source as of 2026-11-04. Basic monitoring ca
 | Navigation | One canonical homepage, including old-home redirects, preserved query parameters and Grafana client-side navigation |
 | Refresh | 1/5/10/30-second choices, default 1 second; queue polling follows the choice and pauses when automatic refresh is Off |
 | Queue operations | Owners can move their queued or ready reservations down one place; administrators can reorder waiting reservations; active reservations cannot be moved down |
-| Registration checks | Read-only process/queue matching, with unregistered-use annotations and online notifications; no automatic Stop |
+| Registration checks | Read-only process/queue matching; suspected unregistered use notifies the offender and reservation owners of overlapping node/cards only; no automatic Stop |
+| Allowed users | The owner searches by employee ID or name; matching results must agree across both rosters. The owner can add or remove shared users for that reservation’s allocated node/cards |
+| Night completion | Automatically ends registration after repeated fresh NPU inventories show allocated cards empty; no workload is stopped |
 | Windows access | `Open-Monitor.cmd` for a local SSH tunnel, optional `Open-Web.cmd` for verified HTTPS, and a separate user guide |
 
 Page refresh is not sampling frequency: resource scraping is normally every five seconds and process collection every ten seconds. A displayed name or origin is evidence from configured sources, not independent corporate identity verification.
@@ -31,14 +33,14 @@ Registration checks tolerate an exporter timestamp up to 15 seconds ahead of the
 | Single node | Any available node or one specified node, 1–8 cards |
 | Two nodes | 2/4/8/16 cards in total, split 1+1 / 2+2 / 4+4 / 8+8 |
 | Card placement | Use available queue capacity; requests for 1–4 cards per node stay in one four-card group |
-| Duration | Defaults to 0 hours and 30 minutes; whole hours plus 0/5/10/…/55 minutes; normal tasks are at most two hours |
-| Reservation horizon | Normal tasks finish by next-day 09:00; night tasks start between 20:00 and 09:00 and may finish later with a warning |
-| Scheduling priority | Unallocated normal tasks take priority over night tasks; already allocated or active night tasks are not preempted |
+| Duration | Defaults to 0 hours and 30 minutes; hour and minute selectors use five-minute steps. Normal tasks are limited to 2 hours and new night tasks to 13 hours; existing reservations retain their duration |
+| Reservation horizon | Normal tasks finish by next-day 09:00; night tasks start from 20:00 until before next-day 09:00, enter active registration automatically at allocation and may finish later with a warning |
+| Scheduling priority | Plan in queue order; backfill must preserve earlier reservations and the release buffer. Unknown release times protect resources an earlier eligible reservation may need. Normal tasks that cannot start before 02:00 remain on standby; active and offered allocations are not preempted |
 | Claiming | Click Start use directly within at most ten minutes of allocation; an earlier scheduling deadline still applies |
-| Reminders | At allocation, then after 2, 4, 6, 8 and 9 minutes; keep the page open, signed in and notifications enabled |
+| Reminders | At allocation and each minute during an ordinary claim window; keep the page open, signed in and notifications enabled |
 | Unclaimed offer | Release that allocation and move back one waiting position, preserving the original application time |
 | Completion | Stop the workload yourself, then confirm Finish registration; the button releases the reservation without stopping processes or containers |
-| Daily reset | When enabled, clear normal reservations at 09:00 and retain night reservations, without stopping workloads |
+| Daily reset | At 09:00 clear normal reservations and cancel unstarted reservations from the elapsed night; retain active night reservations with their original times and enable manual completion, without stopping workloads |
 
 Application time remains visible after a task starts. Offer deadlines and order are persisted; reloads or proxy restarts do not reset them. A stale offer ID cannot claim a new allocation. Consecutive simultaneous misses pass the next reservation as one block, moving each missed reservation one position; a trailing reservation stays at the end when nobody follows it.
 
@@ -165,7 +167,7 @@ python skills/ascend-resource-monitor/scripts/build_windows_package.py --mode cl
 | Exempt containers mixed into active interception | Filter the active table while retaining stored marks |
 | Process/guard tables disappeared after collector updates | Configurable metric namespace and validation of actual returned series |
 | Inconsistent polling/access instructions | One-second default, four refresh choices, CMD fallback and synchronized handoff documentation |
-| Overdue use and rigid waiting order | Current/next-user notices, visible overdue status, owner deferral and administrator priority adjustment |
+| Overdue use and rigid waiting order | Identify immediate, shared and other overdue blockers; notify the nearest directly affected waiter after five minutes |
 | Stale daily reservations and awkward duration defaults | Optional 09:00 clearing of normal reservations without workload interruption; night reservations remain visible |
 | AICore-only headline remained zero | Prefer device-wide utilization, with per-card fallback for older exporters |
 | Unregistered NPU use was hard to see | Fresh-source registration matching, informational status and online notices, with no automatic Stop |

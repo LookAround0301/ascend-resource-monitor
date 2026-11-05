@@ -30,6 +30,56 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
             if response.status!=200: raise ControlError(response.status,result.get('message','主机状态暂不可用'))
             return result
 
+    async def allowed_person(employee):
+        from personnel_roster import personnel
+        async def read(node):
+            try:
+                source=await asyncio.wait_for(agent(node,'/roster'),timeout=5)
+                if source.get('node')!=node or not isinstance(source.get('people'),list):raise ValueError('invalid roster')
+                matches=[]
+                for entry in source['people']:
+                    if entry.get('employee')==employee:
+                        found,name=personnel(entry.get('employee'),entry.get('name'))
+                        if found!=employee:raise ValueError('invalid roster entry')
+                        matches.append(name)
+                if len(matches)>1:raise ValueError('duplicate employee')
+                return matches[0] if matches else None
+            except Exception as exc:
+                raise ControlError(503,'人员白名单暂不可用，请联系管理员核实') from exc
+        names=await asyncio.gather(*(read(node) for node in config['nodes']))
+        if not names or any(name is None for name in names):
+            raise ControlError(404,'该工号未在两台机器的人员白名单中，请联系管理员核实')
+        if len(set(names))!=1:raise ControlError(409,'两台机器的人员姓名不一致，请联系管理员核实')
+        return {'employee':employee,'name':names[0]}
+
+    async def allowed_search(query):
+        from personnel_roster import personnel
+        if not isinstance(query,str):raise ControlError(400,'请输入工号或姓名')
+        query=query.strip().casefold()
+        if (not query or len(query)>120 or any(not (c.isalnum() or c in " ·.'-") for c in query)
+                or (query.isascii() and len(query)<(3 if any(c.isdigit() for c in query) else 2))):
+            raise ControlError(400,'请输入姓名或至少 3 位工号进行查询')
+        async def read(node):
+            try:
+                source=await asyncio.wait_for(agent(node,'/roster'),timeout=5)
+                if source.get('node')!=node or not isinstance(source.get('people'),list):raise ValueError('invalid roster')
+                matches={}
+                for entry in source['people']:
+                    employee=entry.get('employee')
+                    name=entry.get('name')
+                    if ((len(query)>=3 and isinstance(employee,str) and query in employee.casefold())
+                            or (isinstance(name,str) and query in name.casefold())):
+                        found,name=personnel(employee,entry.get('name'))
+                        if found in matches:raise ValueError('duplicate employee')
+                        matches[found]=name
+                return matches
+            except Exception as exc:
+                raise ControlError(503,'人员白名单暂不可用，请联系管理员核实') from exc
+        rosters=await asyncio.gather(*(read(node) for node in config['nodes']))
+        if not rosters:return []
+        return [{'employee':employee,'name':name} for employee,name in sorted(rosters[0].items())
+                if all(roster.get(employee)==name for roster in rosters[1:])][:8]
+
     unified=UnifiedQueue(store, config['nodes'], settings.get('reservation_buffer_seconds',600), settings.get('timezone','UTC'), settings.get('daily_reset',False)) if settings.get('unified_queue') is True else None
     auto=AutoQueue(store,agent) if not unified and settings.get('auto_match_employee') else None
     monitor=None
@@ -86,7 +136,9 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                 try:
                     if unified: await asyncio.to_thread(unified.tick)
                     else: await reconcile()
-                    if monitor: await monitor.poll()
+                    if monitor:
+                        await monitor.poll()
+                        if unified: await asyncio.to_thread(unified.auto_finish_nights,monitor)
                 except Exception: pass
                 if auto:
                     try:await auto.refresh()
@@ -136,6 +188,10 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                 if operation=='state':
                     state=unified.view(person) if unified else {**store.view(person),'nodes':list(config['nodes']),'server_time':time.time(),'auto_match_employee':auto is not None}
                     if monitor:state=monitor.decorate(state,unified.continuing())
+                    if unified:
+                        state['night_auto_finish_enabled']=bool(monitor)
+                        for row in state['tasks']:
+                            if not row['mine']: row.pop('allowed_employees',None)
                     return web.json_response(state,headers={'Cache-Control':'no-store','Vary':'Cookie, Authorization'})
                 if unified and operation in ('containers','operation','control-context'):
                     raise ControlError(404,'统一队列不提供网页停止或容器关联')
@@ -188,6 +244,29 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                 store.logout(request.cookies.get(COOKIE,''));response=web.json_response({'message':'个人账号已退出'})
                 response.del_cookie(COOKIE,path='/a5-queue');return response
             if unified:
+                if operation in ('unified-allowed-lookup','unified-allowed-search','unified-allowed'):
+                    if not person.get('registered'):raise ControlError(401,'请先登录预约申请人的个人账号')
+                    job=data.get('job')
+                    unified.check_owner(person,job)
+                    if operation in ('unified-allowed-lookup','unified-allowed-search') or data.get('change')=='add':
+                        now=time.monotonic();history=limits[('roster_lookup',person['id'])]
+                        while history and history[0]<now-300:history.popleft()
+                        if len(history)>=100:raise ControlError(429,'查询次数过多，请五分钟后重试')
+                        history.append(now)
+                        if operation=='unified-allowed-search':
+                            return web.json_response({'people':await allowed_search(data.get('query'))},headers={'Cache-Control':'no-store'})
+                        employee=unified.allowed_employee(data.get('employee'))
+                        matched=await allowed_person(employee)
+                        if operation=='unified-allowed-lookup':
+                            return web.json_response(matched,headers={'Cache-Control':'no-store'})
+                        if data.get('confirmed_name')!=matched['name']:
+                            raise ControlError(409,'名单中的姓名已变化，请重新查询并确认')
+                if operation=='unified-allowed':
+                    if data.get('confirmed') is not True:raise ControlError(400,'请先确认操作')
+                    job=data.get('job');change=data.get('change')
+                    unified.allowed_user(person,job,data.get('employee'),change)
+                    event(person,'unified_allowed_'+str(change),job=job)
+                    return web.json_response({'message':'已更新该预约的允许用户'})
                 if operation=='enqueue':
                     if not person['registered']:raise ControlError(400,'提交预约前请先登录个人账号')
                     event(person,'enqueue_unified')

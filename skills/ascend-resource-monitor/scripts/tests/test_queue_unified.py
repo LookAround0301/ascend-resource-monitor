@@ -78,6 +78,42 @@ class UnifiedWindowTests(unittest.TestCase):
             self.assertEqual(row['state'], 'active')
             self.assertFalse(row['window_expired'])
 
+    def test_backfill_reserves_ten_minutes_before_next_start(self):
+        nodes = {'a': list(range(8)), 'b': list(range(8))}
+        future = {'id': 'future', 'cards': 8, 'seconds': 3600, 'not_before': 3600,
+                  'allowed_nodes': ['a'], 'night': True}
+        def run(duration):
+            return plan(nodes, [], [future, {'id': 'backfill', 'cards': 8,
+                        'seconds': duration, 'allowed_nodes': ['a']}], 0, 600)
+        exact = run(3000)
+        self.assertEqual(exact[0]['start'], 3600)
+        self.assertEqual(exact[1]['start'], 0)
+        too_long = run(3001)
+        self.assertEqual(too_long[0]['start'], 3600)
+        self.assertGreaterEqual(too_long[1]['start'], 3600 + 3600 + 600)
+
+    def test_unknown_release_does_not_let_later_request_take_required_cards(self):
+        nodes={'a':list(range(8)),'b':list(range(8))}
+        busy=[{'node':'a','cards':[0], 'start':0,'end':None}]
+        first={'id':'first','cards':8,'dual':True,'seconds':600,'start_before':5000,'finish_before':8000}
+        later={'id':'later','cards':8,'seconds':600,'allowed_nodes':['b'],'start_before':5000,'finish_before':8000}
+        result=plan(nodes,busy,[first,later],1000,600)
+        self.assertIsNone(result[0]['start'])
+        self.assertIsNone(result[1]['start'])
+
+    def test_unknown_release_preserves_unrelated_node_and_expired_jobs_do_not_block(self):
+        nodes={'a':list(range(8)),'b':list(range(8))}
+        busy=[{'node':'a','cards':[0], 'start':0,'end':None}]
+        first={'id':'first','cards':8,'seconds':600,'allowed_nodes':['a'],'start_before':5000,'finish_before':8000}
+        later={'id':'later','cards':8,'seconds':600,'allowed_nodes':['b'],'start_before':5000,'finish_before':8000}
+        result=plan(nodes,busy,[first,later],1000,600)
+        self.assertIsNone(result[0]['start'])
+        self.assertEqual(result[1]['start'],1000)
+        first['dual']=True;first['start_before']=1000
+        result=plan(nodes,busy,[first,later],1000,600)
+        self.assertIsNone(result[0]['start'])
+        self.assertEqual(result[1]['start'],1000)
+
     def test_planner_deadline_includes_duration_but_not_release_buffer(self):
         nodes = {'a': list(range(8)), 'b': list(range(8))}
         jobs = [{'id': 'exact', 'cards': 8, 'dual': True, 'seconds': 600, 'finish_before': 1600}]
@@ -87,6 +123,17 @@ class UnifiedWindowTests(unittest.TestCase):
         result = plan(nodes, busy, jobs, 1000)
         self.assertIsNone(result[0]['start'])
         self.assertEqual(result[1]['start'], 1100)
+
+    def test_normal_to_night_has_no_release_gap_on_both_nodes(self):
+        nodes={'a':list(range(8)),'b':list(range(8))}
+        jobs=[{'id':'normal','cards':8,'dual':True,'seconds':3600},
+              {'id':'normal2','cards':8,'dual':True,'seconds':3600},
+              {'id':'night','cards':8,'dual':True,'seconds':3600,'night':True}]
+        rows=plan(nodes,[],jobs,1000,600)
+        self.assertEqual([r['start'] for r in rows],[1000,5200,8800])
+        busy=[{'node':n,'cards':cards,'start':0,'end':5200,'direct_end':4600} for n,cards in nodes.items()]
+        self.assertEqual(plan(nodes,busy,[jobs[2]],1000,600)[0]['start'],4600)
+        self.assertIsNone(plan(nodes,busy,[jobs[2]],4600,600)[0]['start'])
 
     def test_preexisting_reservation_without_deadline_is_preserved(self):
         with patch('queue_unified.time.time', return_value=self.now):
