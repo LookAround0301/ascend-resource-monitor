@@ -73,6 +73,25 @@ class QueueOperationTests(unittest.TestCase):
         self.assertTrue(rows[first]['bottleneck'])
         self.assertTrue(rows[other]['bottleneck'])
 
+    def test_future_bottleneck_uses_first_release_for_later_backfill(self):
+        def active(job,node,cards,finish):
+            return {'id':job,'state':'active','activated':self.now-60,'created':self.now-60,
+                    'requested_seconds':finish+60,'allocations':json.dumps({node:cards})}
+        def queued(job,cards,seconds=3600,dual=False):
+            return {'id':job,'state':'queued','cards':cards,'dual':dual,'requested_seconds':seconds,
+                    'not_before':0,'finish_before':self.now+18*3600,'created':self.now,'fixed_node':''}
+        rows=[active('a4','a',[0,1,2,3],106*60),
+              active('a1','a',[4],46*60),active('a2','a',[5],40*60),
+              active('a3','a',[6],59*60),
+              {'id':'ready','state':'ready','activated':None,'created':self.now-60,
+               'claim_before':self.now+600,'requested_seconds':3600,'allocations':json.dumps({'a':[7]})},
+              active('b8','b',list(range(8)),46*60),queued('single',8),
+              queued('dual',8,dual=True),queued('backfill',1,seconds=30*60)]
+        blocked=self.queue.bottlenecks(rows,self.now)
+        self.assertEqual(set(blocked),{'a2','b8'})
+        self.assertEqual([job['id'] for job in blocked['a2']],['backfill'])
+        self.assertEqual([job['id'] for job in blocked['b8']],['single'])
+
     def test_future_night_waiter_does_not_create_estimated_bottleneck(self):
         first=self.add(seconds=600);self.claim(first)
         self.queue.enqueue(self.users[1],{'machine':'a','cards':8,'requested_seconds':60,'notifications_ready':True,

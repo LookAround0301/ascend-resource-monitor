@@ -377,11 +377,16 @@ class UnifiedQueue:
                 continue
             released_busy, waiting = self._planning_inputs(rows, row['id'],now=now)
             released = plan(self.nodes, released_busy, waiting, now, self.buffer)
-            enabled = [queued[p['id']] for p in released
-                       if p['id'] not in immediate and p['start'] is not None and p['start'] <= now]
+            finish = row['activated'] + row['requested_seconds'] if row['requested_seconds'] else 0
+            # Immediate release is meaningful for an already overdue task.
+            # For work still within its reservation, mark only the release
+            # that actually determines a planned waiting start below; otherwise
+            # every job whose early release enables a backfill is mislabeled.
+            enabled = ([queued[p['id']] for p in released
+                        if p['id'] not in immediate and p['start'] is not None and p['start'] <= now]
+                       if finish <= now else [])
             # When multiple tasks occupy a waiter's cards, the last estimated
             # release is a bottleneck even though no single release helps now.
-            finish = row['activated'] + row['requested_seconds'] if row['requested_seconds'] else 0
             if finish > now:
                 allocations = json.loads(row['allocations'])
                 held = released_busy + [
