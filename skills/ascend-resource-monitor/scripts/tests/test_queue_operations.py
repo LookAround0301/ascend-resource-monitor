@@ -1,11 +1,12 @@
 from datetime import datetime
 from pathlib import Path
-import sys,tempfile,unittest
+import json,sys,tempfile,unittest
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 sys.path.insert(0,str(Path(__file__).resolve().parents[2]/'assets/runtime'))
 from queue_store import QueueStore
 from queue_unified import UnifiedQueue
+from queue_planner import plan
 from control_common import ControlError
 
 def stamp(text):return datetime.fromisoformat(text).replace(tzinfo=ZoneInfo('Asia/Shanghai')).timestamp()
@@ -261,6 +262,43 @@ class QueueOperationTests(unittest.TestCase):
         self.assertTrue(rows[unrelated]['bottleneck'])
         self.assertFalse(rows[first]['bottleneck'])
         self.assertEqual(rows[first]['overtime_remaining_seconds'],120)
+    def test_remaining_overtime_accounts_for_earlier_queued_job_on_other_node(self):
+        # An eight-card request runs on b before a dual-node request.  The
+        # latter's start is set by that queued job, not by an active job.
+        def active(job,node,cards,finish):
+            return {'id':job,'state':'active','activated':self.now-60,'created':self.now-60,
+                    'requested_seconds':finish+60,'allocations':json.dumps({node:cards})}
+        def queued(job,cards,dual=False):
+            return {'id':job,'state':'queued','cards':cards,'dual':dual,'requested_seconds':3600,
+                    'not_before':0,'finish_before':self.now+18*3600,'created':self.now,'fixed_node':''}
+        rows=[active('a4','a',[0,1,2,3],106*60),
+              active('a1','a',[4],46*60),active('a2','a',[5],40*60),
+              active('a3','a',[6],59*60),active('a5','a',[7],57*60),
+              active('b8','b',list(range(8)),46*60),
+              queued('single',8),queued('dual',8,True)]
+        blocked=self.queue.bottlenecks(rows,self.now)
+        allowances=self.queue.overtime_allowances(rows,self.now,blocked)
+        # b becomes free in 46 min, then the first job uses it for an hour.
+        # Its release constrains the dual job; a's cards must be free by then.
+        self.assertEqual(allowances['a1'],70*60)
+        self.assertEqual(allowances['a2'],76*60)
+        self.assertEqual(allowances['a3'],57*60)
+        self.assertEqual(allowances['a5'],59*60)
+        def predictions(items):
+            busy,waiting=self.queue._planning_inputs(items,now=self.now)
+            return {p['id']:p['start'] for p in plan(self.queue.nodes,busy,waiting,self.now,self.queue.buffer)}
+        baseline=predictions(rows)
+        self.assertEqual(baseline['single'],self.now+56*60)
+        self.assertEqual(baseline['dual'],self.now+126*60)
+        target=next(row for row in rows if row['id']=='a1')
+        target['requested_seconds']+=allowances['a1']
+        self.assertEqual(predictions(rows),baseline)
+        target['requested_seconds']+=1
+        self.assertGreater(predictions(rows)['dual'],baseline['dual'])
+        # A due task with an unknown release cannot provide a safe estimate.
+        target['requested_seconds']-=allowances['a1']+1
+        next(row for row in rows if row['id']=='a2')['requested_seconds']=1
+        self.assertNotIn('a1',self.queue.overtime_allowances(rows,self.now,{}))
     def test_future_waiter_does_not_make_overdue_task_a_bottleneck_yet(self):
         first=self.add();self.claim(first)
         self.queue.enqueue(self.users[1],{'machine':'a','cards':8,'requested_seconds':60,'notifications_ready':True,

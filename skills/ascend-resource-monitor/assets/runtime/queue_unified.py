@@ -455,15 +455,18 @@ class UnifiedQueue:
         return dependent, joint
 
     def overtime_allowances(self, rows, now, blocked):
-        """Estimate remaining overtime against related active resource blockers.
+        """Estimate remaining overtime without delaying the current queue plan.
 
         Compare the queue with this allocation released versus held indefinitely.
-        Only use a competing active allocation whose estimated end actually
-        determines the affected waiter's planned start, excluding its buffer.
+        Include both competing active allocations and earlier planned jobs.
+        Preserve the buffer before a normal waiting job; night jobs use the
+        scheduler's direct-release rule. All results remain estimates.
         """
         queued={row['id']:row for row in rows if row['state']=='queued'}
         if not queued:return {}
         active=[row for row in rows if row['state']=='active' and row['activated'] and row['requested_seconds']]
+        baseline_busy,baseline_waiting=self._planning_inputs(rows,now=now)
+        baseline=plan(self.nodes,baseline_busy,baseline_waiting,now,self.buffer)
         result={}
         for row in active:
             if row['id'] in blocked:continue
@@ -488,6 +491,26 @@ class UnifiedQueue:
                     allocations=json.loads(other['allocations'])
                     if any(set(cards).intersection(allocations.get(node,[])) for node,cards in prediction['allocations'].items()):
                         references.append(finish)
+            # The relevant release may belong to an earlier queued job (for
+            # example, a single-node job before a dual-node waiter).  The
+            # current plan's card assignment provides a conservative deadline.
+            allocations=json.loads(row['allocations'])
+            unknown=row['activated']+row['requested_seconds']<=now or any(p['start'] is None and p['id'] in queued
+                        and (not queued[p['id']]['not_before'] or queued[p['id']]['not_before']<=now)
+                        and (queued[p['id']]['dual'] or not queued[p['id']]['fixed_node']
+                             or queued[p['id']]['fixed_node'] in allocations)
+                        for p in baseline)
+            for prediction in ([] if unknown else baseline):
+                job=queued.get(prediction['id']);start=prediction['start']
+                if not job or start is None or start<=now:
+                    continue
+                if not any(set(cards).intersection(allocations.get(node,[]))
+                           for node,cards in prediction['allocations'].items()):
+                    continue
+                held_start=held_predictions.get(prediction['id'],{}).get('start')
+                if held_start is not None and held_start<=start:
+                    continue
+                references.append(start-(0 if job['not_before'] else self.buffer))
             if references:
                 result[row['id']]=max(0,min(references)-max(now,row['activated']+row['requested_seconds']))
         return result
