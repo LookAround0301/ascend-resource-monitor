@@ -91,6 +91,7 @@ class Element {
 for(const capacity of [undefined,8,16]){
  const count=capacity||8,elements=Object.fromEntries(['machine','cards','resource-hint','card-grid','card-capacity-hint'].map(id=>[id,new Element()]));
  const state={nodes:['a','b'],server_time:1000,tasks:[{state:'active',allocations:{a:[count-1]}}]};
+ state.card_usage={a:Array(count).fill('unreserved_empty'),b:Array(count).fill('unreserved_unknown')};state.card_usage.a[count-1]='reserved_user';
  if(capacity!==undefined)state.cards_per_node=capacity;
  const c={state,machineNodes:'',$:id=>elements[id],element:(type,text)=>new Element(text),overtimeDuration:()=>''};
  vm.createContext(c);vm.runInContext(source.fields+source.render,c);
@@ -99,8 +100,9 @@ for(const capacity of [undefined,8,16]){
  elements.machine.value='dual';c.resourceFields();assert.deepEqual(elements.cards.options.map(x=>Number(x.value)),count===8?[2,4,8,16]:[2,4,8,16,32]);
  c.renderCards();const lines=elements['card-grid'].children;assert.equal(lines.length,2);
  for(const line of lines){const tiles=line.children[1].children;assert.equal(tiles.length,count);assert.deepEqual(tiles.map(t=>t.children[0].textContent),Array.from({length:count},(_,i)=>i+' 号卡'));}
- const occupied=lines.flatMap(l=>l.children[1].children).filter(t=>t.className.includes('occupied'));
- assert.equal(occupied.length,1);assert.equal(occupied[0].children[0].textContent,(count-1)+' 号卡');
+ const occupied=lines.flatMap(l=>l.children[1].children).filter(t=>t.className.includes('reserved-user'));
+ assert.equal(occupied.length,1);assert.equal(occupied[0].children[0].textContent,(count-1)+' 号卡');assert.equal(occupied[0].children[2].textContent,'预约人使用');
+ assert.ok(lines[1].children[1].children.every(t=>t.children[2].textContent==='使用情况待核实'));
 }
 '''
         subprocess.run(['node','-e',script],input=json.dumps({'fields':fields,'render':render}),text=True,check=True)

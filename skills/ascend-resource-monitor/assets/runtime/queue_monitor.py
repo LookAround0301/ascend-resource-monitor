@@ -133,6 +133,44 @@ class QueueMonitor:
         raw=row.get('npu_ids','').split(',')
         return {int(card) for card in raw} if raw and all(re.fullmatch(r'0|[1-9][0-9]?',card) and int(card)<self.capacity for card in raw) else None
 
+    def card_usage(self, tasks, now):
+        """Describe observed processes per reserved card without exposing process identities."""
+        capacity=getattr(self,'capacity',8)
+        fresh=self.fresh_nodes(now);rows=self.current(now)
+        result={}
+        for node in self.nodes:
+            processes=[(row,self.cards(row)) for row in rows if row['node']==node]
+            unknown_cards=any(mapped is None for _,mapped in processes)
+            cards=[]
+            for card in range(capacity):
+                reservations=[task for task in tasks if task['state'] in ('active','ready')
+                              and card in task.get('allocations',{}).get(node,[])]
+                matching=[row for row,mapped in processes if mapped is not None and card in mapped]
+                if len(reservations)>1:status='reservation_conflict'
+                elif node not in fresh:status='reserved_unknown' if reservations else 'unreserved_unknown'
+                elif not reservations:
+                    status='unreserved_used' if matching else 'unreserved_unknown' if unknown_cards else 'unreserved_empty'
+                elif not matching:
+                    status='reserved_unknown' if unknown_cards else 'reserved_empty'
+                else:
+                    task=reservations[0]
+                    allowed={task.get('employee',''),*task.get('allowed_employees',[])}
+                    own=other=unknown=False
+                    for row in matching:
+                        employee=row.get('employee','');name=row.get('name','')
+                        if not EMPLOYEE.fullmatch(employee) or not name or len(name)>100 or any(ord(c)<32 for c in name):
+                            unknown=True
+                        elif employee in allowed:own=True
+                        else:other=True
+                    if not EMPLOYEE.fullmatch(task.get('employee','')):status='reserved_unverified'
+                    elif own and other:status='reserved_mixed'
+                    elif other:status='reserved_other'
+                    elif unknown or unknown_cards:status='reserved_unverified'
+                    else:status='reserved_user'
+                cards.append(status)
+            result[node]=cards
+        return result
+
     @staticmethod
     def shared_cards(row, tasks, continuing=()):
         cards=set()
@@ -219,7 +257,8 @@ class QueueMonitor:
             alerts.append({'id':'over-allocation:'+node+':'+employee+':'+digest,'kind':'over-allocation',
                            'message':name+'（'+employee+'）在 '+node+' 的 '+ '、'.join(map(str,cards))+' 号卡使用超出其预约范围，占用了你的预约资源，请核对。'})
         valid=self.fresh_nodes(now)
-        return {**state,'alerts':alerts,'process_monitor_errors':[node+' 的进程采集暂不可用，暂停插队判断' for node in self.nodes if node not in valid]}
+        return {**state,'alerts':alerts,'card_usage':self.card_usage(state['tasks'],now),
+                'process_monitor_errors':[node+' 的进程采集暂不可用，暂停插队判断' for node in self.nodes if node not in valid]}
 
     def metrics(self, tasks, now=None, continuing=()):
         now=time.time() if now is None else now

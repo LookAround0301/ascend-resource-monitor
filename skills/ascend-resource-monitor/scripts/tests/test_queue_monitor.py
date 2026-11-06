@@ -15,6 +15,16 @@ def inventory(now,employee='u12345678',name='Fixture',stamp=None,npu_ids='0'):
     rows.append({'metric':{'__name__':'a5_process_start_time_seconds','node':'a','pid':'123','process_key':'boot:123:456','employee_id':employee,'employee_name':name,'npu_ids':npu_ids,'control_ref':CID+'@2026-11-04T00:00:00Z','container':'fixture'},'value':[now,'1']})
     return {'status':'success','data':{'resultType':'vector','result':rows}}
 
+def inventory_many(now,processes):
+    rows=[]
+    for suffix,value in [('inventory_success',1),('inventory_truncated',0),('inventory_timestamp_seconds',now),('container_metadata_age_seconds',0),('inventory_processes',len(processes))]:
+        rows.append({'metric':{'__name__':'a5_process_'+suffix,'node':'a'},'value':[now,str(value)]})
+    for index,(employee,name,cards) in enumerate(processes):
+        rows.append({'metric':{'__name__':'a5_process_start_time_seconds','node':'a','pid':str(100+index),
+            'process_key':'boot:'+str(100+index)+':456','employee_id':employee,'employee_name':name,
+            'npu_ids':cards,'control_ref':CID+'@2026-11-04T00:00:00Z','container':'fixture'},'value':[now,'1']})
+    return {'status':'success','data':{'resultType':'vector','result':rows}}
+
 class MonitorTests(unittest.TestCase):
     def setUp(self):
         self.now=time.time();self.monitor=QueueMonitor(['a'],{'metric_prefix':'a5','respect_personnel_whitelist':False},None)
@@ -137,6 +147,45 @@ class MonitorTests(unittest.TestCase):
         self.monitor.ingest(inventory(self.now,stamp=self.now+16),self.now)
         self.assertTrue(self.monitor.decorate(self.state([task]))['process_monitor_errors'])
         self.assertNotIn('已登记使用',self.monitor.metrics([task],self.now))
+
+    def test_card_usage_classifies_reservations_and_processes_per_card(self):
+        owner={'state':'active','employee':'u12345678','allowed_employees':['u12345679'],'allocations':{'a':[0,1,2,3,4]}}
+        ready={'state':'ready','employee':'u12345678','allowed_employees':[],'allocations':{'a':[5]}}
+        rows=[('u12345678','Owner','0,2,6'),('u12345679','Shared','1'),
+              ('u12345670','Other','2,3'),('未知','','5')]
+        self.monitor.ingest(inventory_many(self.now,rows),self.now)
+        status=self.monitor.decorate(self.state([owner,ready]))['card_usage']['a']
+        self.assertEqual(status,['reserved_user','reserved_user','reserved_mixed','reserved_other',
+                                 'reserved_empty','reserved_unverified','unreserved_used','unreserved_empty'])
+        self.assertNotIn('u12345678',str(status))
+
+    def test_card_usage_never_treats_stale_or_unknown_card_inventory_as_empty(self):
+        task={'state':'active','employee':'u12345678','allocations':{'a':[0]}}
+        self.monitor.ingest(inventory_many(self.now,[('u12345678','Owner','unknown')]),self.now)
+        status=self.monitor.decorate(self.state([task]))['card_usage']['a']
+        self.assertEqual(status[0],'reserved_unknown');self.assertTrue(all(x=='unreserved_unknown' for x in status[1:]))
+        stale=self.monitor.card_usage([task],self.now+31)['a']
+        self.assertEqual(stale[0],'reserved_unknown');self.assertTrue(all(x=='unreserved_unknown' for x in stale[1:]))
+
+    def test_card_usage_is_scoped_to_the_specific_reservation(self):
+        own={'state':'active','employee':'u12345678','allocations':{'a':[0]}}
+        other={'state':'active','employee':'u12345670','allocations':{'a':[1]}}
+        self.monitor.ingest(inventory_many(self.now,[('u12345678','Owner','0,1')]),self.now)
+        status=self.monitor.card_usage([own,other],self.now)['a']
+        self.assertEqual(status[:2],['reserved_user','reserved_other'])
+        other['employee']='未知'
+        self.assertEqual(self.monitor.card_usage([own,other],self.now)['a'][1],'reserved_unverified')
+        other['allocations']={'a':[0]}
+        self.assertEqual(self.monitor.card_usage([own,other],self.now)['a'][0],'reservation_conflict')
+
+    def test_card_usage_supports_sixteen_cards_and_chip_mapping(self):
+        mapping={node:{'30':15,'31':15} for node in ['a','b']}
+        monitor=QueueMonitor(['a','b'],{'metric_prefix':'a5','cards_per_node':16,'npu_card_map':mapping},None)
+        monitor.ingest(inventory_many(self.now,[('u12345678','Owner','30,31')]),self.now)
+        task={'state':'active','employee':'u12345678','allocations':{'a':[15]}}
+        status=monitor.card_usage([task],self.now)
+        self.assertEqual(len(status['a']),16);self.assertEqual(status['a'][15],'reserved_user')
+        self.assertEqual(status['a'][0],'unreserved_empty');self.assertTrue(all(x=='unreserved_unknown' for x in status['b']))
     def test_process_panel_join_is_idempotent_and_preserves_cpu_series(self):
         source=dashboard(example());result=add_registration_status(source)
         panel=next(p for p in result['panels'] if p['title']=='NPU 进程归属与工作目录')
