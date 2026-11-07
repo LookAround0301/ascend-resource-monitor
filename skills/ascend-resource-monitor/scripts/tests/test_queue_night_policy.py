@@ -206,6 +206,49 @@ class StrictQueueTests(unittest.TestCase):
         with self.assertRaises(ControlError):self.queue.action(self.user,job,'extend',extension_minutes=20)
         self.queue.action(self.user,job,'extend',extension_minutes=10)
 
+    def test_expired_grace_releases_registration_and_notifies_all_shared_users(self):
+        shared=self.store.user(self.store.register('u23456789','Shared','fixture-password'))
+        waiting=self.store.user(self.store.register('u34567890','Next','fixture-password'))
+        job=self.add(requested_seconds=3600)
+        self.queue.allowed_user(self.user,job,'u23456789','add')
+        row=next(r for r in self.queue.view(self.user)['tasks'] if r['id']==job)
+        self.queue.action(shared,job,'claim',row['offer_id'])
+        next_job=self.queue.enqueue(waiting,{'machine':'a','cards':8,'requested_seconds':3600,'notifications_ready':True})
+        self.clock.return_value+=3600
+        owner_state=self.queue.view(self.user)
+        self.assertEqual(next(r for r in owner_state['tasks'] if r['id']==next_job)['estimated_start'],self.clock.return_value+600)
+        self.assertTrue(any(a.get('repeat_seconds')==60 for a in owner_state['alerts']))
+        self.clock.return_value+=599
+        self.assertTrue(any(r['id']==job for r in self.queue.view(self.user)['tasks']))
+        self.clock.return_value+=1
+        state=self.queue.view(waiting)
+        self.assertFalse(any(r['id']==job for r in state['tasks']))
+        self.assertEqual(next(r for r in state['tasks'] if r['id']==next_job)['state'],'ready')
+        for person in (self.user,shared):
+            self.assertTrue(any(a['kind']=='overtime-release' and '不会自动停止' in a['message'] for a in self.queue.view(person)['alerts']))
+        with self.store.db() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM unified_overtime_releases WHERE job=?',(job,)).fetchone()[0],1)
+
+    def test_extension_updates_next_user_forecast_and_alerts(self):
+        waiting=self.store.user(self.store.register('u34567890','Next','fixture-password'))
+        job=self.add(requested_seconds=3600)
+        row=next(r for r in self.queue.view(self.user)['tasks'] if r['id']==job)
+        self.queue.action(self.user,job,'claim',row['offer_id'])
+        next_job=self.queue.enqueue(waiting,{'machine':'a','cards':8,'requested_seconds':3600,'notifications_ready':True})
+        self.clock.return_value+=3600+60
+        self.queue.action(self.user,job,'extend',extension_minutes=20)
+        state=self.queue.view(waiting)
+        self.assertEqual(next(r for r in state['tasks'] if r['id']==next_job)['estimated_start'],self.clock.return_value+1200+600)
+        self.assertTrue(any(a['kind']=='extended-next' and '20 分钟' in a['message'] for a in state['alerts']))
+
+    def test_disabled_overtime_control_does_not_release_existing_reservation(self):
+        self.queue=UnifiedQueue(self.store,['a','b'],timezone='Asia/Shanghai',strict_nights=True)
+        job=self.add(requested_seconds=3600)
+        row=next(r for r in self.queue.view(self.user)['tasks'] if r['id']==job)
+        self.queue.action(self.user,job,'claim',row['offer_id'])
+        self.clock.return_value+=4200
+        self.assertTrue(any(r['id']==job for r in self.queue.view(self.user)['tasks']))
+
     def test_existing_offer_is_capped_by_fixed_night_on_upgrade(self):
         self.queue=UnifiedQueue(self.store,['a','b'],timezone='Asia/Shanghai')
         self.clock.return_value=self.stamp('2026-11-05T00:50:00')

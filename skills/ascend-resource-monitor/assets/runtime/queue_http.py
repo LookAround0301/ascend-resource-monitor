@@ -130,8 +130,7 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
             return names_cache['names']
 
     strict_nights=settings.get('strict_nights') is True
-    # Ordinary overtime enforcement stays disabled until its release policy is confirmed.
-    unified=UnifiedQueue(store, config['nodes'], settings.get('reservation_buffer_seconds',600), settings.get('timezone','UTC'), settings.get('daily_reset',False), settings.get('cards_per_node',8),strict_nights,False) if settings.get('unified_queue') is True else None
+    unified=UnifiedQueue(store, config['nodes'], settings.get('reservation_buffer_seconds',600), settings.get('timezone','UTC'), settings.get('daily_reset',False), settings.get('cards_per_node',8),strict_nights,settings.get('overtime_control') is True) if settings.get('unified_queue') is True else None
     auto=AutoQueue(store,agent) if not unified and settings.get('auto_match_employee') else None
     monitor=None
     if unified and settings.get('monitor_processes'):

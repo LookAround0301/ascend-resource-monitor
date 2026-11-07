@@ -60,6 +60,10 @@ class UnifiedQueue:
                 id INTEGER PRIMARY KEY,job TEXT NOT NULL,night_job TEXT NOT NULL,at REAL NOT NULL,
                 old_allocations TEXT NOT NULL,new_allocations TEXT NOT NULL)''')
             db.execute('CREATE INDEX IF NOT EXISTS unified_night_reclaims_job ON unified_night_reclaims(job)')
+            db.execute('''CREATE TABLE IF NOT EXISTS unified_overtime_releases (
+                job TEXT PRIMARY KEY, account TEXT NOT NULL, employee TEXT NOT NULL,
+                allowed_employees TEXT NOT NULL, released_at REAL NOT NULL)''')
+            db.execute('CREATE INDEX IF NOT EXISTS unified_overtime_releases_at ON unified_overtime_releases(released_at)')
             db.execute('CREATE TABLE IF NOT EXISTS unified_continuing (node TEXT, employee TEXT, cutoff REAL, PRIMARY KEY(node,employee))')
             db.execute('CREATE TABLE IF NOT EXISTS unified_shared_continuing (node TEXT, employee TEXT, cutoff REAL, cards TEXT, PRIMARY KEY(node,employee))')
             stored_capacity = db.execute("SELECT value FROM unified_meta WHERE key='cards_per_node'").fetchone()
@@ -412,6 +416,17 @@ class UnifiedQueue:
 
     def _schedule(self, db, now):
         self._reset_if_due(db, now)
+        if self.overtime_control:
+            expired=db.execute('''SELECT r.id,r.account,r.allowed_employees,a.employee FROM unified_tasks r
+                JOIN accounts a ON a.id=r.account WHERE r.state='active' AND r.not_before=0
+                AND r.activated>0 AND r.requested_seconds>0 AND r.activated+r.requested_seconds+600<=?''',(now,)).fetchall()
+            for row in expired:
+                db.execute('INSERT OR IGNORE INTO unified_overtime_releases(job,account,employee,allowed_employees,released_at) VALUES (?,?,?,?,?)',
+                           (row['id'],row['account'],row['employee'],row['allowed_employees'],now))
+                db.execute('DELETE FROM confirmations WHERE job=?',(row['id'],))
+                db.execute('DELETE FROM reservations WHERE id=?',(row['id'],))
+                db.execute('DELETE FROM unified_tasks WHERE id=?',(row['id'],))
+            db.execute('DELETE FROM unified_overtime_releases WHERE released_at<?',(now-7*86400,))
         # Upgrade previously offered night reservations without dropping their allocations.
         if self.strict_nights:
             db.execute("UPDATE unified_tasks SET state='queued',night_fixed=1,activated=0,claim_before=0,ready_since=0,offer_id='' WHERE state='ready' AND not_before>0 AND allocations!='{}'")
@@ -721,10 +736,15 @@ class UnifiedQueue:
             reset_row=db.execute("SELECT value FROM unified_meta WHERE key='last_daily_reset'").fetchone()
             reset=json.loads(reset_row[0]) if reset_row else None
             reclaimed={row['job'] for row in db.execute("SELECT DISTINCT job FROM unified_night_reclaims WHERE job IN (SELECT id FROM unified_tasks WHERE state IN ('active','ready','queued'))")}
+            releases=[dict(row) for row in db.execute('SELECT * FROM unified_overtime_releases WHERE released_at>?',(now-86400,))] if self.overtime_control and user else []
         blocked=self.bottlenecks(rows,now)
         dependent,joint=self.overdue_resource_dependencies(rows,now)
         allowances=self.overtime_allowances(rows,now,{**blocked,**dependent})
         alerts=self.alerts(rows,user,now,reset,blocked,dependent,joint)
+        for release in releases:
+            if release['account']==account or user.get('employee','') in json.loads(release['allowed_employees']):
+                alerts.append({'id':'overtime-release:'+release['job'],'kind':'overtime-release',
+                               'message':'预约超时超过 10 分钟，登记已自动释放；容器和实际任务不会自动停止，请自行检查并停止任务。'})
         position = 0
         for row in rows:
             row['mine'] = row.pop('account') == account
