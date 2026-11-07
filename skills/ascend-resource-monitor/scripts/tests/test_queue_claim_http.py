@@ -15,6 +15,7 @@ try:
 except ImportError:
     raise unittest.SkipTest('Claim HTTP tests require aiohttp')
 from queue_http import install_queue,session_cookie_name
+from queue_unified_ui import QUEUE_UI_VERSION
 
 
 class ClaimHTTPTests(unittest.IsolatedAsyncioTestCase):
@@ -275,6 +276,30 @@ class ClaimHTTPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['people'],[{'employee':'u33345673','name':'Alice Smith'}])
         self.token=self.store.register('u99999999','Another','test-password-only')
         await self.post('unified-allowed-search',{'job':job,'query':'张小'},403)
+
+
+class QueueUIVersionHTTPTests(unittest.IsolatedAsyncioTestCase):
+    async def test_old_page_gets_current_rules_and_refresh_notice(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cfg={'nodes':{'a':{},'b':{}},'audit_log':str(Path(directory)/'audit.jsonl'),
+                 'task_queue':{'database':str(Path(directory)/'queue.db'),'unified_queue':True,
+                               'monitor_processes':True,'strict_nights':True,'normal_priority':True}}
+            async def identity(request):return {'admin':False,'user':{'id':1,'login':'fixture'}}
+            async def admin(request):raise AssertionError('No admin operation expected')
+            async def agent(node,path,data=None):raise RuntimeError('not used')
+            app=web.Application();install_queue(app,cfg,identity,admin,agent)
+            client=TestClient(TestServer(app));await client.start_server()
+            try:
+                async def errors(headers=None):
+                    response=await client.get('/a5-queue/api/state',headers=headers)
+                    self.assertEqual(response.status,200,await response.text())
+                    return (await response.json())['process_monitor_errors']
+                old=await errors()
+                self.assertTrue(any('午夜 0 点前' in message and '刷新页面' in message for message in old))
+                current=await errors({'X-A5-Queue-UI-Version':QUEUE_UI_VERSION})
+                self.assertFalse(any('页面已更新' in message for message in current))
+            finally:
+                await client.close()
 
 
 if __name__=='__main__':unittest.main()

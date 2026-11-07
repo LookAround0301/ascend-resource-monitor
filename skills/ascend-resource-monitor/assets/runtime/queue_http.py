@@ -13,7 +13,7 @@ from queue_ui import QUEUE_HTML, QUEUE_JS
 from queue_metrics import render_queue_metrics
 from queue_auto import AutoQueue
 from queue_unified import UnifiedQueue
-from queue_unified_ui import HOME_JS
+from queue_unified_ui import HOME_JS, QUEUE_UI_VERSION
 
 # Read-only compatibility name. New sessions never write or delete this cookie.
 COOKIE='a5_queue_session'
@@ -267,6 +267,8 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                         state['strict_nights']=strict_nights
                         state['overtime_control']=unified.overtime_control
                         state['normal_priority']=unified.normal_priority
+                        if unified.normal_priority and request.headers.get('X-A5-Queue-UI-Version')!=QUEUE_UI_VERSION:
+                            state.setdefault('process_monitor_errors',[]).append('页面已更新，请刷新页面加载最新版本。普通任务须在午夜 0 点前开始，最晚凌晨 1 点自动结束登记；夜间预约接管时清理预约卡位上的非预约容器。')
                         names=await shared_names(employee for row in state['tasks'] for employee in row['allowed_employees'])
                         for row in state['tasks']:
                             row['allowed_people']=[{'employee':employee,'name':names.get(employee,'')} for employee in row['allowed_employees']]

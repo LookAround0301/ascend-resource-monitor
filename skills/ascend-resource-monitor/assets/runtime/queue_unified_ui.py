@@ -1,12 +1,14 @@
 """Queue controls mounted in the Grafana homepage, inside an isolated shadow DOM."""
 import json
 
+QUEUE_UI_VERSION = 'a5-avoid-ranges-2026-11-07'
+
 HOME_FRAGMENT = '''<style>
 :host{display:block;height:100%;overflow:auto;color:#d8d9da;font:14px system-ui,sans-serif}*{box-sizing:border-box}.row{display:flex;gap:10px;align-items:end;flex-wrap:wrap}section{padding:10px 4px;border-bottom:1px solid #34383f}h3{font-size:15px;margin:0 0 10px}label{display:grid;gap:5px}input,select{background:#111217;color:#eee;border:1px solid #555b66;border-radius:4px;padding:7px;font:inherit;min-width:110px}input[type=password]{max-width:200px}button{font:inherit;border:0;border-radius:4px;padding:8px 12px;background:#316bd6;color:#fff;cursor:pointer}.secondary{background:#343f51}button:disabled{opacity:.45;cursor:not-allowed}.hidden{display:none!important}p{margin:8px 0;line-height:1.5;color:#adb9cb}.good{color:#7ed9a9}.error{color:#ff7886}.warning{color:#ffb457}.scroll{overflow:auto}table{width:100%;border-collapse:collapse}th,td{text-align:left;border-bottom:1px solid #34383f;padding:9px 7px;vertical-align:top;white-space:nowrap}th{color:#adb9cb;font-weight:500}small{color:#a4b1c4}.allowed-users{white-space:normal;max-width:320px;overflow-wrap:anywhere;line-height:1.5;margin:6px 0;color:#c6d2e0}td button{padding:6px 9px;margin:0 5px 4px 0}#message:empty{display:none}
 .allowed-editor{white-space:normal;width:210px;margin:7px 0}.allowed-chips{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:5px}.allowed-chips .allowed-chip{margin:0;padding:4px 7px;background:#343f51;font-size:12px}.allowed-input{width:100%;min-width:0;padding:6px}.allowed-results{display:grid;gap:3px;margin-top:4px}.allowed-results button{margin:0;text-align:left;background:#343f51;font-size:12px}.allowed-hint{display:block;margin-top:4px;white-space:normal;font-size:12px;color:#a4b1c4}
 .standby-status{white-space:normal;min-width:200px;max-width:220px;line-height:1.45;overflow-wrap:anywhere}
 .bottleneck{color:#f2d66d}
-.avoid-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(66px,1fr));gap:5px;margin:8px 0}.avoid-grid button{padding:6px 3px;background:#313b4a;font-size:12px}.avoid-grid button.selected{background:#a65b32;color:#fff}.avoid-panel{white-space:normal;min-width:300px;max-width:780px}.meal-start{color:#ffbb65;font-weight:600}
+.avoid-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:8px;margin:10px 0}.avoid-grid button{padding:10px 8px;margin:0;background:#313b4a;font-size:14px;white-space:nowrap}.avoid-grid button.selected{background:#a65b32;color:#fff}.avoid-panel{white-space:normal;width:100%;max-width:1100px}.avoid-row td{white-space:normal;background:#1b222c;padding:12px 14px}.avoid-panel small{font-size:13px;line-height:1.5}.meal-start{color:#ffbb65;font-weight:600}
 .queue-group td{padding:12px 8px;background:#202832;color:#d4e0ed;font-weight:600}.queue-group.night td{background:#242b42;color:#d8ddff}.queue-group small{margin-left:12px;font-weight:400}.night-task{background:rgba(95,105,176,.08)}.night-badge{display:inline-block;margin-right:7px;padding:2px 6px;border-radius:4px;background:#434e80;color:#e7eaff;font-size:12px;line-height:1.3}.queue-empty td{color:#a4b1c4}
 .card-grid{display:grid;gap:8px}.card-node{display:grid;grid-template-columns:85px minmax(0,1fr);gap:10px;align-items:center}.card-list{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:8px}.card-tile{border:1px solid #466174;border-radius:8px;padding:9px 6px;background:#1b3038;min-width:0;text-align:center;white-space:normal;overflow-wrap:anywhere}.card-tile.occupied{background:#433332;border-color:#86594e}.card-tile.buffer{background:#423b28;border-color:#8d7949}.card-tile strong,.card-tile span{display:block}.card-tile span{font-size:12px;margin-top:4px;color:#c1cbd5}@media(max-width:700px){.card-node{grid-template-columns:1fr}.card-list{grid-template-columns:repeat(4,minmax(0,1fr))}}
 .card-tile.reserved-user{background:#193b32;border-color:#3f866a}.card-tile.reserved-empty{background:#1d324b;border-color:#4d729a}.card-tile.reserved-other,.card-tile.reserved-mixed{background:#492e32;border-color:#aa5960}.card-tile.unreserved-used{background:#483923;border-color:#ac8748}.card-tile.unreserved-empty{background:#26332d;border-color:#617866}.card-tile.uncertain{background:#30323a;border-color:#757b89}.card-tile .card-reservation{color:#e0e6ef}.card-tile .card-observation{color:#f0f2f6}.card-tile .card-forecast{color:#b6c7df}
@@ -28,7 +30,7 @@ HOME_JS = r'''"use strict";
   const $=id=>root.getElementById(id);
   let machineNodes='',state=null,polling=false,stopped=false,submitting=false,verifiedUser=null,verifying=false,version=0,lastRefreshAt=0,composingAllowed=false,autoCheckUser=null;
   let failure='';const delivered=new Map(),openNotices=new Set(),alertSeen=new Set(),overdueNotices=new Map(),bottleneckStates=new Map(),allowedEditors=new Map(),avoidEditors=new Map();
-  const initialAvoid=new Set([24,25,26,27,35,36,37,38]);
+  const defaultAvoid=[24,25,26,27,35,36,37,38],initialAvoid=new Set(defaultAvoid);
   function clearAllowedEditors(){for(const editor of allowedEditors.values())clearTimeout(editor.timer);allowedEditors.clear();}
   function expandPanel(){
    const item=host.closest('.react-grid-item'),grid=item&&item.parentElement,panel=host.closest('section[data-testid]');
@@ -69,7 +71,7 @@ HOME_JS = r'''"use strict";
    note.textContent=!registered()?'登录后开启并验证桌面通知，才能加入队列。':!supported()?'当前浏览器或访问地址不支持桌面通知，请使用本机隧道或受信任的 HTTPS。':verifying?'正在发送测试桌面通知，请稍候。':ready()?'桌面通知已验证，可以预约。请保持主页打开并登录。':failure|| (permission()==='denied'?'通知已被阻止，请在浏览器站点设置中允许通知，再重新验证。':'请先点击“开启并验证桌面通知”；验证通过后才可加入队列。');
   }
   async function api(name,data){
-   const response=await fetch('/a5-queue/api/'+name,{method:data===undefined?'GET':'POST',credentials:'same-origin',cache:'no-store',headers:data===undefined?{}:{'Content-Type':'application/json','X-A5-Queue':'queue-v1'},body:data===undefined?undefined:JSON.stringify(data)});
+   const response=await fetch('/a5-queue/api/'+name,{method:data===undefined?'GET':'POST',credentials:'same-origin',cache:'no-store',headers:data===undefined?{'X-A5-Queue-UI-Version':__QUEUE_UI_VERSION__}:{'Content-Type':'application/json','X-A5-Queue':'queue-v1'},body:data===undefined?undefined:JSON.stringify(data)});
    const body=await response.json();if(!response.ok)throw new Error(body.message||'操作失败');return body;
   }
   function invalidate(text){if(registered())saveVerification(state.user.id,false);verifiedUser=null;failure=text;gate();}
@@ -93,9 +95,9 @@ HOME_JS = r'''"use strict";
   function date(value){return value?new Date(value*1000).toLocaleString('zh-CN',{timeZone:(state&&state.reservation_window&&state.reservation_window.timezone)||'Asia/Shanghai'}):'—';}
   function dateMinute(value){return value?new Intl.DateTimeFormat('zh-CN',{timeZone:(state&&state.reservation_window&&state.reservation_window.timezone)||'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(new Date(value*1000)):'—';}
   function renderAvoidGrid(container,selected){
-   container.replaceChildren();container.append(element('small','按北京时间每天重复；点亮表示不在该时段开始。'));
+   container.replaceChildren();container.append(element('small','按北京时间每天重复；点亮表示该时间范围内不会开始分配，例如 12:00–12:30 包含 12:00，不包含 12:30。灰色表示可以开始。'));
    const grid=element('div','');grid.className='avoid-grid';
-   for(let i=0;i<48;i++){const label=String(Math.floor(i/2)).padStart(2,'0')+':'+(i%2?'30':'00'),b=element('button',label);b.type='button';b.className=selected.has(i)?'selected':'';b.setAttribute('aria-pressed',String(selected.has(i)));b.onclick=()=>{if(selected.has(i))selected.delete(i);else selected.add(i);b.classList.toggle('selected',selected.has(i));b.setAttribute('aria-pressed',String(selected.has(i)));};grid.append(b);}container.append(grid);
+   for(let i=18;i<48;i++){const time=n=>String(Math.floor(n/2)).padStart(2,'0')+':'+(n%2?'30':'00'),label=time(i)+'–'+time(i+1),b=element('button',label);b.type='button';b.className=selected.has(i)?'selected':'';b.setAttribute('aria-pressed',String(selected.has(i)));b.onclick=()=>{if(selected.has(i))selected.delete(i);else selected.add(i);b.classList.toggle('selected',selected.has(i));b.setAttribute('aria-pressed',String(selected.has(i)));};grid.append(b);}container.append(grid);
   }
   renderAvoidGrid($('avoid-form'),initialAvoid);
   $('avoid-toggle').onclick=()=>{$('avoid-form').classList.toggle('hidden');};
@@ -183,7 +185,7 @@ HOME_JS = r'''"use strict";
    if(composingAllowed)return;
    $('account-status').textContent=state.user?'已登录：'+(state.user.employee||'')+' '+state.user.name:'未登录';
    $('account-form').classList.toggle('hidden',registered());$('logout').classList.toggle('hidden',!registered());gate();notify();resourceFields();timeLimits();renderCards();
-   if(state.strict_nights)$('queue-rules').textContent=state.normal_priority?'普通任务须在午夜 0 点前开始，最晚凌晨 1 点结束；超时最多宽限 10 分钟，但凌晨 1 点须释放登记。普通任务优先，未开始的夜间预约可能顺延，机器和卡位保持不变；已进入接管或运行的夜间任务不会被新普通任务中断。夜间接管会按预约卡位清理非预约容器。':'普通任务须在凌晨 1 点前开始，时长超过凌晨 2 点的部分会自动截短。'+(state.overtime_control?'普通任务超时后有 10 分钟可延长，未延长则自动释放登记，容器和任务不会被停止。':'')+'夜间预约提交后机器、卡位和时段固定；到期会强制停止占用预约卡的非预约容器，夜间任务结束后也会停止其超时容器。异常时资源接管待核实。';
+   if(state.strict_nights)$('queue-rules').textContent=state.normal_priority?'普通任务须在午夜 0 点前开始，最晚凌晨 1 点自动结束登记，无需手动操作；超时最多宽限 10 分钟。普通任务优先，未开始的夜间预约可能顺延，机器和卡位保持不变；已进入接管或运行的夜间任务不会被新普通任务中断。夜间预约接管时会清理其预约卡位上的非预约容器；未被夜间预约接管的卡不会因凌晨 1 点自动清理容器。':'普通任务须在凌晨 1 点前开始，时长超过凌晨 2 点的部分会自动截短。'+(state.overtime_control?'普通任务超时后有 10 分钟可延长，未延长则自动释放登记，容器和任务不会被停止。':'')+'夜间预约提交后机器、卡位和时段固定；到期会强制停止占用预约卡的非预约容器，夜间任务结束后也会停止其超时容器。异常时资源接管待核实。';
    const alerts=$('queue-alerts');alerts.replaceChildren();for(const alert of state.alerts||[]){if(alert.kind==='unregistered')continue;const p=element('p',alert.message);p.className=alert.kind==='reset'?'good':alert.kind==='overdue-nonblocking'?'warning':'error';alerts.append(p);}for(const text of state.process_monitor_errors||[])alerts.append(element('p',text));alerts.classList.toggle('hidden',!alerts.children.length);
    const body=$('tasks'),active=root.activeElement,focusJob=active&&active.dataset.allowedFor,selection=focusJob?[active.selectionStart,active.selectionEnd]:null;body.replaceChildren();
    const visible=state.tasks.filter(row=>['queued','ready','active'].includes(row.state)),groupPositions=new Map(),counts=[0,0];
@@ -213,8 +215,8 @@ HOME_JS = r'''"use strict";
     if(state.user&&state.user.admin&&row.state==='queued'){button('置顶','priority-top');actions.lastElementChild.disabled=!row.can_raise_priority;button('↑ 调高','priority-up');actions.lastElementChild.disabled=!row.can_raise_priority;}
     if(state.user&&(row.mine||state.user.admin)&&['queued','ready'].includes(row.state)){button('↓ 调低','priority-down');actions.lastElementChild.disabled=!row.can_lower_priority;}
     if(state.strict_nights&&!night&&state.user&&(row.mine||state.user.admin)&&['queued','ready'].includes(row.state)){
-     const edit=element('button',avoidEditors.has(row.id)?'收起避开时段':'修改避开时段');edit.type='button';edit.className='secondary';edit.onclick=()=>{if(avoidEditors.has(row.id))avoidEditors.delete(row.id);else avoidEditors.set(row.id,new Set(row.avoid_slots||[]));render();};actions.append(edit);
-     if(avoidEditors.has(row.id)){const panel=element('div','');panel.className='avoid-panel';const selected=avoidEditors.get(row.id);renderAvoidGrid(panel,selected);const save=element('button','保存避开时段');save.type='button';save.onclick=async()=>{save.disabled=true;try{const result=await api('unified-avoid',{job:row.id,avoid_slots:[...selected],confirmed:true});avoidEditors.delete(row.id);report(result.message);await refresh();}catch(e){report(e.message,true);}finally{save.disabled=false;}};panel.append(save);actions.append(panel);}
+     const edit=element('button',avoidEditors.has(row.id)?'收起避开时段':'修改避开时段');edit.type='button';edit.className='secondary';edit.onclick=()=>{if(avoidEditors.has(row.id))avoidEditors.delete(row.id);else avoidEditors.set(row.id,new Set((row.avoid_slots||[]).filter(slot=>slot>=18)));render();};actions.append(edit);
+     if(avoidEditors.has(row.id)){const panel=element('div','');panel.className='avoid-panel';const selected=avoidEditors.get(row.id);renderAvoidGrid(panel,selected);if((row.avoid_slots||[]).some(slot=>slot<18))panel.append(element('small','保存后会移除旧的 00:00–09:00 避开选项。'));const save=element('button','保存避开时段');save.type='button';save.onclick=async()=>{save.disabled=true;try{const result=await api('unified-avoid',{job:row.id,avoid_slots:[...selected],confirmed:true});avoidEditors.delete(row.id);report(result.message);await refresh();}catch(e){report(e.message,true);}finally{save.disabled=false;}};panel.append(save);const editRow=element('tr',''),editCell=element('td','');editRow.className='avoid-row';editCell.colSpan=9;editCell.append(panel);editRow.append(editCell);body.append(editRow);}
     }
     if(state.user&&row.mine){
      const allowed=row.allowed_employees||[];let editor=allowedEditors.get(row.id);if(!editor){editor={query:'',matches:[],loading:false,saving:false,error:'',seq:0,timer:null,open:false,names:{},namesKey:'',namesLoading:false,namesNext:0};allowedEditors.set(row.id,editor);}
@@ -244,7 +246,7 @@ HOME_JS = r'''"use strict";
   $('logout').onclick=async()=>{try{await api('logout',{});verifiedUser=null;closeNotices();await refresh();}catch(err){report(err.message,true);}};
   $('machine').onchange=resourceFields;$('cards').onchange=resourceFields;
   $('kind').onchange=timeLimits;$('hours').onchange=timeLimits;$('minutes').onchange=timeLimits;for(const part of ['date','hour','minute'])$('start-'+part).onchange=timeLimits;timeLimits();
-  $('join-form').onsubmit=async e=>{e.preventDefault();timeLimits();if(!$('join-form').reportValidity())return;if(!ready()){gate();report('请先开启桌面通知并通过测试，才能加入队列。',true);return;}const night=$('kind').value==='night';submitting=true;gate();try{report((await api('enqueue',{cards_per_node:state.cards_per_node||8,machine:$('machine').value,cards:Number($('cards').value),night,not_before:night?selectedStart():0,requested_seconds:Number($('hours').value)*3600+Number($('minutes').value)*60,avoid_slots:state.strict_nights&&!night?[...initialAvoid]:[],notifications_ready:true})).message);await refresh();}catch(err){report(err.message,true);}finally{submitting=false;gate();}};
+  $('join-form').onsubmit=async e=>{e.preventDefault();timeLimits();if(!$('join-form').reportValidity())return;if(!ready()){gate();report('请先开启桌面通知并通过测试，才能加入队列。',true);return;}const night=$('kind').value==='night';submitting=true;gate();try{report((await api('enqueue',{cards_per_node:state.cards_per_node||8,machine:$('machine').value,cards:Number($('cards').value),night,not_before:night?selectedStart():0,requested_seconds:Number($('hours').value)*3600+Number($('minutes').value)*60,avoid_slots:state.strict_nights&&!night?[...initialAvoid]:[],notifications_ready:true})).message);initialAvoid.clear();for(const slot of defaultAvoid)initialAvoid.add(slot);renderAvoidGrid($('avoid-form'),initialAvoid);await refresh();}catch(err){report(err.message,true);}finally{submitting=false;gate();}};
   function refreshDelay(){
    const control=document.querySelector('button[aria-label^="Choose refresh time interval"]');
    if(control&&control.textContent.trim()==='Off')return 0;
@@ -260,3 +262,4 @@ HOME_JS = r'''"use strict";
 '''
 
 HOME_JS = HOME_JS.replace('__FRAGMENT__', json.dumps(HOME_FRAGMENT, ensure_ascii=False))
+HOME_JS = HOME_JS.replace('__QUEUE_UI_VERSION__', json.dumps(QUEUE_UI_VERSION))
