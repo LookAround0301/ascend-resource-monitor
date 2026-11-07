@@ -28,7 +28,7 @@ def plan(nodes, busy, jobs, now, buffer_seconds=600):
     if buffer_seconds < 0 or not math.isfinite(now):
         raise ValueError('invalid planning time or buffer')
     intervals = []
-    fixed_night_starts = []
+    fixed_nights = []
     for item in busy:
         node = item['node']
         cards = tuple(item['cards'])
@@ -41,7 +41,7 @@ def plan(nodes, busy, jobs, now, buffer_seconds=600):
             raise ValueError('invalid busy interval')
         intervals.append((node, frozenset(cards), item['start'], end, direct_end))
         if item.get('fixed_night'):
-            fixed_night_starts.append(item['start'])
+            fixed_nights.append((node, frozenset(cards), item['start']))
 
     def free(node, start, end, night):
         used = set()
@@ -116,13 +116,21 @@ def plan(nodes, busy, jobs, now, buffer_seconds=600):
                 if seconds<60:
                     continue
             durations={seconds}
+            truncation_sources={}
             if job.get('clip_finish_before'):
-                durations.update(math.floor(begin-start-buffer_seconds) for begin in fixed_night_starts
-                                 if begin>start and 60<=begin-start-buffer_seconds<seconds)
+                for node,cards,begin in fixed_nights:
+                    duration=math.floor(begin-start-buffer_seconds)
+                    if begin>start and 60<=duration<seconds:
+                        durations.add(duration)
+                        truncation_sources.setdefault(duration,[]).append((node,cards))
             for candidate_seconds in sorted(durations,reverse=True):
                 if job.get('finish_before') and start+candidate_seconds>job['finish_before']:
                     continue
                 available=options(job,start,candidate_seconds)
+                if candidate_seconds<seconds:
+                    available=[allocation for allocation in available
+                               if any(cards.intersection(allocation.get(node,()))
+                                      for node,cards in truncation_sources[candidate_seconds])]
                 if available:
                     chosen=(start,available[0],candidate_seconds)
                     break

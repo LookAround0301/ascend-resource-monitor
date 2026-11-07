@@ -33,6 +33,24 @@ class NightPolicyTests(unittest.TestCase):
         self.assertEqual(result[1]['seconds'],7200)
         self.assertGreaterEqual(result[1]['start'],9200)
 
+    def test_unrelated_night_reservation_cannot_shorten_ordinary_task(self):
+        nodes={'a':list(range(8)),'b':list(range(8))}
+        busy=[{'node':'a','cards':list(range(1,8)),'start':100,'end':1000},
+              {'node':'b','cards':list(range(8)),'start':1000,'end':2000,'fixed_night':True}]
+        jobs=[{'id':'earlier','cards':8,'seconds':600,'allowed_nodes':['a'],'start_before':10000,'clip_finish_before':11000},
+              {'id':'later','cards':1,'seconds':1200,'allowed_nodes':['a'],'start_before':10000,'clip_finish_before':11000}]
+        result=plan(nodes,busy,jobs,100)
+        self.assertEqual(result[1]['seconds'],1200)
+        self.assertGreaterEqual(result[1]['start'],2200)
+
+    def test_actual_overlapping_night_reservation_still_clips(self):
+        nodes={'a':list(range(8)),'b':list(range(8))}
+        busy=[{'node':'a','cards':[0],'start':1000,'end':2000,'fixed_night':True}]
+        job={'id':'normal','cards':8,'seconds':1200,'allowed_nodes':['a'],'start_before':10000,'clip_finish_before':11000}
+        result=plan(nodes,busy,[job],100)
+        self.assertEqual(result[0]['seconds'],300)
+        self.assertEqual(result[0]['start'],100)
+
     def test_exact_fixed_windows_and_dual_capacity(self):
         nodes={'a':list(range(8)),'b':list(range(8))}
         first=reserve_night(nodes,[],1000,3600,8,False,'a')
