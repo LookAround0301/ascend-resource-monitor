@@ -11,6 +11,10 @@ def guard_page(user, dashboard_uid):
 <label>姓名<input id="name" maxlength="120" placeholder="填写姓名" required></label>
 <button id="add-button" type="submit">添加到白名单</button></form>
 <p class="help">保存后同步到两台服务器。名单内人员跳过自动拦截；已停止的容器不会自动重启。</p></section>
+<section id="urgent-panel" hidden><h2>紧急用户名单</h2>
+<p class="help">名单内人员可将自己的普通预约设为紧急，等待任务按设置紧急的先后顺序排在其他普通任务之前。已分配或正在使用的任务不受影响。移出名单后不能再新增紧急标记，已有标记保留。</p>
+<p class="help">在上方人员表中点击“设为紧急用户”；在下方名单中可移除权限。</p>
+<p id="urgent-health" role="status"></p><div id="urgent-people"></div></section>
 <section id="guard-panel"><h2>自动停止容器</h2>
 <p class="help">开启前请先配置并核对两台服务器的人员白名单。开启后，符合自动拦截规则的容器可能立即被停止；关闭后不再自动停止容器，已有标记保留。</p>
 <p id="guard-status" role="status">正在读取自动停止状态…</p>
@@ -39,7 +43,7 @@ button.remove{background:#8c3543;padding:7px 13px}td:last-child{width:95px}
 
 GUARD_JS = '''"use strict";
 const $=id=>document.getElementById(id);
-let people=[],busy=false,polling=false,guardNodes=[],rosterReady=false;
+let people=[],busy=false,polling=false,guardNodes=[],rosterReady=false,urgentPeople=[],urgentAvailable=false;
 function renderGuard(){
  if(!$('guard-panel'))return;
  const valid=guardNodes.length>0&&guardNodes.every(n=>typeof n.enabled==='boolean'&&!n.error);
@@ -51,9 +55,21 @@ function renderGuard(){
 function render(){
  const query=$('search').value.trim().toLowerCase(),rows=people.filter(p=>(p.employee+' '+p.name).toLowerCase().includes(query));
  $('people').replaceChildren();
- for(const person of rows){const tr=document.createElement('tr');for(const key of ['employee','name']){const td=document.createElement('td');td.textContent=person[key];tr.append(td);}const td=document.createElement('td'),button=document.createElement('button');button.textContent='删除';button.className='remove';button.disabled=busy;button.onclick=()=>change('remove',person);td.append(button);tr.append(td);$('people').append(tr);}
+ for(const person of rows){const tr=document.createElement('tr');for(const key of ['employee','name']){const td=document.createElement('td');td.textContent=person[key];tr.append(td);}const td=document.createElement('td'),button=document.createElement('button');button.textContent='删除';button.className='remove';button.disabled=busy;button.onclick=()=>change('remove',person);td.append(button);if(urgentAvailable&&!urgentPeople.some(p=>p.employee===person.employee)){const add=document.createElement('button');add.textContent='设为紧急用户';add.disabled=busy;add.onclick=()=>changeUrgent(person,true);td.append(add);}tr.append(td);$('people').append(tr);}
  if(!rows.length){const tr=document.createElement('tr'),td=document.createElement('td');td.colSpan=3;td.textContent=query?'没有找到匹配的人员':'暂无人员记录';tr.append(td);$('people').append(tr);}
  $('count').textContent='显示 '+rows.length+' / 共 '+people.length+' 人';
+ if($('urgent-people')){const list=$('urgent-people');list.replaceChildren();for(const person of urgentPeople){const row=document.createElement('p'),button=document.createElement('button');row.append(document.createTextNode(person.employee+' / '+person.name+' '));button.textContent='移除紧急权限';button.className='remove';button.disabled=busy;button.onclick=()=>changeUrgent(person,false);row.append(button);list.append(row);}if(!urgentPeople.length)list.textContent='暂无紧急用户';}
+}
+async function refreshUrgent(){
+ if(!$('urgent-panel'))return;
+ try{const response=await fetch('/a5-queue/api/urgent-users',{credentials:'same-origin',cache:'no-store'});if(response.status===404){urgentAvailable=false;return;}const data=await response.json();if(!response.ok||!Array.isArray(data.people))throw Error(data.message||'紧急名单读取失败');urgentPeople=data.people;urgentAvailable=true;$('urgent-panel').hidden=false;$('urgent-health').textContent='';}
+ catch(e){urgentAvailable=false;$('urgent-panel').hidden=false;$('urgent-health').textContent='紧急名单读取失败：'+e.message;$('urgent-health').className='error';}finally{render();}
+}
+async function changeUrgent(person,enabled){
+ if(busy||!window.confirm((enabled?'设为紧急用户':'移除紧急权限')+'？\\n工号：'+person.employee+'\\n姓名：'+person.name))return;
+ busy=true;render();$('result').textContent='正在更新紧急用户名单…';
+ try{const response=await fetch('/a5-queue/api/urgent-users',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-A5-Queue':'queue-v1'},body:JSON.stringify({employee:person.employee,enabled,confirmed:true})});const data=await response.json();$('result').textContent=data.message;$('result').className=response.ok?'good':'error';await refreshUrgent();}
+ catch(e){$('result').textContent='连接中断，请刷新名单核实后重试。';$('result').className='error';}finally{busy=false;render();}
 }
 async function refresh(){
  if(polling)return;polling=true;
@@ -69,7 +85,7 @@ async function refresh(){
   if(!guardResponse.ok||!Array.isArray(guardData.nodes))throw Error(guardData.message||'自动停止状态读取失败');
   guardNodes=guardData.nodes;
  }catch(e){rosterReady=false;guardNodes=[];$('health').textContent='读取失败，请稍后刷新：'+e.message;$('health').className='error';}
- finally{polling=false;renderGuard();}
+ finally{polling=false;renderGuard();await refreshUrgent();}
 }
 $('search').addEventListener('input',render);
 async function change(action,person){

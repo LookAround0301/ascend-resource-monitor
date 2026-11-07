@@ -19,6 +19,9 @@ The existing container guard state and administrator-only control APIs remain in
   unconfirmed nodes, retain successful additions, and allow the same ID/name to be retried.
 - A recognized employee avoids automatic interception, including existing marks whose recorded employee IDs are all in the valid roster. Marks remain stored; removing the person restores enforcement. No container is automatically started.
 - The administrator can enable or disable automatic container stopping from the personnel page. New deployments start disabled; existing explicit settings are preserved during upgrade. Enabling requires readable synchronized rosters on all nodes. The switch persists per node, reports partial failures and does not erase guard marks.
+- Administrators can grant or remove urgent-queue permission for people already present with matching names on both nodes. The permission list is stored centrally in the queue database and is initially empty. Removing permission prevents future urgent markings but leaves previously marked tasks unchanged.
+- Authorized applicants can mark their own normal waiting or offered task as urgent, either when submitting or afterwards. Urgent tasks enter ahead of ordinary waiters, ordered by when they were marked; active tasks and existing resource offers are not preempted. Night reservations cannot be marked urgent. Cancelling a mark moves that task behind ordinary waiters.
+- Personal queue login currently uses an employee ID and name without an independent identity credential. Urgent permissions therefore follow that account identity and do not prevent someone who knows another person's details from impersonating them.
 
 ## Upgrade and validation
 

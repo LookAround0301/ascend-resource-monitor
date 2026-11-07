@@ -51,6 +51,7 @@ class UnifiedQueue:
                                      ('missed_claims', 'INTEGER NOT NULL DEFAULT 0'),
                                      ('allowed_employees', "TEXT NOT NULL DEFAULT '[]'"),
                                      ('avoid_slots', "TEXT NOT NULL DEFAULT '[]'"),
+                                     ('urgent', 'INTEGER NOT NULL DEFAULT 0'),
                                      ('extension_minutes', 'INTEGER NOT NULL DEFAULT 0'),
                                      ('extension_at', 'REAL NOT NULL DEFAULT 0'),
                                      ('night_requested_start', 'REAL NOT NULL DEFAULT 0'),
@@ -61,6 +62,7 @@ class UnifiedQueue:
                 if name not in columns:
                     db.execute('ALTER TABLE unified_tasks ADD COLUMN '+name+' '+definition)
             db.execute('CREATE TABLE IF NOT EXISTS unified_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+            db.execute('CREATE TABLE IF NOT EXISTS unified_urgent_users (employee TEXT PRIMARY KEY, name TEXT NOT NULL)')
             db.execute('''CREATE TABLE IF NOT EXISTS unified_night_reclaims (
                 id INTEGER PRIMARY KEY,job TEXT NOT NULL,night_job TEXT NOT NULL,at REAL NOT NULL,
                 old_allocations TEXT NOT NULL,new_allocations TEXT NOT NULL)''')
@@ -274,10 +276,10 @@ class UnifiedQueue:
             return
         # Move missed offers back within their own task type. Keep the slots
         # of other task types in place so expiry cannot reshuffle their priority.
-        groups = {False: [], True: []}
+        groups = {(night,urgent): [] for night in (False,True) for urgent in (False,True)}
         for row in pending:
-            groups[bool(row['not_before'])].append(row)
-        for night, group in groups.items():
+            groups[(bool(row['not_before']),bool(row['urgent']))].append(row)
+        for key, group in groups.items():
             order, i = [], 0
             while i < len(group):
                 if group[i]['id'] not in missed:
@@ -289,9 +291,9 @@ class UnifiedQueue:
                     order.append(group[i]); order.extend(group[start:i]); i += 1
                 else:
                     order.extend(group[start:i])
-            groups[night] = iter(order)
+            groups[key] = iter(order)
         for position, slot in enumerate(pending, 1):
-            row = next(groups[bool(slot['not_before'])])
+            row = next(groups[(bool(slot['not_before']),bool(slot['urgent']))])
             db.execute('UPDATE unified_tasks SET queue_order=? WHERE id=?', (position, row['id']))
 
     def tick(self):
@@ -827,6 +829,7 @@ class UnifiedQueue:
             reset=json.loads(reset_row[0]) if reset_row else None
             reclaimed={row['job'] for row in db.execute("SELECT DISTINCT job FROM unified_night_reclaims WHERE job IN (SELECT id FROM unified_tasks WHERE state IN ('active','ready','queued'))")}
             releases=[dict(row) for row in db.execute('SELECT * FROM unified_overtime_releases WHERE released_at>?',(now-86400,))] if self.overtime_control and user else []
+            can_urgent=bool(user and user.get('employee') and db.execute('SELECT 1 FROM unified_urgent_users WHERE employee=?',(user['employee'],)).fetchone())
         blocked=self.bottlenecks(rows,now)
         dependent,joint=self.overdue_resource_dependencies(rows,now)
         allowances=self.overtime_allowances(rows,now,{**blocked,**dependent})
@@ -889,11 +892,11 @@ class UnifiedQueue:
             row['machine'] = 'dual' if row['dual'] else row['fixed_node'] or 'auto'
             row['total_cards'] = row['cards'] * (2 if row['dual'] else 1)
         for row in rows:
-            waiting=[r for r in rows if r['state']=='queued' and bool(r['not_before'])==bool(row['not_before'])]
-            pending=[r for r in rows if r['state'] in ('queued','ready') and bool(r['not_before'])==bool(row['not_before'])]
-            row['can_raise_priority']=bool(user and user.get('admin') and row in waiting and waiting.index(row)>0)
-            row['can_lower_priority']=bool(user and (row['mine'] or user.get('admin')) and row in pending and pending.index(row)<len(pending)-1)
-        return {'user': user, 'tasks': rows, 'nodes': list(self.nodes), 'cards_per_node': self.capacity, 'server_time': now, 'unified': True,
+            waiting=[r for r in rows if r['state']=='queued' and bool(r['not_before'])==bool(row['not_before']) and r['urgent']==row['urgent']]
+            pending=[r for r in rows if r['state'] in ('queued','ready') and bool(r['not_before'])==bool(row['not_before']) and r['urgent']==row['urgent']]
+            row['can_raise_priority']=bool(user and user.get('admin') and not row['urgent'] and row in waiting and waiting.index(row)>0)
+            row['can_lower_priority']=bool(user and not row['urgent'] and (row['mine'] or user.get('admin')) and row in pending and pending.index(row)<len(pending)-1)
+        return {'user': user, 'tasks': rows, 'nodes': list(self.nodes), 'cards_per_node': self.capacity, 'server_time': now, 'unified': True, 'can_urgent':can_urgent,
                 'alerts':alerts, 'daily_reset_enabled':self.daily_reset, 'last_daily_reset':reset,
                 'reservation_buffer_seconds': self.buffer,
                 'reservation_window': {'start': now, 'end': self.cutoff(now), 'timezone': str(self.timezone),
@@ -907,6 +910,9 @@ class UnifiedQueue:
             raise ControlError(409, '卡位配置已更新，请刷新页面后重新预约')
         cards, seconds = data.get('cards'), data.get('requested_seconds')
         dual, night, start = data.get('dual', False), data.get('night', False), data.get('not_before', 0)
+        urgent=data.get('urgent',False)
+        if type(urgent) is not bool:raise ControlError(400,'无效紧急标记')
+        if urgent and night:raise ControlError(400,'只有普通任务可以设为紧急')
         now = time.time()
         fixed_node = ''
         if type(dual) is not bool or type(night) is not bool or type(cards) is not int:
@@ -943,6 +949,8 @@ class UnifiedQueue:
         if not night and max(now, start) + seconds > finish_before:
             raise ControlError(400, '预约开始和预计结束时间都必须在次日上午 9 点前（含 9 点）')
         with self.store.db() as db:
+            if urgent and not db.execute('SELECT 1 FROM unified_urgent_users WHERE employee=?',(user.get('employee',''),)).fetchone():
+                raise ControlError(403,'当前账号不在紧急用户名单中')
             self._reset_if_due(db, now)
             count = db.execute("SELECT COUNT(*) FROM unified_tasks WHERE account=? AND state IN ('queued','ready','active')", (user['id'],)).fetchone()[0]
             if count >= 5:
@@ -972,8 +980,45 @@ class UnifiedQueue:
                 db.execute('UPDATE unified_tasks SET night_fixed=1,allocations=?,night_requested_start=? WHERE id=?',(json.dumps(allocation),start,job))
             if avoid:
                 db.execute('UPDATE unified_tasks SET avoid_slots=? WHERE id=?',(json.dumps(avoid),job))
+            if urgent:
+                db.execute('UPDATE unified_tasks SET urgent=1 WHERE id=?',(job,))
+                self._order_urgent(db,job,True)
             self._schedule(db, now)
         return job
+
+    @staticmethod
+    def _order_urgent(db,job,enabled):
+        rows=db.execute("SELECT id,queue_order,urgent FROM unified_tasks WHERE not_before=0 AND state IN ('queued','ready') ORDER BY queue_order,rowid").fetchall()
+        current=next((row for row in rows if row['id']==job),None)
+        if current is None:return
+        others=[row for row in rows if row['id']!=job]
+        urgent=[row for row in others if row['urgent']]
+        normal=[row for row in others if not row['urgent']]
+        ordered=urgent+([current] if enabled else [])+normal+([] if enabled else [current])
+        for slot,row in zip(rows,ordered):db.execute('UPDATE unified_tasks SET queue_order=? WHERE id=?',(slot['queue_order'],row['id']))
+
+    def urgent_users(self):
+        with self.store.db() as db:
+            return [dict(row) for row in db.execute('SELECT employee,name FROM unified_urgent_users ORDER BY employee')]
+
+    def set_urgent_user(self,employee,name,enabled):
+        with self.store.db() as db:
+            if enabled:db.execute('INSERT OR REPLACE INTO unified_urgent_users(employee,name) VALUES(?,?)',(employee,name))
+            else:db.execute('DELETE FROM unified_urgent_users WHERE employee=?',(employee,))
+
+    def set_urgent(self,user,job,enabled):
+        if not isinstance(job,str) or type(enabled) is not bool:raise ControlError(400,'无效紧急标记')
+        with self.store.db() as db:
+            row=db.execute('SELECT * FROM unified_tasks WHERE id=?',(job,)).fetchone()
+            if not row:raise ControlError(404,'预约不存在')
+            if row['account']!=user['id']:raise ControlError(403,'只能修改自己的预约')
+            if row['not_before'] or row['state'] not in ('queued','ready'):raise ControlError(409,'只能修改尚未开始的普通任务')
+            if enabled and not db.execute('SELECT 1 FROM unified_urgent_users WHERE employee=?',(user.get('employee',''),)).fetchone():
+                raise ControlError(403,'当前账号不在紧急用户名单中')
+            if bool(row['urgent'])==enabled:return
+            db.execute('UPDATE unified_tasks SET urgent=? WHERE id=?',(int(enabled),job))
+            self._order_urgent(db,job,enabled)
+            self._schedule(db,time.time())
 
     def update_avoid_slots(self,user,job,slots):
         if not self.strict_nights or not isinstance(job,str):raise ControlError(400,'当前部署不支持避开时段')
@@ -1041,6 +1086,8 @@ class UnifiedQueue:
             if action in ('priority-up','priority-down','priority-top'):
                 if action != 'priority-down' and not user.get('admin'):
                     raise ControlError(403,'仅管理员可调整排队优先级')
+                if row['urgent']:
+                    raise ControlError(409,'紧急任务按进入紧急状态的顺序排列')
                 if action == 'priority-down' and row['account'] != user['id'] and not user.get('admin'):
                     raise ControlError(403,'只能调低自己的预约')
                 if action == 'priority-down' and row['state'] == 'ready' and (not offer_id or offer_id != row['offer_id']):
@@ -1048,7 +1095,7 @@ class UnifiedQueue:
                 if action == 'priority-down' and row['state'] == 'queued' and offer_id:
                     raise ControlError(409,'这次资源分配已失效，请刷新后查看当前排队状态')
                 states = "('queued','ready')" if action == 'priority-down' else "('queued')"
-                waiting=db.execute("SELECT id,queue_order FROM unified_tasks WHERE state IN "+states+" AND (not_before>0)=? ORDER BY queue_order,rowid", (int(bool(row['not_before'])),)).fetchall()
+                waiting=db.execute("SELECT id,queue_order FROM unified_tasks WHERE state IN "+states+" AND (not_before>0)=? AND urgent=? ORDER BY queue_order,rowid", (int(bool(row['not_before'])),row['urgent'])).fetchall()
                 index=next((i for i,r in enumerate(waiting) if r['id']==job),None)
                 if index is None:
                     raise ControlError(409,'仅等待中的预约可调整优先级')

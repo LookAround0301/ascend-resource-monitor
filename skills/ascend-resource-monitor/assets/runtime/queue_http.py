@@ -257,6 +257,9 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
             operation=request.match_info['operation']
             if request.method=='GET':
                 person=await actor(request,required=False)
+                if unified and operation=='urgent-users':
+                    await admin_identity(request)
+                    return web.json_response({'people':unified.urgent_users()},headers={'Cache-Control':'no-store','Vary':'Cookie, Authorization'})
                 if operation=='state':
                     state=unified.view(person) if unified else {**store.view(person),'nodes':list(config['nodes']),'server_time':time.time(),'auto_match_employee':auto is not None}
                     if monitor:state=monitor.decorate(state,unified.continuing())
@@ -322,6 +325,15 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                 set_session_cookie(response,request,token)
                 response.headers['Cache-Control']='no-store';return response
             person=await actor(request)
+            if unified and operation=='urgent-users':
+                admin=await admin_identity(request)
+                if type(data.get('enabled')) is not bool or data.get('confirmed') is not True:
+                    raise ControlError(400,'请确认紧急用户名单修改')
+                employee=unified.allowed_employee(data.get('employee'))
+                matched=await allowed_person(employee) if data['enabled'] else {'name':''}
+                audit(config['audit_log'],{'action':'queue.urgent_user','actor':admin,'employee':employee,'enabled':data['enabled']})
+                unified.set_urgent_user(employee,matched['name'],data['enabled'])
+                return web.json_response({'message':'紧急用户名单已更新'})
             if operation=='logout':
                 store.logout(session_token(request));response=web.json_response({'message':'个人账号已退出'})
                 # Keep a scoped logged-out marker until any old legacy login has
@@ -365,6 +377,12 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                     unified.update_avoid_slots(person,data.get('job'),data.get('avoid_slots'))
                     event(person,'unified_avoid',job=data.get('job'))
                     return web.json_response({'message':'已更新避开时段，预计开始时间已重新计算'})
+                if operation=='unified-urgent':
+                    if not person.get('registered'):raise ControlError(401,'请先登录个人账号')
+                    if data.get('confirmed') is not True:raise ControlError(400,'请先确认操作')
+                    unified.set_urgent(person,data.get('job'),data.get('enabled'))
+                    event(person,'unified_urgent',job=data.get('job'),enabled=data.get('enabled'))
+                    return web.json_response({'message':'紧急标记已更新，队列已重新排序'})
                 if operation=='enqueue':
                     if not person['registered']:raise ControlError(400,'提交预约前请先登录个人账号')
                     event(person,'enqueue_unified')
