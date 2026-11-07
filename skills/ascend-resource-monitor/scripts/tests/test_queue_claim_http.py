@@ -192,13 +192,26 @@ class ClaimHTTPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.state())['tasks'][0]['allowed_employees'],['u12345679'])
         owner_token=self.token
         self.token=self.store.register('u12345679','Other','test-password-only')
-        self.assertNotIn('allowed_employees',(await self.state())['tasks'][0])
+        shared=(await self.state())['tasks'][0]
+        self.assertNotIn('allowed_employees',shared)
+        self.assertTrue(shared['collaborator'])
+        self.assertEqual(shared['allowed_people'],[{'employee':'u12345679','name':'Other'}])
         await self.post('unified-allowed',payload,403)
         self.admin=True
         await self.post('unified-allowed',payload,403)
         self.admin=False;self.token=owner_token
         await self.post('unified-allowed',{**payload,'change':'remove'})
         self.assertEqual((await self.state())['tasks'][0]['allowed_employees'],[])
+
+    async def test_shared_user_can_claim_and_finish_via_api(self):
+        job=await self.enqueue()
+        await self.post('unified-allowed',{'job':job,'employee':'u12345679','change':'add','confirmed':True,'confirmed_name':'Other'})
+        self.token=self.store.register('u12345679','Other','test-password-only')
+        row=(await self.state())['tasks'][0]
+        await self.post('unified-action',{'job':job,'action':'cancel','confirmed':True},403)
+        await self.post('unified-action',{'job':job,'action':'claim','offer_id':row['offer_id'],'confirmed':True})
+        await self.post('unified-action',{'job':job,'action':'finish','confirmed':True})
+        self.assertFalse((await self.state())['tasks'])
 
     async def test_allowed_user_requires_matching_confirmed_whitelist_on_both_nodes(self):
         job=await self.enqueue()

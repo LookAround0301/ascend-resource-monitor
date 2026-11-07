@@ -24,6 +24,15 @@ class NightPolicyTests(unittest.TestCase):
         self.assertEqual(plan(nodes,[],[job],3600)[0]['start'],None)
         self.assertEqual(plan(nodes,[],[job],3599)[0]['seconds'],3601)
 
+    def test_ordinary_predictions_do_not_shorten_another_ordinary_task(self):
+        nodes={'a':list(range(8)),'b':list(range(8))}
+        busy=[{'node':'a','cards':list(range(8)),'start':1000,'end':5000}]
+        jobs=[{'id':'first','cards':8,'dual':True,'seconds':3600,'start_before':30000,'clip_finish_before':33000},
+              {'id':'second','cards':8,'seconds':7200,'start_before':30000,'clip_finish_before':33000,'allowed_nodes':['b']}]
+        result=plan(nodes,busy,jobs,1000)
+        self.assertEqual(result[1]['seconds'],7200)
+        self.assertGreaterEqual(result[1]['start'],9200)
+
     def test_exact_fixed_windows_and_dual_capacity(self):
         nodes={'a':list(range(8)),'b':list(range(8))}
         first=reserve_night(nodes,[],1000,3600,8,False,'a')
@@ -87,7 +96,7 @@ class StrictQueueTests(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.store=QueueStore(Path(self.temp.name)/'queue.db')
         self.user=self.store.user(self.store.register('u12345678','Fixture','fixture-password'))
-        self.queue=UnifiedQueue(self.store,['a','b'],timezone='Asia/Shanghai',strict_nights=True)
+        self.queue=UnifiedQueue(self.store,['a','b'],timezone='Asia/Shanghai',strict_nights=True,overtime_control=True)
         self.clock=patch('queue_unified.time.time').start();self.addCleanup(patch.stopall)
         self.stamp=lambda s:datetime.fromisoformat(s).replace(tzinfo=ZoneInfo('Asia/Shanghai')).timestamp()
         self.clock.return_value=self.stamp('2026-11-04T23:00:00')
@@ -138,6 +147,64 @@ class StrictQueueTests(unittest.TestCase):
         self.clock.return_value=self.stamp('2026-11-05T09:00:00')
         job=self.add()
         self.assertEqual(next(r for r in self.queue.view(self.user)['tasks'] if r['id']==job)['state'],'ready')
+
+    def test_default_meal_windows_and_live_changes_apply_to_start_time(self):
+        self.clock.return_value=self.stamp('2026-11-05T12:15:00')
+        job=self.add()
+        row=next(r for r in self.queue.view(self.user)['tasks'] if r['id']==job)
+        self.assertEqual(row['state'],'queued')
+        self.assertEqual(row['estimated_start'],self.stamp('2026-11-05T14:00:00'))
+        self.queue.update_avoid_slots(self.user,job,[])
+        row=next(r for r in self.queue.view(self.user)['tasks'] if r['id']==job)
+        self.assertEqual(row['state'],'ready')
+        self.queue.update_avoid_slots(self.user,job,[24,25,26,27])
+        row=next(r for r in self.queue.view(self.user)['tasks'] if r['id']==job)
+        self.assertEqual(row['state'],'queued')
+
+    def test_offer_expires_at_avoid_window_even_if_initially_available(self):
+        self.clock.return_value=self.stamp('2026-11-05T11:59:00')
+        job=self.add()
+        row=next(r for r in self.queue.view(self.user)['tasks'] if r['id']==job)
+        self.assertEqual(row['state'],'ready')
+        self.assertEqual(row['claim_before'],self.stamp('2026-11-05T12:00:00'))
+        self.clock.return_value=self.stamp('2026-11-05T12:00:00')
+        with self.assertRaises(ControlError):self.queue.action(self.user,job,'claim',row['offer_id'])
+        row=next(r for r in self.queue.view(self.user)['tasks'] if r['id']==job)
+        self.assertEqual(row['state'],'queued')
+
+    def test_shared_user_can_claim_and_finish_but_cannot_cancel(self):
+        collaborator=self.store.user(self.store.register('u23456789','Shared','fixture-password'))
+        job=self.add()
+        self.queue.allowed_user(self.user,job,'u23456789','add')
+        row=next(r for r in self.queue.view(collaborator)['tasks'] if r['id']==job)
+        self.assertTrue(row['collaborator']);self.assertTrue(row['can_claim'])
+        with self.assertRaises(ControlError):self.queue.action(collaborator,job,'cancel')
+        self.queue.action(collaborator,job,'claim',row['offer_id'])
+        self.queue.action(collaborator,job,'finish')
+        self.assertFalse(any(r['id']==job for r in self.queue.view(self.user)['tasks']))
+
+    def test_extension_only_during_grace_and_not_past_fixed_night(self):
+        job=self.add(requested_seconds=3600)
+        row=next(r for r in self.queue.view(self.user)['tasks'] if r['id']==job)
+        self.queue.action(self.user,job,'claim',row['offer_id'])
+        with self.assertRaises(ControlError):self.queue.action(self.user,job,'extend',extension_minutes=10)
+        self.clock.return_value+=3600+300
+        self.queue.action(self.user,job,'extend',extension_minutes=20)
+        row=next(r for r in self.queue.view(self.user)['tasks'] if r['id']==job)
+        self.assertEqual(row['extension_minutes'],20)
+        self.assertEqual(row['activated']+row['requested_seconds'],self.clock.return_value+1200)
+        self.clock.return_value+=1200+600
+        with self.assertRaises(ControlError):self.queue.action(self.user,job,'extend',extension_minutes=10)
+
+    def test_extension_cannot_cut_into_fixed_night_buffer(self):
+        self.clock.return_value=self.stamp('2026-11-05T00:30:00')
+        self.add(night=True,not_before=self.stamp('2026-11-05T02:00:00'),requested_seconds=3600)
+        job=self.add(requested_seconds=3600)
+        row=next(r for r in self.queue.view(self.user)['tasks'] if r['id']==job)
+        self.queue.action(self.user,job,'claim',row['offer_id'])
+        self.clock.return_value=self.stamp('2026-11-05T01:31:00')
+        with self.assertRaises(ControlError):self.queue.action(self.user,job,'extend',extension_minutes=20)
+        self.queue.action(self.user,job,'extend',extension_minutes=10)
 
     def test_existing_offer_is_capped_by_fixed_night_on_upgrade(self):
         self.queue=UnifiedQueue(self.store,['a','b'],timezone='Asia/Shanghai')

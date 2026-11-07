@@ -12,11 +12,12 @@ from queue_planner import plan
 
 
 class UnifiedQueue:
-    def __init__(self, store, nodes, buffer_seconds=600, timezone='UTC', daily_reset=False, cards_per_node=8, strict_nights=False):
+    def __init__(self, store, nodes, buffer_seconds=600, timezone='UTC', daily_reset=False, cards_per_node=8, strict_nights=False, overtime_control=False):
         self.store = store
         self.timezone = dt_timezone.utc if timezone == 'UTC' else ZoneInfo(timezone)
         self.daily_reset = daily_reset
         self.strict_nights = strict_nights
+        self.overtime_control = bool(strict_nights and overtime_control)
         if type(cards_per_node) is not int or cards_per_node not in (8, 16):
             raise ValueError('cards_per_node must be 8 or 16')
         self.capacity = cards_per_node
@@ -48,6 +49,9 @@ class UnifiedQueue:
                                      ('offer_id', "TEXT NOT NULL DEFAULT ''"),
                                      ('missed_claims', 'INTEGER NOT NULL DEFAULT 0'),
                                      ('allowed_employees', "TEXT NOT NULL DEFAULT '[]'"),
+                                     ('avoid_slots', "TEXT NOT NULL DEFAULT '[]'"),
+                                     ('extension_minutes', 'INTEGER NOT NULL DEFAULT 0'),
+                                     ('extension_at', 'REAL NOT NULL DEFAULT 0'),
                                      ('night_seen_usage', 'INTEGER NOT NULL DEFAULT 0')]:
                 if name not in columns:
                     db.execute('ALTER TABLE unified_tasks ADD COLUMN '+name+' '+definition)
@@ -119,6 +123,18 @@ class UnifiedQueue:
         day = local.date() if local.hour < 9 else local.date() + timedelta(days=1)
         return datetime.combine(day, daytime(2), self.timezone).timestamp()
 
+    @staticmethod
+    def validate_avoid_slots(value):
+        if not isinstance(value,list) or len(value)>48 or any(type(slot) is not int or not 0<=slot<48 for slot in value):
+            raise ControlError(400,'避开时段必须是有效的半小时时段')
+        return sorted(set(value))
+
+    def avoid_windows(self, slots, now):
+        day=datetime.fromtimestamp(now,self.timezone).date()
+        return [(datetime.combine(day+timedelta(days=offset),daytime(slot//2,(slot%2)*30),self.timezone).timestamp(),
+                 datetime.combine(day+timedelta(days=offset),daytime(slot//2,(slot%2)*30),self.timezone).timestamp()+1800)
+                for offset in range(-1,3) for slot in slots]
+
     def night_windows(self, now):
         day = datetime.fromtimestamp(now, self.timezone).date()
         result = []
@@ -179,19 +195,28 @@ class UnifiedQueue:
         if not user:
             return result
         for row in rows:
+            if self.overtime_control and row['state']=='active' and not row['not_before'] and row['extension_at']:
+                occupied=set(json.loads(row['allocations']))
+                waiting=next((r for r in rows if r['state']=='queued' and not r['not_before']
+                              and (r['dual'] or not r['fixed_node'] or r['fixed_node'] in occupied)),None)
+                if waiting and (waiting['account']==user['id'] or user.get('employee','') in json.loads(waiting['allowed_employees'])):
+                    result.append({'id':'usage-extended:'+row['id']+':'+str(row['extension_at']),
+                                   'kind':'extended-next','message':row['name']+'（'+row['employee']+'）延长使用 '+str(row['extension_minutes'])+' 分钟；请查看更新后的预计开始时间。'})
             if row['state']!='active' or not row['activated'] or now < row['activated']+row['requested_seconds']:
                 continue
             label=row['name']+'（'+row['employee']+'）'
             bottleneck=bool(blocked.get(row['id']))
             jointly_blocking=bool(joint.get(row['id'])) and not bottleneck
             indirectly_blocking=bool(dependent.get(row['id'])) and not bottleneck and not jointly_blocking
-            if row['account']==user['id']:
-                interval=300 if bottleneck or jointly_blocking or indirectly_blocking else 900
+            if row['account']==user['id'] or user.get('employee','') in json.loads(row['allowed_employees']):
+                interval=60 if self.overtime_control and not row['not_before'] else 300 if bottleneck or jointly_blocking or indirectly_blocking else 900
                 status='blocking' if bottleneck else 'joint' if jointly_blocking else 'dependent' if indirectly_blocking else 'nonblocking'
                 message=('当前正阻挡后续预约，请尽快自行停止任务并结束登记。' if bottleneck else
                          '与其他超时任务共同影响后续预约，请尽快自行停止任务并结束登记。' if jointly_blocking else
                          '占用等待中预约所需资源；其他资源也可能尚未释放，请尽快自行停止任务并结束登记。' if indirectly_blocking else
                          '目前不是可立即开始预约的瓶颈；用完请自行停止任务并结束登记。')
+                if self.overtime_control and not row['not_before']:
+                    message='请在超时后的 10 分钟内结束登记，或选择延长 10、20、30 分钟。'
                 result.append({'id':'usage-overdue:'+row['id']+':owner:'+status,
                                'job':row['id'],'repeat_seconds':interval,
                                'kind':'overdue' if bottleneck else 'overdue-joint' if jointly_blocking else 'overdue-dependent' if indirectly_blocking else 'overdue-nonblocking',
@@ -215,6 +240,7 @@ class UnifiedQueue:
         pending = [dict(row) for row in db.execute("SELECT * FROM unified_tasks WHERE state IN ('queued','ready') ORDER BY queue_order,rowid")]
         expired = [row for row in pending if row['state']=='ready' and
                    ((row['claim_before'] and row['claim_before']<=now) or
+                    (self.strict_nights and not row['not_before'] and any(a<=now<b for a,b in self.avoid_windows(json.loads(row['avoid_slots']),now))) or
                     (not row['not_before'] and now >= (self.normal_one_am(row['created']) if self.strict_nights else self.normal_two_am(row['created']))))]
         missed = {row['id'] for row in expired if row['ready_since'] and now>=row['ready_since']+600}
         for row in expired:
@@ -337,7 +363,7 @@ class UnifiedQueue:
                 buffered=end+self.buffer if end>now else None
                 for node,cards in json.loads(row['allocations']).items():
                     busy.append({'node':node,'cards':cards,'start':row['not_before'],
-                                 'end':buffered,'direct_end':end if end>now else None})
+                                 'end':buffered,'direct_end':end if end>now else None,'fixed_night':True})
                 continue
             if row['state'] in ('ready', 'active'):
                 end = (row['activated'] + row['requested_seconds'] + self.buffer
@@ -345,8 +371,11 @@ class UnifiedQueue:
                        row['claim_before'] + row['requested_seconds'] + self.buffer
                        if row['state'] == 'ready' and row['claim_before'] else None)
                 if row['state'] == 'active' and row['activated'] and row['requested_seconds'] and now >= row['activated'] + row['requested_seconds']:
-                    end = None
-                direct_end = end if end is None else end-self.buffer
+                    if self.overtime_control and not row['not_before'] and now<row['activated']+row['requested_seconds']+600:
+                        end=row['activated']+row['requested_seconds']+600
+                        direct_end=end
+                    else:end=direct_end=None
+                else:direct_end = end if end is None else end-self.buffer
                 for node, cards in json.loads(row['allocations']).items():
                     busy.append({'node': node, 'cards': cards, 'start': row['activated'] or row['created'], 'end': end, 'direct_end': direct_end})
             else:
@@ -357,6 +386,7 @@ class UnifiedQueue:
                         'start_before': (self.normal_one_am(row['created']) if self.strict_nights else self.normal_two_am(row['created'])) if not row['not_before'] else 0}
                 if self.strict_nights and not row['not_before']:
                     item['clip_finish_before']=self.normal_night_end(row['created'])
+                    item['avoid_windows']=self.avoid_windows(json.loads(row.get('avoid_slots','[]')),now)
                 if row['fixed_node']:
                     item['allowed_nodes'] = [row['fixed_node']]
                 waiting.append(item)
@@ -410,7 +440,8 @@ class UnifiedQueue:
                     reserved=json.loads(night['allocations'])
                     if any(set(cards).intersection(reserved.get(node,[])) for node,cards in allocations.items()):
                         end=min(end,night['not_before']-self.buffer)
-                deadline=min(row['claim_before'],self.normal_one_am(row['created']),end-60)
+                future_avoid=[begin for begin,finish in self.avoid_windows(json.loads(row['avoid_slots']),now) if begin>now]
+                deadline=min([row['claim_before'],self.normal_one_am(row['created']),end-60,*future_avoid])
                 if deadline<=now:
                     db.execute("UPDATE unified_tasks SET state='queued',allocations='{}',claim_before=0,ready_since=0,offer_id='',offer_end_before=0 WHERE id=?",(row['id'],))
                 else:
@@ -486,14 +517,19 @@ class UnifiedQueue:
                 offer_end=0
                 if self.strict_nights and not row['not_before']:
                     offer_end=self.normal_night_end(row['created'])
+                    deadlines.extend(begin for begin,end in self.avoid_windows(json.loads(row['avoid_slots']),now) if begin>now)
+                    fixed_night_ids={r['id'] for r in rows if r['not_before'] and r.get('night_fixed')}
                     for other in predictions.values():
+                        if other['id'] not in fixed_night_ids:continue
                         if other['id']==row['id'] or other['start'] is None or other['start']<=now:continue
                         if any(set(cards).intersection(other['allocations'].get(node,[]))
                                for node,cards in prediction['allocations'].items()):
                             offer_end=min(offer_end,other['start']-self.buffer)
                     deadlines.append(offer_end-60)
                 for earlier in previous:
-                    if self.strict_nights or earlier['start'] is None or earlier['start'] <= now:
+                    if self.strict_nights and earlier['id'] in fixed_night_ids:
+                        continue
+                    if earlier['start'] is None or earlier['start'] <= now:
                         continue
                     for node,cards in prediction['allocations'].items():
                         if set(cards).intersection(earlier['allocations'].get(node,[])):
@@ -696,12 +732,14 @@ class UnifiedQueue:
             row.pop('title', None)
             row['allocations'] = json.loads(row['allocations'])
             row['allowed_employees'] = json.loads(row['allowed_employees'])
+            row['collaborator'] = bool(user and user.get('employee') in row['allowed_employees'])
+            row['avoid_slots'] = json.loads(row['avoid_slots'])
             if row['state'] in ('queued', 'ready'):
                 position += 1
                 row['position'] = position
             else:
                 row['position'] = None
-            row['can_claim'] = row['mine'] and row['state'] == 'ready'
+            row['can_claim'] = (row['mine'] or row['collaborator']) and row['state'] == 'ready'
             row['overdue_seconds'] = max(0,now-row['activated']-row['requested_seconds']) if row['state']=='active' and row['activated'] else 0
             row['overdue'] = bool(row['state']=='active' and row['activated'] and now>=row['activated']+row['requested_seconds'])
             row['bottleneck'] = bool(row['state']=='active' and row['id'] in blocked)
@@ -782,6 +820,7 @@ class UnifiedQueue:
             raise ControlError(400, '夜间任务开始时间须在晚上 20:00 至次日 09:00 前')
         if not night and start:
             raise ControlError(400, '普通任务无需填写预约开始时间')
+        avoid=self.validate_avoid_slots(data.get('avoid_slots',[24,25,26,27,35,36,37,38])) if self.strict_nights and not night else []
         # Exactly 09:00 belongs to the preceding night, not the following one.
         finish_before = self.night_cutoff(start - 0.001) if night else self.cutoff(now)
         if not night and max(now, start) + seconds > finish_before:
@@ -814,8 +853,21 @@ class UnifiedQueue:
                 VALUES (?,?,?,'queued',?,?,?,?,?,?,?,?)''', (job, user['id'], '', now, seconds, cards, int(dual), start, finish_before, fixed_node, order))
             if night_fixed:
                 db.execute('UPDATE unified_tasks SET night_fixed=1,allocations=? WHERE id=?',(json.dumps(allocation),job))
+            if avoid:
+                db.execute('UPDATE unified_tasks SET avoid_slots=? WHERE id=?',(json.dumps(avoid),job))
             self._schedule(db, now)
         return job
+
+    def update_avoid_slots(self,user,job,slots):
+        if not self.strict_nights or not isinstance(job,str):raise ControlError(400,'当前部署不支持避开时段')
+        slots=self.validate_avoid_slots(slots);now=time.time()
+        with self.store.db() as db:
+            row=db.execute('SELECT * FROM unified_tasks WHERE id=?',(job,)).fetchone()
+            if not row:raise ControlError(404,'预约不存在')
+            if row['account']!=user['id'] and not user.get('admin'):raise ControlError(403,'只能修改自己的预约')
+            if row['not_before'] or row['state'] not in ('queued','ready'):raise ControlError(409,'只能修改尚未开始的普通任务')
+            db.execute('UPDATE unified_tasks SET avoid_slots=? WHERE id=?',(json.dumps(slots),job))
+            self._schedule(db,now)
 
     @staticmethod
     def allowed_employee(employee):
@@ -860,8 +912,8 @@ class UnifiedQueue:
                 allowed = [item for item in allowed if item != employee]
             db.execute('UPDATE unified_tasks SET allowed_employees=? WHERE id=?', (json.dumps(allowed), job))
 
-    def action(self, user, job, action, offer_id=None):
-        if not isinstance(job, str) or action not in ('claim', 'finish', 'cancel', 'priority-up', 'priority-down', 'priority-top'):
+    def action(self, user, job, action, offer_id=None, extension_minutes=None):
+        if not isinstance(job, str) or action not in ('claim', 'finish', 'cancel', 'priority-up', 'priority-down', 'priority-top', 'extend'):
             raise ControlError(400, '无效任务操作')
         now = time.time()
         with self.store.db() as db:
@@ -900,8 +952,26 @@ class UnifiedQueue:
                 db.execute('UPDATE unified_tasks SET queue_order=? WHERE id=?',(waiting[index]['queue_order'],waiting[other]['id']))
                 self._schedule(db,now)
                 return
-            if row['account'] != user['id'] and not user.get('admin'):
+            collaborator=user.get('employee','') in json.loads(row['allowed_employees'])
+            if row['account'] != user['id'] and not user.get('admin') and not (collaborator and action in ('claim','finish','extend')):
                 raise ControlError(403, '只能操作自己的预约')
+            if action=='extend':
+                if not self.overtime_control or row['not_before'] or row['state']!='active' or type(extension_minutes) is not int or extension_minutes not in (10,20,30):
+                    raise ControlError(400,'请选择可延长的普通任务和有效时长')
+                end=row['activated']+row['requested_seconds']
+                if now<end or now>=end+600:raise ControlError(409,'只能在超时后的 10 分钟内申请延长')
+                limit=self.normal_night_end(row['activated'])
+                allocations=json.loads(row['allocations'])
+                for night in db.execute("SELECT * FROM unified_tasks WHERE night_fixed=1 AND not_before>? AND state IN ('queued','ready','active')",(now,)):
+                    reserved=json.loads(night['allocations'])
+                    if any(set(cards).intersection(reserved.get(node,[])) for node,cards in allocations.items()):
+                        limit=min(limit,night['not_before']-self.buffer)
+                new_end=now+extension_minutes*60
+                if new_end>limit:raise ControlError(409,'延长后会影响夜间预约或超过凌晨 2 点，请选择更短时间或结束任务')
+                db.execute('UPDATE unified_tasks SET requested_seconds=?,extension_minutes=?,extension_at=? WHERE id=?',
+                           (math.ceil(new_end-row['activated']),extension_minutes,now,job))
+                self._schedule(db,now)
+                return 'extended'
             if action == 'claim' and row['state'] == 'ready':
                 if offer_id is not None and offer_id != row['offer_id']:
                     raise ControlError(409, '这次资源分配已失效，请刷新后查看当前排队状态')

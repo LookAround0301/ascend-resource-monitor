@@ -28,6 +28,7 @@ def plan(nodes, busy, jobs, now, buffer_seconds=600):
     if buffer_seconds < 0 or not math.isfinite(now):
         raise ValueError('invalid planning time or buffer')
     intervals = []
+    fixed_night_starts = []
     for item in busy:
         node = item['node']
         cards = tuple(item['cards'])
@@ -39,6 +40,8 @@ def plan(nodes, busy, jobs, now, buffer_seconds=600):
         if end <= item['start']:
             raise ValueError('invalid busy interval')
         intervals.append((node, frozenset(cards), item['start'], end, direct_end))
+        if item.get('fixed_night'):
+            fixed_night_starts.append(item['start'])
 
     def free(node, start, end, night):
         used = set()
@@ -97,6 +100,12 @@ def plan(nodes, busy, jobs, now, buffer_seconds=600):
         candidates = {earliest}
         candidates.update((direct if job.get('night') else end) for _, _, _, end, direct in intervals
                           if math.isfinite(direct if job.get('night') else end) and (direct if job.get('night') else end) >= earliest)
+        avoid=job.get('avoid_windows',())
+        def next_permitted(value):
+            for begin,end in sorted(avoid):
+                if begin<=value<end:value=end
+            return value
+        candidates={next_permitted(value) for value in candidates}
         chosen = None
         for start in sorted(candidates):
             if job.get('start_before') and start >= job['start_before']:
@@ -108,7 +117,7 @@ def plan(nodes, busy, jobs, now, buffer_seconds=600):
                     continue
             durations={seconds}
             if job.get('clip_finish_before'):
-                durations.update(math.floor(begin-start-buffer_seconds) for _,_,begin,_,_ in intervals
+                durations.update(math.floor(begin-start-buffer_seconds) for begin in fixed_night_starts
                                  if begin>start and 60<=begin-start-buffer_seconds<seconds)
             for candidate_seconds in sorted(durations,reverse=True):
                 if job.get('finish_before') and start+candidate_seconds>job['finish_before']:

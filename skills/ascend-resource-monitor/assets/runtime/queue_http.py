@@ -113,8 +113,25 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
         return {employee:name for employee,name in rosters[0].items()
                 if all(roster.get(employee)==name for roster in rosters[1:])}
 
+    names_cache={'names':{},'until':0,'employees':set()}
+    names_lock=asyncio.Lock()
+    async def shared_names(employees):
+        wanted=set(employees)
+        if not wanted:return {}
+        async with names_lock:
+            if time.monotonic()>=names_cache['until'] or not wanted<=names_cache['employees']:
+                try:
+                    names_cache['names']=await allowed_names(wanted)
+                    names_cache['employees']=wanted
+                    names_cache['until']=time.monotonic()+60
+                except ControlError:
+                    names_cache['employees']=wanted
+                    names_cache['until']=time.monotonic()+5
+            return names_cache['names']
+
     strict_nights=settings.get('strict_nights') is True
-    unified=UnifiedQueue(store, config['nodes'], settings.get('reservation_buffer_seconds',600), settings.get('timezone','UTC'), settings.get('daily_reset',False), settings.get('cards_per_node',8),strict_nights) if settings.get('unified_queue') is True else None
+    # Ordinary overtime enforcement stays disabled until its release policy is confirmed.
+    unified=UnifiedQueue(store, config['nodes'], settings.get('reservation_buffer_seconds',600), settings.get('timezone','UTC'), settings.get('daily_reset',False), settings.get('cards_per_node',8),strict_nights,False) if settings.get('unified_queue') is True else None
     auto=AutoQueue(store,agent) if not unified and settings.get('auto_match_employee') else None
     monitor=None
     if unified and settings.get('monitor_processes'):
@@ -249,7 +266,10 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                     if unified:
                         state['night_auto_finish_enabled']=bool(monitor and not strict_nights)
                         state['strict_nights']=strict_nights
+                        state['overtime_control']=unified.overtime_control
+                        names=await shared_names(employee for row in state['tasks'] for employee in row['allowed_employees'])
                         for row in state['tasks']:
+                            row['allowed_people']=[{'employee':employee,'name':names.get(employee,'')} for employee in row['allowed_employees']]
                             if not row['mine']: row.pop('allowed_employees',None)
                     return web.json_response(state,headers={'Cache-Control':'no-store','Vary':'Cookie, Authorization'})
                 if unified and operation in ('containers','operation','control-context'):
@@ -334,8 +354,15 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                     if data.get('confirmed') is not True:raise ControlError(400,'请先确认操作')
                     job=data.get('job');change=data.get('change')
                     unified.allowed_user(person,job,data.get('employee'),change)
+                    names_cache['until']=0
                     event(person,'unified_allowed_'+str(change),job=job)
                     return web.json_response({'message':'已更新该预约的允许用户'})
+                if operation=='unified-avoid':
+                    if not person.get('registered'):raise ControlError(401,'请先登录个人账号')
+                    if data.get('confirmed') is not True:raise ControlError(400,'请先确认操作')
+                    unified.update_avoid_slots(person,data.get('job'),data.get('avoid_slots'))
+                    event(person,'unified_avoid',job=data.get('job'))
+                    return web.json_response({'message':'已更新避开时段，预计开始时间已重新计算'})
                 if operation=='enqueue':
                     if not person['registered']:raise ControlError(400,'提交预约前请先登录个人账号')
                     event(person,'enqueue_unified')
@@ -347,8 +374,8 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                     if action=='claim' and (not isinstance(data.get('offer_id'),str) or not data['offer_id']):
                         raise ControlError(409,'请刷新页面后直接点击“开始使用”')
                     event(person,'unified_'+str(action),job=job)
-                    result=unified.action(person,job,action,data.get('offer_id'))
-                    message={'claim':'已登记开始，请自行启动任务','finish':'已结束登记，预约资源已释放','cancel':'已取消预约','priority-top':'已置顶到等待队列首位','priority-up':'已调高一位优先级','priority-down':'已调低一位优先级'}[action]
+                    result=unified.action(person,job,action,data.get('offer_id'),data.get('extension_minutes'))
+                    message={'claim':'已登记开始，请自行启动任务','finish':'已结束登记，预约资源已释放','cancel':'已取消预约','priority-top':'已置顶到等待队列首位','priority-up':'已调高一位优先级','priority-down':'已调低一位优先级','extend':'已延长使用时间，队列预计时间已更新'}[action]
                     if result=='night_cleanup_pending':message='夜间预约正在结束，容器停止并确认资源释放后完成。'
                     return web.json_response({'message':message})
                 raise ControlError(404,'统一队列不提供网页停止或容器关联')
