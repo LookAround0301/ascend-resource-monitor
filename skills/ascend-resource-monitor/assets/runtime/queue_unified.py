@@ -12,10 +12,11 @@ from queue_planner import plan
 
 
 class UnifiedQueue:
-    def __init__(self, store, nodes, buffer_seconds=600, timezone='UTC', daily_reset=False, cards_per_node=8):
+    def __init__(self, store, nodes, buffer_seconds=600, timezone='UTC', daily_reset=False, cards_per_node=8, strict_nights=False):
         self.store = store
         self.timezone = dt_timezone.utc if timezone == 'UTC' else ZoneInfo(timezone)
         self.daily_reset = daily_reset
+        self.strict_nights = strict_nights
         if type(cards_per_node) is not int or cards_per_node not in (8, 16):
             raise ValueError('cards_per_node must be 8 or 16')
         self.capacity = cards_per_node
@@ -35,6 +36,12 @@ class UnifiedQueue:
                 db.execute('ALTER TABLE unified_tasks ADD COLUMN claim_before REAL NOT NULL DEFAULT 0')
             if 'finish_before' not in {row['name'] for row in db.execute('PRAGMA table_info(unified_tasks)')}:
                 db.execute('ALTER TABLE unified_tasks ADD COLUMN finish_before REAL NOT NULL DEFAULT 0')
+            if 'night_fixed' not in {row['name'] for row in db.execute('PRAGMA table_info(unified_tasks)')}:
+                db.execute('ALTER TABLE unified_tasks ADD COLUMN night_fixed INTEGER NOT NULL DEFAULT 0')
+            if 'night_end_requested' not in {row['name'] for row in db.execute('PRAGMA table_info(unified_tasks)')}:
+                db.execute('ALTER TABLE unified_tasks ADD COLUMN night_end_requested REAL NOT NULL DEFAULT 0')
+            if 'offer_end_before' not in {row['name'] for row in db.execute('PRAGMA table_info(unified_tasks)')}:
+                db.execute('ALTER TABLE unified_tasks ADD COLUMN offer_end_before REAL NOT NULL DEFAULT 0')
             columns = {row['name'] for row in db.execute('PRAGMA table_info(unified_tasks)')}
             for name, definition in [('queue_order', 'INTEGER NOT NULL DEFAULT 0'),
                                      ('ready_since', 'REAL NOT NULL DEFAULT 0'),
@@ -45,6 +52,10 @@ class UnifiedQueue:
                 if name not in columns:
                     db.execute('ALTER TABLE unified_tasks ADD COLUMN '+name+' '+definition)
             db.execute('CREATE TABLE IF NOT EXISTS unified_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+            db.execute('''CREATE TABLE IF NOT EXISTS unified_night_reclaims (
+                id INTEGER PRIMARY KEY,job TEXT NOT NULL,night_job TEXT NOT NULL,at REAL NOT NULL,
+                old_allocations TEXT NOT NULL,new_allocations TEXT NOT NULL)''')
+            db.execute('CREATE INDEX IF NOT EXISTS unified_night_reclaims_job ON unified_night_reclaims(job)')
             db.execute('CREATE TABLE IF NOT EXISTS unified_continuing (node TEXT, employee TEXT, cutoff REAL, PRIMARY KEY(node,employee))')
             db.execute('CREATE TABLE IF NOT EXISTS unified_shared_continuing (node TEXT, employee TEXT, cutoff REAL, cards TEXT, PRIMARY KEY(node,employee))')
             stored_capacity = db.execute("SELECT value FROM unified_meta WHERE key='cards_per_node'").fetchone()
@@ -100,6 +111,14 @@ class UnifiedQueue:
         day = local.date() if local.hour < 2 else local.date() + timedelta(days=1)
         return datetime.combine(day, daytime(2), self.timezone).timestamp()
 
+    def normal_one_am(self, created):
+        return self.normal_night_end(created)-3600
+
+    def normal_night_end(self, created):
+        local = datetime.fromtimestamp(created, self.timezone)
+        day = local.date() if local.hour < 9 else local.date() + timedelta(days=1)
+        return datetime.combine(day, daytime(2), self.timezone).timestamp()
+
     def night_windows(self, now):
         day = datetime.fromtimestamp(now, self.timezone).date()
         result = []
@@ -135,8 +154,9 @@ class UnifiedQueue:
         db.execute('DELETE FROM reservations WHERE id IN (SELECT id FROM unified_tasks WHERE not_before=0)')
         db.execute('DELETE FROM unified_tasks WHERE not_before=0')
         # Unstarted reservations from a completed night must not be started anew at 09:00.
-        expired=[row['id'] for row in db.execute("SELECT id,not_before,finish_before FROM unified_tasks WHERE not_before>0 AND state IN ('queued','ready')")
-                 if (row['finish_before'] or self.night_cutoff(row['not_before']-0.001))<=boundary]
+        expired=[row['id'] for row in db.execute("SELECT id,not_before,finish_before,night_fixed FROM unified_tasks WHERE not_before>0 AND state IN ('queued','ready')")
+                 if not (self.strict_nights and row['night_fixed'])
+                 and (row['finish_before'] or self.night_cutoff(row['not_before']-0.001))<=boundary]
         for job in expired:
             db.execute('DELETE FROM confirmations WHERE job=?',(job,))
             db.execute('DELETE FROM reservations WHERE id=?',(job,))
@@ -153,8 +173,9 @@ class UnifiedQueue:
     def alerts(self, rows, user, now, reset, blocked, dependent, joint):
         result = []
         if reset and (reset['count'] or reset.get('cancelled_nights')) and 0 <= now-reset['at'] < 600:
-            result.append({'id':'daily-reset:'+str(reset['at']), 'kind':'reset',
-                           'message':'上午 9 点已清空普通任务预约，取消未开始的夜间预约；已开始的夜间任务保留，实际任务未停止。'})
+            message=('上午 9 点已清空普通任务预约；已确认的夜间预约按固定时段执行，未确认的过期预约已取消。'
+                     if self.strict_nights else '上午 9 点已清空普通任务预约，取消未开始的夜间预约；已开始的夜间任务保留，实际任务未停止。')
+            result.append({'id':'daily-reset:'+str(reset['at']), 'kind':'reset','message':message})
         if not user:
             return result
         for row in rows:
@@ -194,10 +215,10 @@ class UnifiedQueue:
         pending = [dict(row) for row in db.execute("SELECT * FROM unified_tasks WHERE state IN ('queued','ready') ORDER BY queue_order,rowid")]
         expired = [row for row in pending if row['state']=='ready' and
                    ((row['claim_before'] and row['claim_before']<=now) or
-                    (not row['not_before'] and now >= self.normal_two_am(row['created'])))]
+                    (not row['not_before'] and now >= (self.normal_one_am(row['created']) if self.strict_nights else self.normal_two_am(row['created']))))]
         missed = {row['id'] for row in expired if row['ready_since'] and now>=row['ready_since']+600}
         for row in expired:
-            db.execute("UPDATE unified_tasks SET state='queued',allocations='{}',claim_before=0,ready_since=0,offer_id='',missed_claims=missed_claims+? WHERE id=?",
+            db.execute("UPDATE unified_tasks SET state='queued',allocations='{}',claim_before=0,ready_since=0,offer_id='',offer_end_before=0,missed_claims=missed_claims+? WHERE id=?",
                        (int(row['id'] in missed), row['id']))
         if not missed:
             return
@@ -227,7 +248,61 @@ class UnifiedQueue:
         with self.store.db() as db:
             self._schedule(db, time.time())
 
+    def due_night_tasks(self,now):
+        if not self.strict_nights:return []
+        with self.store.db() as db:
+            rows=[dict(row) for row in db.execute('''SELECT r.*,a.employee FROM unified_tasks r
+                JOIN accounts a ON a.id=r.account WHERE r.not_before>0 AND r.not_before<=?
+                AND (r.state='active' OR (r.state='queued' AND r.night_fixed=1))''',(now,))]
+        for row in rows:
+            row['allocations']=json.loads(row['allocations'])
+            row['allowed_employees']=json.loads(row['allowed_employees'])
+        return rows
+
+    def finish_night_takeovers(self,snapshots,blocked_nodes,blocked_cards,now):
+        """Commit only unchanged, freshly verified night handoffs."""
+        if not self.strict_nights:return
+        with self.store.db() as db:
+            for expected in snapshots:
+                row=db.execute('''SELECT r.*,a.employee FROM unified_tasks r JOIN accounts a ON a.id=r.account
+                                  WHERE r.id=?''',(expected['id'],)).fetchone()
+                if not row:continue
+                row=dict(row);allocations=json.loads(row['allocations']);allowed=json.loads(row['allowed_employees'])
+                if (row['state']!=expected['state'] or row['not_before']!=expected['not_before']
+                        or row['requested_seconds']!=expected['requested_seconds']
+                        or row['night_end_requested']!=expected['night_end_requested']
+                        or row['employee']!=expected['employee'] or allocations!=expected['allocations']
+                        or allowed!=expected['allowed_employees']):continue
+                if any(node in blocked_nodes or set(cards)&blocked_cards.get(node,set())
+                       for node,cards in allocations.items()):continue
+                end=(row['activated'] or row['not_before'])+row['requested_seconds']
+                if row['night_end_requested']:end=min(end,row['night_end_requested'])
+                if now>=end:
+                    db.execute('DELETE FROM unified_tasks WHERE id=?',(row['id'],))
+                    db.execute('DELETE FROM confirmations WHERE job=?',(row['id'],))
+                    db.execute('DELETE FROM reservations WHERE id=?',(row['id'],))
+                elif row['state']=='queued' and row['night_fixed'] and now>=row['not_before']:
+                    for normal in db.execute("SELECT id,allocations FROM unified_tasks WHERE not_before=0 AND state IN ('active','ready')").fetchall():
+                        held=json.loads(normal['allocations']);remaining={}
+                        for node,cards in held.items():
+                            kept=[card for card in cards if card not in allocations.get(node,[])]
+                            if kept:remaining[node]=kept
+                        if remaining==held:continue
+                        db.execute('''INSERT INTO unified_night_reclaims(job,night_job,at,old_allocations,new_allocations)
+                                      VALUES (?,?,?,?,?)''',(normal['id'],row['id'],now,json.dumps(held),json.dumps(remaining)))
+                        if remaining:
+                            db.execute('UPDATE unified_tasks SET allocations=? WHERE id=?',(json.dumps(remaining),normal['id']))
+                        else:
+                            db.execute('DELETE FROM unified_tasks WHERE id=?',(normal['id'],))
+                            db.execute('DELETE FROM confirmations WHERE job=?',(normal['id'],))
+                            db.execute('DELETE FROM reservations WHERE id=?',(normal['id'],))
+                    db.execute("UPDATE unified_tasks SET state='active',activated=? WHERE id=?",(row['not_before'],row['id']))
+
     def auto_finish_nights(self, monitor, now=None):
+        if self.strict_nights:
+            # Strict nights own their slot until the booked end or explicit end.
+            # A temporarily idle process inventory is not an early release.
+            return []
         now = time.time() if now is None else now
         with self.store.db() as db:
             rows = [dict(row) for row in db.execute('''SELECT r.*,a.employee FROM unified_tasks r
@@ -253,6 +328,17 @@ class UnifiedQueue:
         for row in rows:
             if row['id'] == excluded:
                 continue
+            if self.strict_nights and row['state']=='queued' and row['not_before'] and not row.get('night_fixed'):
+                # A legacy night that cannot be fixed is kept for review, not
+                # silently started later than its requested time.
+                continue
+            if self.strict_nights and row['state']=='queued' and row.get('night_fixed'):
+                end=row['not_before']+row['requested_seconds']
+                buffered=end+self.buffer if end>now else None
+                for node,cards in json.loads(row['allocations']).items():
+                    busy.append({'node':node,'cards':cards,'start':row['not_before'],
+                                 'end':buffered,'direct_end':end if end>now else None})
+                continue
             if row['state'] in ('ready', 'active'):
                 end = (row['activated'] + row['requested_seconds'] + self.buffer
                        if row['state'] == 'active' and row['activated'] and row['requested_seconds'] else
@@ -268,21 +354,71 @@ class UnifiedQueue:
                         'seconds': row['requested_seconds'] or 3600, 'not_before': row['not_before'],
                         'night': bool(row['not_before']),
                         'finish_before': row['finish_before'] if not row['not_before'] else 0,
-                        'start_before': self.normal_two_am(row['created']) if not row['not_before'] else 0}
+                        'start_before': (self.normal_one_am(row['created']) if self.strict_nights else self.normal_two_am(row['created'])) if not row['not_before'] else 0}
+                if self.strict_nights and not row['not_before']:
+                    item['clip_finish_before']=self.normal_night_end(row['created'])
                 if row['fixed_node']:
                     item['allowed_nodes'] = [row['fixed_node']]
                 waiting.append(item)
         return busy, waiting
 
+    def _adopt_legacy_nights(self,db,now):
+        if not self.strict_nights:return
+        from queue_night_policy import reserve_night
+        rows=[dict(row) for row in db.execute("SELECT * FROM unified_tasks WHERE not_before>0 AND state IN ('active','ready','queued') ORDER BY queue_order,rowid")]
+        reservations=[]
+        for row in rows:
+            allocations=json.loads(row['allocations'])
+            if allocations and (row['state'] in ('active','ready') or row['night_fixed']):
+                begin=row['activated'] if row['state']=='active' and not row['night_fixed'] else row['not_before']
+                reservations.append({'start':begin,'end':begin+row['requested_seconds'],'allocations':allocations})
+        for row in rows:
+            if row['state']!='queued' or row['night_fixed'] or row['not_before']<=now:continue
+            allocation=reserve_night(self.nodes,reservations,row['not_before'],row['requested_seconds'],
+                                     row['cards'],bool(row['dual']),row['fixed_node'])
+            if allocation is None:continue
+            db.execute('UPDATE unified_tasks SET night_fixed=1,allocations=? WHERE id=?',(json.dumps(allocation),row['id']))
+            reservations.append({'start':row['not_before'],'end':row['not_before']+row['requested_seconds'],'allocations':allocation})
+
     def _schedule(self, db, now):
         self._reset_if_due(db, now)
         # Upgrade previously offered night reservations without dropping their allocations.
-        db.execute("UPDATE unified_tasks SET state='active',activated=CASE WHEN ready_since>0 AND ready_since<=? THEN ready_since ELSE ? END,claim_before=0,ready_since=0,offer_id='' WHERE state='ready' AND not_before>0", (now,now))
+        if self.strict_nights:
+            db.execute("UPDATE unified_tasks SET state='queued',night_fixed=1,activated=0,claim_before=0,ready_since=0,offer_id='' WHERE state='ready' AND not_before>0 AND allocations!='{}'")
+            db.execute("UPDATE unified_tasks SET state='queued',claim_before=0,ready_since=0,offer_id='' WHERE state='ready' AND not_before>0 AND allocations='{}'")
+        else:
+            db.execute("UPDATE unified_tasks SET state='active',activated=CASE WHEN ready_since>0 AND ready_since<=? THEN ready_since ELSE ? END,claim_before=0,ready_since=0,offer_id='' WHERE state='ready' AND not_before>0", (now,now))
         self._expire_offers(db, now)
+        self._adopt_legacy_nights(db,now)
+        if self.strict_nights:
+            nights=db.execute("SELECT * FROM unified_tasks WHERE not_before>0 AND night_fixed=1 AND state IN ('queued','ready','active')").fetchall()
+            for row in db.execute("SELECT * FROM unified_tasks WHERE state='active' AND not_before=0 AND activated>0").fetchall():
+                end=self.normal_night_end(row['activated'])
+                allocations=json.loads(row['allocations'])
+                for night in nights:
+                    if night['not_before']<=now:continue
+                    reserved=json.loads(night['allocations'])
+                    if any(set(cards).intersection(reserved.get(node,[])) for node,cards in allocations.items()):
+                        end=min(end,night['not_before']-self.buffer)
+                if row['activated'] < self.normal_one_am(row['activated']) and row['activated']+row['requested_seconds'] > end:
+                    db.execute('UPDATE unified_tasks SET requested_seconds=? WHERE id=?', (max(1,math.floor(end-row['activated'])),row['id']))
+            for row in db.execute("SELECT * FROM unified_tasks WHERE state='ready' AND not_before=0").fetchall():
+                allocations=json.loads(row['allocations'])
+                end=self.normal_night_end(row['created'])
+                for night in nights:
+                    if night['not_before']<=now:continue
+                    reserved=json.loads(night['allocations'])
+                    if any(set(cards).intersection(reserved.get(node,[])) for node,cards in allocations.items()):
+                        end=min(end,night['not_before']-self.buffer)
+                deadline=min(row['claim_before'],self.normal_one_am(row['created']),end-60)
+                if deadline<=now:
+                    db.execute("UPDATE unified_tasks SET state='queued',allocations='{}',claim_before=0,ready_since=0,offer_id='',offer_end_before=0 WHERE id=?",(row['id'],))
+                else:
+                    db.execute('UPDATE unified_tasks SET claim_before=?,offer_end_before=? WHERE id=?',(deadline,end,row['id']))
         rows = [dict(row) for row in db.execute("SELECT * FROM unified_tasks WHERE state IN ('ready','active','queued') ORDER BY queue_order,rowid")]
         # A due night reservation can take over expired night allocations without
         # consulting process inventory. Morning carryovers still require manual release.
-        expired={row['id']:row for row in rows if row['state']=='active' and row['not_before']
+        expired={row['id']:row for row in rows if not self.strict_nights and row['state']=='active' and row['not_before']
                  and row['activated'] and row['requested_seconds'] and now>=row['activated']+row['requested_seconds']
                  and now<(row['finish_before'] or self.night_cutoff(row['not_before']-0.001))}
         while expired:
@@ -324,9 +460,18 @@ class UnifiedQueue:
             rows=[row for row in rows if row['id'] not in release]
         busy, waiting = self._planning_inputs(rows,now=now)
         predictions = {item['id']: item for item in plan(self.nodes, busy, waiting, now, self.buffer)}
+        if self.strict_nights:
+            for row in rows:
+                if row['state']=='queued' and row.get('night_fixed'):
+                    predictions[row['id']]={'id':row['id'],'start':row['not_before'],
+                                            'allocations':json.loads(row['allocations']),
+                                            'seconds':row['requested_seconds']}
         previous=[]
         for row in rows:
             prediction = predictions.get(row['id'])
+            if self.strict_nights and row.get('night_fixed'):
+                if prediction:previous.append(prediction)
+                continue
             if prediction and prediction['start'] is not None and prediction['start'] <= now:
                 if row['not_before']:
                     db.execute("UPDATE unified_tasks SET state='active',activated=?,allocations=?,claim_before=0,ready_since=0,offer_id='' WHERE id=? AND state='queued'",
@@ -335,18 +480,27 @@ class UnifiedQueue:
                     continue
                 deadlines=[now+600]
                 if not row['not_before']:
-                    deadlines.append(self.normal_two_am(row['created']))
+                    deadlines.append(self.normal_one_am(row['created']) if self.strict_nights else self.normal_two_am(row['created']))
                 if row['finish_before'] and not row['not_before']:
                     deadlines.append(row['finish_before'] - row['requested_seconds'])
+                offer_end=0
+                if self.strict_nights and not row['not_before']:
+                    offer_end=self.normal_night_end(row['created'])
+                    for other in predictions.values():
+                        if other['id']==row['id'] or other['start'] is None or other['start']<=now:continue
+                        if any(set(cards).intersection(other['allocations'].get(node,[]))
+                               for node,cards in prediction['allocations'].items()):
+                            offer_end=min(offer_end,other['start']-self.buffer)
+                    deadlines.append(offer_end-60)
                 for earlier in previous:
-                    if earlier['start'] is None or earlier['start'] <= now:
+                    if self.strict_nights or earlier['start'] is None or earlier['start'] <= now:
                         continue
                     for node,cards in prediction['allocations'].items():
                         if set(cards).intersection(earlier['allocations'].get(node,[])):
-                            deadlines.append(earlier['start'] - (row['requested_seconds'] or 3600) - self.buffer)
+                            deadlines.append(earlier['start'] - prediction.get('seconds',row['requested_seconds'] or 3600) - self.buffer)
                 claim_before=min(deadlines)
-                db.execute("UPDATE unified_tasks SET state='ready',allocations=?,claim_before=?,ready_since=?,offer_id=? WHERE id=? AND state='queued'",
-                           (json.dumps(prediction['allocations']), claim_before, now, secrets.token_hex(16), row['id']))
+                db.execute("UPDATE unified_tasks SET state='ready',allocations=?,claim_before=?,ready_since=?,offer_id=?,offer_end_before=? WHERE id=? AND state='queued'",
+                           (json.dumps(prediction['allocations']), claim_before, now, secrets.token_hex(16),offer_end,row['id']))
             if prediction:
                 previous.append(prediction)
         if expired:
@@ -530,6 +684,7 @@ class UnifiedQueue:
                 ORDER BY r.queue_order,r.rowid''')]
             reset_row=db.execute("SELECT value FROM unified_meta WHERE key='last_daily_reset'").fetchone()
             reset=json.loads(reset_row[0]) if reset_row else None
+            reclaimed={row['job'] for row in db.execute("SELECT DISTINCT job FROM unified_night_reclaims WHERE job IN (SELECT id FROM unified_tasks WHERE state IN ('active','ready','queued'))")}
         blocked=self.bottlenecks(rows,now)
         dependent,joint=self.overdue_resource_dependencies(rows,now)
         allowances=self.overtime_allowances(rows,now,{**blocked,**dependent})
@@ -537,6 +692,7 @@ class UnifiedQueue:
         position = 0
         for row in rows:
             row['mine'] = row.pop('account') == account
+            row['night_reclaimed']=row['id'] in reclaimed
             row.pop('title', None)
             row['allocations'] = json.loads(row['allocations'])
             row['allowed_employees'] = json.loads(row['allowed_employees'])
@@ -558,9 +714,19 @@ class UnifiedQueue:
             row['estimated_start'] = prediction.get('start') if row['state'] == 'queued' else None
             row['window_expired'] = bool(not row['not_before'] and row['finish_before'] and now + row['requested_seconds'] > row['finish_before'] and row['state'] != 'active')
             estimated = row['activated'] if row['state']=='active' else now if row['state']=='ready' else prediction.get('start')
+            row['effective_requested_seconds']=row['requested_seconds']
+            if self.strict_nights and not row['not_before']:
+                if row['state']=='ready':
+                    row['effective_requested_seconds']=min(row['requested_seconds'],max(0,math.floor(self.normal_night_end(row['created'])-now)))
+                    if row['offer_end_before']:
+                        row['effective_requested_seconds']=min(row['effective_requested_seconds'],max(0,math.floor(row['offer_end_before']-now)))
+                elif row['state']=='queued' and prediction.get('seconds') is not None:
+                    row['effective_requested_seconds']=prediction['seconds']
             two_am = self.normal_two_am(row['created']) if not row['not_before'] else 0
             row['normal_start_after_two'] = bool(row['mine'] and two_am and row['state'] == 'queued' and estimated is None)
+            row['normal_start_after_one'] = bool(self.strict_nights and row['normal_start_after_two'])
             row['normal_start_unknown'] = False
+            row['night_unconfirmed']=bool(self.strict_nights and row['state']=='queued' and row['not_before'] and not row['night_fixed'])
             row['night_end_overdue'] = bool(row['not_before'] and row['finish_before'] and (now > row['finish_before'] or (estimated is not None and estimated + row['requested_seconds'] > row['finish_before'])))
             row['morning_carryover'] = bool(row['state']=='active' and row['not_before'] and now >= (row['finish_before'] or self.night_cutoff(row['not_before']-0.001)))
             row['planned_allocations'] = prediction.get('allocations', {}) if row['state'] == 'queued' else {}
@@ -627,8 +793,27 @@ class UnifiedQueue:
                 raise ControlError(409, '每人最多保留 5 个未结束预约')
             job = secrets.token_hex(16)
             order = db.execute('SELECT COALESCE(MAX(queue_order),0)+1 FROM unified_tasks').fetchone()[0]
+            allocation={};night_fixed=0
+            if night and self.strict_nights:
+                from queue_night_policy import reserve_night
+                reservations=[]
+                for other in db.execute("SELECT * FROM unified_tasks WHERE not_before>0 AND state IN ('queued','ready','active') ORDER BY queue_order,rowid"):
+                    other=dict(other);begin=other['activated'] if other['state']=='active' and not other['night_fixed'] else other['not_before']
+                    cards_in_use=json.loads(other['allocations'])
+                    if not cards_in_use:
+                        # Legacy unassigned reservations must not lose their
+                        # place to a new fixed reservation of the same resource.
+                        possible=[other['fixed_node']] if other['fixed_node'] else list(self.nodes)
+                        cards_in_use={node:self.nodes[node] for node in possible}
+                    reservations.append({'start':begin,'end':begin+other['requested_seconds'],'allocations':cards_in_use})
+                allocation=reserve_night(self.nodes,reservations,start,seconds,cards,dual,fixed_node)
+                if allocation is None:
+                    raise ControlError(409,'所选夜间时间段没有足够的固定卡位，请调整机器、卡数或开始时间')
+                night_fixed=1
             db.execute('''INSERT INTO unified_tasks(id,account,title,state,created,requested_seconds,cards,dual,not_before,finish_before,fixed_node,queue_order)
                 VALUES (?,?,?,'queued',?,?,?,?,?,?,?,?)''', (job, user['id'], '', now, seconds, cards, int(dual), start, finish_before, fixed_node, order))
+            if night_fixed:
+                db.execute('UPDATE unified_tasks SET night_fixed=1,allocations=? WHERE id=?',(json.dumps(allocation),job))
             self._schedule(db, now)
         return job
 
@@ -722,11 +907,23 @@ class UnifiedQueue:
                     raise ControlError(409, '这次资源分配已失效，请刷新后查看当前排队状态')
                 if not row['not_before'] and row['finish_before'] and now + row['requested_seconds'] > row['finish_before']:
                     raise ControlError(409, '剩余预约时段不足，请取消后重新预约')
-                db.execute("UPDATE unified_tasks SET state='active',activated=? WHERE id=?", (now, job))
+                seconds=row['requested_seconds']
+                if self.strict_nights and not row['not_before']:
+                    if now>=self.normal_one_am(row['created']):
+                        raise ControlError(409,'普通任务最晚须在凌晨 1 点前开始')
+                    seconds=min(seconds,math.floor(self.normal_night_end(row['created'])-now))
+                    if row['offer_end_before']:
+                        seconds=min(seconds,math.floor(row['offer_end_before']-now))
+                    if seconds<60:raise ControlError(409,'剩余使用时段不足 1 分钟，请重新排队')
+                db.execute("UPDATE unified_tasks SET state='active',activated=?,requested_seconds=? WHERE id=?", (now,seconds,job))
             elif action == 'finish' and row['state'] == 'active':
-                db.execute('DELETE FROM unified_tasks WHERE id=?', (job,))
-                db.execute('DELETE FROM confirmations WHERE job=?', (job,))
-                db.execute('DELETE FROM reservations WHERE id=?', (job,))
+                if self.strict_nights and row['not_before']:
+                    db.execute('UPDATE unified_tasks SET night_end_requested=? WHERE id=?',(now,job))
+                    return 'night_cleanup_pending'
+                else:
+                    db.execute('DELETE FROM unified_tasks WHERE id=?', (job,))
+                    db.execute('DELETE FROM confirmations WHERE job=?', (job,))
+                    db.execute('DELETE FROM reservations WHERE id=?', (job,))
             elif action == 'cancel' and row['state'] in ('queued', 'ready'):
                 db.execute('DELETE FROM unified_tasks WHERE id=?', (job,))
                 db.execute('DELETE FROM confirmations WHERE job=?', (job,))

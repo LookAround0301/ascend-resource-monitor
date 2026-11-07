@@ -1,5 +1,6 @@
 """Read-only comparison of fresh NPU process identities with active reservations."""
 import hashlib
+import asyncio
 import json
 import math
 import re
@@ -15,6 +16,10 @@ class QueueMonitor:
     def __init__(self, nodes, settings, fetch):
         self.nodes=list(nodes); self.fetch=fetch; self.rows=[]; self.valid=set()
         self.sampled=0; self.next_poll=0;self.inventory_times={};self.night_empty={}
+        self.night_log=None;self.night_log_error=''
+        if settings.get('night_inventory_log_dir'):
+            from queue_night_inventory import NightInventoryLog
+            self.night_log=NightInventoryLog(settings['night_inventory_log_dir'],settings.get('timezone','UTC'))
         self.prefix=settings.get('metric_prefix','ascend')
         self.process_prefix=settings.get('process_metric_prefix',self.prefix+'_process_')
         self.capacity=settings.get('cards_per_node',8)
@@ -45,7 +50,7 @@ class QueueMonitor:
 
     @property
     def query(self):
-        names='|'.join(self.process_prefix+x for x in ('inventory_success','inventory_truncated','inventory_timestamp_seconds','container_metadata_age_seconds','inventory_processes','start_time_seconds'))
+        names='|'.join(self.process_prefix+x for x in ('inventory_success','inventory_truncated','inventory_timestamp_seconds','container_metadata_age_seconds','inventory_processes','start_time_seconds','cpu_percent','resident_memory_bytes'))
         return '{__name__=~"'+names+'"}'
 
     async def poll(self):
@@ -57,11 +62,18 @@ class QueueMonitor:
             self.ingest(data,time.time())
         except Exception:
             self.rows=[]; self.valid=set();self.inventory_times={}; self.sampled=time.time()
+        if self.night_log:
+            try:
+                now=time.time()
+                await asyncio.to_thread(self.night_log.write,now,self.nodes,self.inventory_times,self.current(now))
+                self.night_log_error=''
+            except Exception:
+                self.night_log_error='夜间 NPU 使用日志写入失败，请联系管理员检查。'
 
     def ingest(self, data, now):
         if data.get('status')!='success' or data.get('data',{}).get('resultType')!='vector':
             raise ValueError('Unavailable process inventory')
-        scalars={node:{} for node in self.nodes}; rows={node:[] for node in self.nodes}
+        scalars={node:{} for node in self.nodes}; rows={node:[] for node in self.nodes}; process_metrics={}
         for item in data['data']['result']:
             labels=item['metric']; node=labels.get('node'); name=labels.get('__name__','')
             if node not in rows or not name.startswith(self.process_prefix):
@@ -69,6 +81,11 @@ class QueueMonitor:
             value=float(item['value'][1])
             if not math.isfinite(value):raise ValueError('Invalid inventory value')
             suffix=name[len(self.process_prefix):]
+            if suffix in ('cpu_percent','resident_memory_bytes'):
+                key=labels.get('process_key','')
+                if not key:raise ValueError('Missing process metric identity')
+                process_metrics.setdefault((node,key),{})[suffix]=value
+                continue
             if suffix=='start_time_seconds':
                 key=labels.get('process_key','');pid=labels.get('pid','')
                 if not key or not pid.isdigit():raise ValueError('Missing process identity')
@@ -76,6 +93,10 @@ class QueueMonitor:
                                   'employee':labels.get('employee_id','').strip().lower(),
                                   'name':labels.get('employee_name','').strip(),
                                   'container':labels.get('container',''),
+                                  'user':labels.get('user',''),'process_name':labels.get('name',''),
+                                  'cwd':labels.get('cwd',''),'host_cwd':labels.get('host_cwd',''),
+                                  'attribution':labels.get('attribution',''),'entrypoint':labels.get('entrypoint',''),
+                                  'directory_group':labels.get('directory_group',''),'start_time_seconds':value,
                                   'npu_ids':self.physical_npu_ids(node,labels.get('npu_ids','')),
                                   'control_ref':labels.get('control_ref','')})
             else:
@@ -88,7 +109,7 @@ class QueueMonitor:
                     and values.get('inventory_processes')==len(rows[node])
                     and len({r['process_key'] for r in rows[node]})==len(rows[node])):
                 valid.add(node)
-        self.rows=[r for node in valid for r in rows[node]]; self.valid=valid; self.sampled=now
+        self.rows=[{**r,**process_metrics.get((node,r['process_key']),{})} for node in valid for r in rows[node]]; self.valid=valid; self.sampled=now
         self.inventory_times={node:scalars[node]['inventory_timestamp_seconds'] for node in valid}
 
     def fresh_nodes(self,now):

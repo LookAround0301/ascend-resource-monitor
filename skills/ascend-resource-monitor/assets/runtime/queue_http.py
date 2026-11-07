@@ -1,6 +1,7 @@
 """Same-origin reservation UI/API with separate personal account sessions."""
 import asyncio
 import hashlib
+import logging
 from collections import defaultdict, deque
 import secrets
 import time
@@ -112,7 +113,8 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
         return {employee:name for employee,name in rosters[0].items()
                 if all(roster.get(employee)==name for roster in rosters[1:])}
 
-    unified=UnifiedQueue(store, config['nodes'], settings.get('reservation_buffer_seconds',600), settings.get('timezone','UTC'), settings.get('daily_reset',False), settings.get('cards_per_node',8)) if settings.get('unified_queue') is True else None
+    strict_nights=settings.get('strict_nights') is True
+    unified=UnifiedQueue(store, config['nodes'], settings.get('reservation_buffer_seconds',600), settings.get('timezone','UTC'), settings.get('daily_reset',False), settings.get('cards_per_node',8),strict_nights) if settings.get('unified_queue') is True else None
     auto=AutoQueue(store,agent) if not unified and settings.get('auto_match_employee') else None
     monitor=None
     if unified and settings.get('monitor_processes'):
@@ -123,6 +125,11 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                 if response.status!=200:raise ValueError('Process inventory unavailable')
                 return await response.json()
         monitor=QueueMonitor(config['nodes'],settings,fetch_inventory)
+    coordinator=None
+    if strict_nights:
+        if not unified or not monitor:raise ValueError('Strict night reservations require process monitoring')
+        from queue_night_coordinator import NightCoordinator
+        coordinator=NightCoordinator(unified,monitor,agent,lambda event:audit(config['audit_log'],event))
 
     def cookie_name(request):
         return session_cookie_name(store.session_namespace,request.host)
@@ -183,12 +190,16 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                     else: await reconcile()
                     if monitor:
                         await monitor.poll()
-                        if unified: await asyncio.to_thread(unified.auto_finish_nights,monitor)
-                except Exception: pass
+                        if coordinator:await coordinator.poll()
+                        elif unified: await asyncio.to_thread(unified.auto_finish_nights,monitor)
+                except Exception:
+                    if coordinator:
+                        coordinator.status=['夜间调度或容器接管异常，请管理员检查服务日志。']
+                        logging.exception('Night scheduling or takeover failed')
                 if auto:
                     try:await auto.refresh()
                     except Exception:pass
-                await asyncio.sleep(3)
+                await asyncio.sleep(1 if coordinator else 3)
         task=asyncio.create_task(poll())
         yield
         task.cancel()
@@ -233,8 +244,11 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                 if operation=='state':
                     state=unified.view(person) if unified else {**store.view(person),'nodes':list(config['nodes']),'server_time':time.time(),'auto_match_employee':auto is not None}
                     if monitor:state=monitor.decorate(state,unified.continuing())
+                    if coordinator:state['process_monitor_errors'].extend(coordinator.status)
+                    if monitor and monitor.night_log_error:state['process_monitor_errors'].append(monitor.night_log_error)
                     if unified:
-                        state['night_auto_finish_enabled']=bool(monitor)
+                        state['night_auto_finish_enabled']=bool(monitor and not strict_nights)
+                        state['strict_nights']=strict_nights
                         for row in state['tasks']:
                             if not row['mine']: row.pop('allowed_employees',None)
                     return web.json_response(state,headers={'Cache-Control':'no-store','Vary':'Cookie, Authorization'})
@@ -333,8 +347,10 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                     if action=='claim' and (not isinstance(data.get('offer_id'),str) or not data['offer_id']):
                         raise ControlError(409,'请刷新页面后直接点击“开始使用”')
                     event(person,'unified_'+str(action),job=job)
-                    unified.action(person,job,action,data.get('offer_id'))
-                    return web.json_response({'message':{'claim':'已登记开始，请自行启动任务','finish':'已结束登记，预约资源已释放','cancel':'已取消预约','priority-top':'已置顶到等待队列首位','priority-up':'已调高一位优先级','priority-down':'已调低一位优先级'}[action]})
+                    result=unified.action(person,job,action,data.get('offer_id'))
+                    message={'claim':'已登记开始，请自行启动任务','finish':'已结束登记，预约资源已释放','cancel':'已取消预约','priority-top':'已置顶到等待队列首位','priority-up':'已调高一位优先级','priority-down':'已调低一位优先级'}[action]
+                    if result=='night_cleanup_pending':message='夜间预约正在结束，容器停止并确认资源释放后完成。'
+                    return web.json_response({'message':message})
                 raise ControlError(404,'统一队列不提供网页停止或容器关联')
             if operation=='enqueue':
                 if not person['registered']:raise ControlError(400,'提交自己的预约前，请先注册个人账号')

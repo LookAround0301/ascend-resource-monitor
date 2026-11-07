@@ -10,6 +10,10 @@ from control_common import ControlError, StopEngine, parse_browser_payload
 
 
 def make_handler(engine, guard=None, queue=None, roster=None):
+    night_enforcer=None
+    if queue and engine.config.get('task_queue',{}).get('night_enforcement') is True:
+        from queue_night_enforcer import NightEnforcer
+        night_enforcer=NightEnforcer(queue)
     class Handler(BaseHTTPRequestHandler):
         def reply(self, status, body):
             encoded = json.dumps(body, ensure_ascii=False).encode()
@@ -57,7 +61,7 @@ def make_handler(engine, guard=None, queue=None, roster=None):
                 self.reply(404, {'message':'Not found'})
 
         def do_POST(self):
-            if self.path not in ('/stop', '/whitelist', '/guard/switch', '/queue/kill', '/roster', '/roster/remove') or (self.path in ('/whitelist', '/guard/switch') and not guard) or (self.path=='/queue/kill' and not queue) or (self.path in ('/roster','/roster/remove') and not roster):
+            if self.path not in ('/stop', '/whitelist', '/guard/switch', '/queue/kill', '/queue/night-stop', '/roster', '/roster/remove') or (self.path in ('/whitelist', '/guard/switch') and not guard) or (self.path=='/queue/kill' and not queue) or (self.path=='/queue/night-stop' and not night_enforcer) or (self.path in ('/roster','/roster/remove') and not roster):
                 self.reply(404, {'message':'Not found'}); return
             try:
                 length = int(self.headers.get('Content-Length','0'))
@@ -71,6 +75,7 @@ def make_handler(engine, guard=None, queue=None, roster=None):
                 if self.path=='/roster/remove':result=roster.remove(body['request'],body['actor'])
                 elif self.path=='/roster':result=roster.add(body['request'],body['actor'])
                 elif self.path=='/queue/kill':result=queue.submit(body['request'],body['actor'])
+                elif self.path=='/queue/night-stop':result=night_enforcer.stop(body['request'],body['actor'])
                 elif self.path=='/whitelist':result=guard.whitelist(body['request'],body['actor'])
                 elif self.path=='/guard/switch':result=guard.set_enabled(body['request'],body['actor'])
                 else:result=engine.stop(body['request'],body['actor'])

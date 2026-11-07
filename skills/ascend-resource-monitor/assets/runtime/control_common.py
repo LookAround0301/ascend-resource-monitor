@@ -117,6 +117,9 @@ class Docker:
     def stop(self, cid):
         self.call('POST', '/containers/' + cid + '/stop?t=30')
 
+    def kill(self, cid):
+        self.call('POST', '/containers/' + cid + '/kill?signal=SIGKILL')
+
 
 def npu_pids(url):
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))

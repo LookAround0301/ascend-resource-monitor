@@ -70,8 +70,8 @@ def plan(nodes, busy, jobs, now, buffer_seconds=600):
             choices.append(((-intact_groups, tuple(map(str, choice))), choice))
         return sorted(choices, key=lambda pair: pair[0])
 
-    def options(job, start):
-        end = start + job['seconds'] + buffer_seconds
+    def options(job, start, seconds):
+        end = start + seconds + buffer_seconds
         available = {node: free(node, start, end, job.get('night', False)) for node in nodes}
         count = job['cards']
         if job.get('dual'):
@@ -101,12 +101,23 @@ def plan(nodes, busy, jobs, now, buffer_seconds=600):
         for start in sorted(candidates):
             if job.get('start_before') and start >= job['start_before']:
                 continue
-            if job.get('finish_before') and start + job['seconds'] > job['finish_before']:
-                continue
-            available = options(job, start)
-            if available:
-                chosen = (start, available[0])
-                break
+            seconds=job['seconds']
+            if job.get('clip_finish_before'):
+                seconds=min(seconds,math.floor(job['clip_finish_before']-start))
+                if seconds<60:
+                    continue
+            durations={seconds}
+            if job.get('clip_finish_before'):
+                durations.update(math.floor(begin-start-buffer_seconds) for _,_,begin,_,_ in intervals
+                                 if begin>start and 60<=begin-start-buffer_seconds<seconds)
+            for candidate_seconds in sorted(durations,reverse=True):
+                if job.get('finish_before') and start+candidate_seconds>job['finish_before']:
+                    continue
+                available=options(job,start,candidate_seconds)
+                if available:
+                    chosen=(start,available[0],candidate_seconds)
+                    break
+            if chosen:break
         if chosen is None:
             planned.append({'id': job['id'], 'start': None, 'allocations': {}})
             if job.get('finish_before') or job.get('start_before'):
@@ -127,10 +138,10 @@ def plan(nodes, busy, jobs, now, buffer_seconds=600):
             # Without a bound for this job, accepting later work can starve it.
             planned.extend({'id': later['id'], 'start': None, 'allocations': {}} for later in jobs[len(planned):])
             break
-        start, allocations = chosen
-        finish = start + job['seconds'] + buffer_seconds
+        start, allocations,seconds = chosen
+        finish = start + seconds + buffer_seconds
         for node, cards in allocations.items():
-            direct_end = start + job['seconds']
+            direct_end = start + seconds
             intervals.append((node, frozenset(cards), start, finish, direct_end))
-        planned.append({'id': job['id'], 'start': start, 'allocations': allocations})
+        planned.append({'id': job['id'], 'start': start, 'allocations': allocations, 'seconds':seconds})
     return planned

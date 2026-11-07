@@ -16,6 +16,7 @@ def parse_inventory(raw,prefix,now):
             target=labels.get('control_ref','').split('@',1)
             rows.append({'pid':int(labels['pid']),'employee':labels.get('employee_id','').strip().lower(),
                          'process_key':labels.get('process_key',''),
+                         'npu_ids':labels.get('npu_ids',''),
                          'container_id':target[0] if len(target)==2 and CONTAINER_ID.fullmatch(target[0]) else '',
                          'started_at':target[1] if len(target)==2 else ''})
     if (scalars.get('inventory_success')!=1 or scalars.get('inventory_truncated')!=0
