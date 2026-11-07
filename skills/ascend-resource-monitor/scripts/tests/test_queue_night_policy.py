@@ -246,6 +246,10 @@ class StrictQueueTests(unittest.TestCase):
             self.assertTrue(any(a['kind']=='overtime-release' and '不会自动停止' in a['message'] for a in self.queue.view(person)['alerts']))
         with self.store.db() as db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM unified_overtime_releases WHERE job=?',(job,)).fetchone()[0],1)
+        released=self.queue.released_usage()
+        saved=next(item for item in released if item['job']==job)
+        self.assertEqual(saved['allocations'],row['allocations'])
+        self.assertIn('u23456789',saved['allowed_employees'])
 
     def test_extension_updates_next_user_forecast_and_alerts(self):
         waiting=self.store.user(self.store.register('u34567890','Next','fixture-password'))

@@ -72,6 +72,9 @@ class UnifiedQueue:
                 allowed_employees TEXT NOT NULL, released_at REAL NOT NULL)''')
             if 'reason' not in {row['name'] for row in db.execute('PRAGMA table_info(unified_overtime_releases)')}:
                 db.execute("ALTER TABLE unified_overtime_releases ADD COLUMN reason TEXT NOT NULL DEFAULT 'overtime'")
+            release_columns={row['name'] for row in db.execute('PRAGMA table_info(unified_overtime_releases)')}
+            if 'allocations' not in release_columns:
+                db.execute("ALTER TABLE unified_overtime_releases ADD COLUMN allocations TEXT NOT NULL DEFAULT '{}'")
             db.execute('CREATE INDEX IF NOT EXISTS unified_overtime_releases_at ON unified_overtime_releases(released_at)')
             db.execute('CREATE TABLE IF NOT EXISTS unified_continuing (node TEXT, employee TEXT, cutoff REAL, PRIMARY KEY(node,employee))')
             db.execute('CREATE TABLE IF NOT EXISTS unified_shared_continuing (node TEXT, employee TEXT, cutoff REAL, cards TEXT, PRIMARY KEY(node,employee))')
@@ -199,6 +202,12 @@ class UnifiedQueue:
             rows=[dict(r) for r in db.execute('SELECT * FROM unified_continuing')]
             rows.extend({**dict(r), 'cards':json.loads(r['cards'])} for r in db.execute('SELECT * FROM unified_shared_continuing'))
             return rows
+
+    def released_usage(self):
+        with self.store.db() as db:
+            return [{**dict(row),'allowed_employees':json.loads(row['allowed_employees']),
+                     'allocations':json.loads(row['allocations'])}
+                    for row in db.execute('SELECT * FROM unified_overtime_releases WHERE released_at>?',(time.time()-7*86400,))]
 
     def alerts(self, rows, user, now, reset, blocked, dependent, joint):
         result = []
@@ -500,7 +509,7 @@ class UnifiedQueue:
                     db.execute('UPDATE unified_tasks SET requested_seconds=? WHERE id=?',
                                (max(1,math.floor(limit-row['activated'])),row['id']))
         if self.overtime_control:
-            active=db.execute('''SELECT r.id,r.account,r.allowed_employees,r.activated,r.requested_seconds,a.employee FROM unified_tasks r
+            active=db.execute('''SELECT r.id,r.account,r.allowed_employees,r.activated,r.requested_seconds,r.allocations,a.employee FROM unified_tasks r
                 JOIN accounts a ON a.id=r.account WHERE r.state='active' AND r.not_before=0
                 AND r.activated>0 AND r.requested_seconds>0''').fetchall()
             expired=[row for row in active if now>=min(row['activated']+row['requested_seconds']+600,
@@ -508,8 +517,8 @@ class UnifiedQueue:
             for row in expired:
                 reason=('cutoff' if self.normal_priority and now>=self.normal_night_end(row['activated'])
                         and self.normal_night_end(row['activated'])<row['activated']+row['requested_seconds']+600 else 'overtime')
-                db.execute('INSERT OR IGNORE INTO unified_overtime_releases(job,account,employee,allowed_employees,released_at,reason) VALUES (?,?,?,?,?,?)',
-                           (row['id'],row['account'],row['employee'],row['allowed_employees'],now,reason))
+                db.execute('INSERT OR IGNORE INTO unified_overtime_releases(job,account,employee,allowed_employees,released_at,reason,allocations) VALUES (?,?,?,?,?,?,?)',
+                           (row['id'],row['account'],row['employee'],row['allowed_employees'],now,reason,row['allocations']))
                 db.execute('DELETE FROM confirmations WHERE job=?',(row['id'],))
                 db.execute('DELETE FROM reservations WHERE id=?',(row['id'],))
                 db.execute('DELETE FROM unified_tasks WHERE id=?',(row['id'],))

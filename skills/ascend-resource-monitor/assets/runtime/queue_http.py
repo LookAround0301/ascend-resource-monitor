@@ -243,7 +243,7 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
 
     async def metrics(request):
         rows=store.view(None)['tasks'] if not unified else unified.view(None)['tasks']
-        process_metrics=monitor.metrics(rows,continuing=unified.continuing()) if monitor else ''
+        process_metrics=monitor.metrics(rows,continuing=unified.continuing(),released=unified.released_usage()) if monitor else ''
         if unified:
             rows=[{**row,'node':node,'state':'queued' if row['state']=='ready' else row['state'], 'container':'',
                    'title':('双机共 '+str(row['total_cards'])+' 卡（各 '+str(row['cards'])+' 卡）') if row['dual'] else '单机 '+str(row['cards'])+' 卡'}
@@ -262,7 +262,7 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                     return web.json_response({'people':unified.urgent_users()},headers={'Cache-Control':'no-store','Vary':'Cookie, Authorization'})
                 if operation=='state':
                     state=unified.view(person) if unified else {**store.view(person),'nodes':list(config['nodes']),'server_time':time.time(),'auto_match_employee':auto is not None}
-                    if monitor:state=monitor.decorate(state,unified.continuing())
+                    if monitor:state=monitor.decorate(state,unified.continuing(),unified.released_usage())
                     if coordinator:state['process_monitor_errors'].extend(coordinator.status)
                     if monitor and monitor.night_log_error:state['process_monitor_errors'].append(monitor.night_log_error)
                     if unified:

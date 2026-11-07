@@ -201,12 +201,14 @@ class QueueMonitor:
         _,_,started=row.get('control_ref','').partition('@')
         try:start=datetime.fromisoformat(started.replace('Z','+00:00')).timestamp()
         except ValueError:return cards
+        process_start=row.get('start_time_seconds')
+        if not isinstance(process_start,(int,float)) or not math.isfinite(process_start) or process_start<=0:return cards
         for grant in continuing:
-            if 'cards' in grant and grant['node']==row['node'] and grant['employee']==row['employee'] and start<=grant['cutoff']:
+            if 'cards' in grant and grant['node']==row['node'] and grant['employee']==row['employee'] and start<=grant['cutoff'] and process_start<=grant['cutoff']:
                 cards.update(grant['cards'])
         return cards
 
-    def classification(self,row, tasks, continuing=()):
+    def classification(self,row, tasks, continuing=(), released=()):
         if not EMPLOYEE.fullmatch(row['employee']) or not row['name'] or len(row['name'])>100 or any(ord(c)<32 for c in row['name']):
             return '待核实'
         matched=any(task['state']=='active' and task['employee']==row['employee']
@@ -220,18 +222,32 @@ class QueueMonitor:
         if not cid or not started:return '未登记使用（疑似插队）'
         try:start=datetime.fromisoformat(started.replace('Z','+00:00')).timestamp()
         except ValueError:return '待核实'
+        process_start=row.get('start_time_seconds')
+        if not isinstance(process_start,(int,float)) or not math.isfinite(process_start) or process_start<=0:return '待核实'
+        for release in sorted(released,key=lambda item:item['released_at'],reverse=True):
+            if row['employee'] not in [release['employee'],*release.get('allowed_employees',[])]:continue
+            if process_start>release['released_at']:continue
+            allocations=release.get('allocations') or {}
+            if allocations:
+                if row['node'] not in allocations:continue
+                if process_cards is None:return '待核实'
+                if process_cards and process_cards<=set(allocations[row['node']]):
+                    return '超时释放后仍有进程' if release.get('reason')=='overtime' else '到时释放后仍有进程'
+            elif any(grant['node']==row['node'] and grant['employee']==row['employee']
+                     and grant['cutoff']<=release['released_at'] for grant in continuing):
+                return '近期超时释放（待核实）' if release.get('reason')=='overtime' else '近期到时释放（待核实）'
         shared_total=self.shared_cards(row,tasks,continuing)
         if process_cards and shared_total and process_cards <= shared_total:
             return '跨日继续使用'
         for grant in continuing:
-            if grant['node']!=row['node'] or grant['employee']!=row['employee'] or start>grant['cutoff']:
+            if grant['node']!=row['node'] or grant['employee']!=row['employee'] or start>grant['cutoff'] or process_start>grant['cutoff']:
                 continue
             if 'cards' not in grant:return '跨日继续使用'
             if process_cards is None:return '待核实'
             if process_cards <= set(grant['cards']):return '跨日继续使用'
         return '未登记使用（疑似插队）'
 
-    def decorate(self, state, continuing=()):
+    def decorate(self, state, continuing=(), released=()):
         now=state['server_time']; grouped={}; excess_grouped={}
         owned={}; active_owned={}
         if state.get('user'):
@@ -241,7 +257,7 @@ class QueueMonitor:
                         owned.setdefault(node,set()).update(cards)
                         if task['state']=='active':active_owned.setdefault(node,set()).update(cards)
         for row in self.current(now):
-            classification=self.classification(row,state['tasks'],continuing)
+            classification=self.classification(row,state['tasks'],continuing,released)
             if classification=='已登记使用' and state.get('user'):
                 cards=self.cards(row)
                 if cards is not None:
@@ -253,7 +269,7 @@ class QueueMonitor:
                     if overlap:
                         group=excess_grouped.setdefault((row['node'],row['employee'],row['name']),{'keys':[],'cards':set()})
                         group['keys'].append(row['process_key']);group['cards'].update(overlap)
-            if classification=='未登记使用（疑似插队）':
+            if classification in ('未登记使用（疑似插队）','超时释放后仍有进程','到时释放后仍有进程','近期超时释放（待核实）','近期到时释放（待核实）'):
                 cards=self.cards(row)
                 if cards is None:
                     continue
@@ -262,16 +278,19 @@ class QueueMonitor:
                 own=bool(state.get('user') and state['user'].get('employee','').lower()==row['employee'])
                 for role,matched in (('affected',overlap),('self',cards if own else set())):
                     if matched:
-                        group=grouped.setdefault((row['node'],row['employee'],row['name'],role),{'keys':[],'cards':set()})
+                        group=grouped.setdefault((row['node'],row['employee'],row['name'],role,classification),{'keys':[],'cards':set()})
                         group['keys'].append(row['process_key']);group['cards'].update(matched)
         alerts=list(state.get('alerts',[]))
-        for (node,employee,name,role),group in sorted(grouped.items()):
+        for (node,employee,name,role,classification),group in sorted(grouped.items()):
             cards=sorted(group['cards'])
             digest=hashlib.sha256(('\0'.join(sorted(group['keys']))+':'+','.join(map(str,cards))).encode()).hexdigest()[:20]
             description = ('你在 '+node+' 的 '+ '、'.join(map(str,cards))+' 号卡有未登记进程，请核对并登记。'
                            if role=='self' else name+'（'+employee+'）在 '+node+' 的 '+ '、'.join(map(str,cards))+' 号卡有未登记进程，占用了你的预约资源，请核对。')
+            prefix=('未登记使用提醒（疑似插队）：' if classification=='未登记使用（疑似插队）' else
+                    '预约释放后仍有进程，请核对：' if classification in ('超时释放后仍有进程','到时释放后仍有进程') else
+                    '近期预约已释放，进程归属待核实：')
             alerts.append({'id':'unregistered:'+role+':'+node+':'+employee+':'+digest,'kind':'unregistered',
-                           'message':'未登记使用提醒（疑似插队）：'+description})
+                           'message':prefix+description})
         for (node,employee,name),group in sorted(excess_grouped.items()):
             cards=sorted(group['cards'])
             digest=hashlib.sha256(('\0'.join(sorted(group['keys']))+':'+','.join(map(str,cards))).encode()).hexdigest()[:20]
@@ -281,12 +300,12 @@ class QueueMonitor:
         return {**state,'alerts':alerts,'card_usage':self.card_usage(state['tasks'],now),
                 'process_monitor_errors':[node+' 的进程采集暂不可用，暂停插队判断' for node in self.nodes if node not in valid]}
 
-    def metrics(self, tasks, now=None, continuing=()):
+    def metrics(self, tasks, now=None, continuing=(), released=()):
         now=time.time() if now is None else now
         metric=self.prefix+'_queue_process_registration'
         lines=['# HELP '+metric+' Current NPU process registration, joined by node and process_key.', '# TYPE '+metric+' gauge']
         for row in self.current(now):
-            labels={'node':row['node'],'process_key':row['process_key'],'queue_registration':self.classification(row,tasks,continuing)}
+            labels={'node':row['node'],'process_key':row['process_key'],'queue_registration':self.classification(row,tasks,continuing,released)}
             lines.append(metric+'{'+','.join(k+'='+json.dumps(v,ensure_ascii=False) for k,v in labels.items())+'} 1')
         lines.append('# TYPE '+self.prefix+'_queue_process_source_up gauge')
         for node in self.nodes:

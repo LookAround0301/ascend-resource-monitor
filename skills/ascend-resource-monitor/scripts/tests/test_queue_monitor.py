@@ -131,6 +131,41 @@ class MonitorTests(unittest.TestCase):
         grant['cutoff']=1
         self.monitor.ingest(inventory(self.now,npu_ids='2'),self.now)
         self.assertIn('未登记使用',self.monitor.metrics([],self.now,[grant]))
+    def test_new_process_in_old_container_is_not_a_cross_day_run(self):
+        cutoff=datetime.fromisoformat('2026-11-04T01:00:00+00:00').timestamp()
+        row=self.monitor.rows[0]
+        grant={'node':'a','employee':'u12345678','cutoff':cutoff}
+        row['start_time_seconds']=cutoff-1
+        self.assertEqual(self.monitor.classification(row,[],[grant]),'跨日继续使用')
+        row['start_time_seconds']=cutoff+1
+        self.assertEqual(self.monitor.classification(row,[],[grant]),'未登记使用（疑似插队）')
+        shared={**grant,'cards':[0]}
+        self.assertEqual(self.monitor.shared_cards(row,[],[shared]),set())
+        self.assertTrue(self.monitor.decorate(self.state(),[shared])['alerts'])
+
+    def test_released_registration_needs_matching_employee_node_cards_and_process_time(self):
+        row=self.monitor.rows[0];row['start_time_seconds']=self.now-200
+        release={'employee':'u12345678','allowed_employees':['u12345679'],
+                 'released_at':self.now-100,'reason':'overtime','allocations':{'a':[0]}}
+        self.assertEqual(self.monitor.classification(row,[],[],[release]),'超时释放后仍有进程')
+        alert=self.monitor.decorate(self.state(),[],[release])['alerts'][0]
+        self.assertIn('预约释放后仍有进程',alert['message']);self.assertNotIn('疑似插队',alert['message'])
+        self.assertEqual(self.monitor.classification(row,[],[],[{**release,'allocations':{'a':[1]}}]),'未登记使用（疑似插队）')
+        self.assertEqual(self.monitor.classification(row,[],[],[{**release,'allocations':{'b':[0]}}]),'未登记使用（疑似插队）')
+        self.assertEqual(self.monitor.classification(row,[],[],[{**release,'released_at':self.now-300}]),'未登记使用（疑似插队）')
+        self.assertEqual(self.monitor.classification(row,[],[],[{**release,'employee':'u99999999'}]),'未登记使用（疑似插队）')
+        self.assertEqual(self.monitor.classification(row,[],[],[{**release,'reason':'cutoff'}]),'到时释放后仍有进程')
+        registered={'state':'active','employee':'u12345678','allocations':{'a':[0]}}
+        self.assertEqual(self.monitor.classification(row,[registered],[],[release]),'已登记使用')
+
+    def test_legacy_release_without_card_history_is_reported_as_uncertain(self):
+        row=self.monitor.rows[0];row['start_time_seconds']=self.now-200
+        grant={'node':'a','employee':'u12345678','cutoff':self.now-400}
+        release={'employee':'u12345678','allowed_employees':[],'released_at':self.now-100,'reason':'overtime','allocations':{}}
+        self.assertEqual(self.monitor.classification(row,[],[grant],[release]),'近期超时释放（待核实）')
+        row['start_time_seconds']=self.now-500
+        self.assertEqual(self.monitor.classification(row,[],[grant],[release]),'近期超时释放（待核实）')
+        self.assertEqual(self.monitor.classification(row,[],[],[release]),'未登记使用（疑似插队）')
     def test_rejects_external_prometheus_endpoint(self):
         with self.assertRaises(ValueError):QueueMonitor(['a'],{'prometheus_url':'http://example.com:9090'},None)
     def test_cached_data_expires_by_inventory_timestamp(self):
