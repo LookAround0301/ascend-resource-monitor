@@ -130,7 +130,7 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
             return names_cache['names']
 
     strict_nights=settings.get('strict_nights') is True
-    unified=UnifiedQueue(store, config['nodes'], settings.get('reservation_buffer_seconds',600), settings.get('timezone','UTC'), settings.get('daily_reset',False), settings.get('cards_per_node',8),strict_nights,settings.get('overtime_control') is True) if settings.get('unified_queue') is True else None
+    unified=UnifiedQueue(store, config['nodes'], settings.get('reservation_buffer_seconds',600), settings.get('timezone','UTC'), settings.get('daily_reset',False), settings.get('cards_per_node',8),strict_nights,settings.get('overtime_control') is True,settings.get('normal_priority') is True) if settings.get('unified_queue') is True else None
     auto=AutoQueue(store,agent) if not unified and settings.get('auto_match_employee') else None
     monitor=None
     if unified and settings.get('monitor_processes'):
@@ -266,6 +266,7 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                         state['night_auto_finish_enabled']=bool(monitor and not strict_nights)
                         state['strict_nights']=strict_nights
                         state['overtime_control']=unified.overtime_control
+                        state['normal_priority']=unified.normal_priority
                         names=await shared_names(employee for row in state['tasks'] for employee in row['allowed_employees'])
                         for row in state['tasks']:
                             row['allowed_people']=[{'employee':employee,'name':names.get(employee,'')} for employee in row['allowed_employees']]
@@ -366,7 +367,8 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                     if not person['registered']:raise ControlError(400,'提交预约前请先登录个人账号')
                     event(person,'enqueue_unified')
                     job=unified.enqueue(person,data)
-                    return web.json_response({'message':'已加入统一队列','job':job})
+                    message=('已提交夜间预约；普通任务优先，开始时间可能顺延' if unified.normal_priority and data.get('night') is True else '已加入统一队列')
+                    return web.json_response({'message':message,'job':job})
                 if operation=='unified-action':
                     if data.get('confirmed') is not True:raise ControlError(400,'请先确认操作')
                     action=data.get('action');job=data.get('job')

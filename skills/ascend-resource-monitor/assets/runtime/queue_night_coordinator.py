@@ -16,7 +16,10 @@ class NightCoordinator:
         return tasks,targets,unknown
 
     async def poll(self):
-        now=time.time();tasks,targets,unknown=self.decisions(now)
+        now=time.time()
+        if getattr(self.queue,'normal_priority',False):
+            await asyncio.to_thread(self.queue.lock_due_night_takeovers,now)
+        tasks,targets,unknown=self.decisions(now)
         if not tasks:
             self.status=[];return
         blocked_nodes={item['node'] for item in unknown}
