@@ -64,20 +64,48 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         await self.poll_at(start)
         self.assertFalse(self.calls);self.assertTrue(self.coordinator.status)
         self.assertEqual(next(r for r in self.queue.view(self.user)['tasks'] if r['id']==night)['state'],'queued')
-    async def test_expired_night_owner_is_stopped_before_release(self):
+    async def test_expired_night_releases_without_stopping_even_if_inventory_unavailable(self):
         start=self.now+1200;night=self.add(self.user,night=True,not_before=start)
         self.monitor.inventory_times['a']=start
         await self.poll_at(start)
         self.assertEqual(next(r for r in self.queue.view(self.user)['tasks'] if r['id']==night)['state'],'active')
         self.monitor.rows=[{'node':'a','employee':'u12345678','card_ids':[0],
                             'control_ref':'a'*64+'@2026-11-04T20:00:00Z','process_key':'boot:42:987'}]
+        self.monitor.valid={'b'}
+        await self.poll_at(start+3600)
+        self.assertFalse(self.calls)
+        self.assertNotIn(night,[r['id'] for r in self.queue.view(self.user)['tasks']])
+
+    async def test_active_reservation_does_not_clean_new_processes_and_finish_does_not_stop(self):
+        start=self.now+1200;night=self.add(self.user,night=True,not_before=start)
+        self.monitor.inventory_times['a']=start
+        await self.poll_at(start)
+        self.monitor.rows=[{'node':'a','employee':'u23456789','card_ids':[0],
+                            'control_ref':'a'*64+'@2026-11-04T20:00:00Z','process_key':'boot:42:987'}]
+        self.monitor.inventory_times['a']=start+10
+        await self.poll_at(start+10)
+        self.assertFalse(self.calls)
+        self.queue.action(self.user,night,'finish')
+        await self.poll_at(start+20)
+        self.assertFalse(self.calls)
+        self.assertNotIn(night,[r['id'] for r in self.queue.view(self.user)['tasks']])
+
+    async def test_next_reservation_cleans_previous_owner_at_handoff(self):
+        start=self.now+1200
+        first=self.add(self.user,night=True,not_before=start)
+        second=self.add(self.other,night=True,not_before=start+3600)
+        self.monitor.inventory_times['a']=start
+        await self.poll_at(start)
+        self.monitor.rows=[{'node':'a','employee':'u12345678','card_ids':list(range(8)),
+                            'control_ref':'a'*64+'@2026-11-04T20:00:00Z','process_key':'boot:42:987'}]
         self.monitor.inventory_times['a']=start+3600
         await self.poll_at(start+3600)
         self.assertEqual(len(self.calls),1)
-        self.assertIn(night,[r['id'] for r in self.queue.view(self.user)['tasks']])
+        self.assertEqual(self.calls[0][2]['request']['allowed']['0'],['u23456789'])
+        self.assertNotIn(first,[r['id'] for r in self.queue.view(self.user)['tasks']])
         self.monitor.rows=[];self.monitor.inventory_times['a']=start+3610
         await self.poll_at(start+3610)
-        self.assertNotIn(night,[r['id'] for r in self.queue.view(self.user)['tasks']])
+        self.assertEqual(next(r for r in self.queue.view(self.other)['tasks'] if r['id']==second)['state'],'active')
 
 
 if __name__=='__main__':unittest.main()

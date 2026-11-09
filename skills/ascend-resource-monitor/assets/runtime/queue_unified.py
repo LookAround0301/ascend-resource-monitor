@@ -343,15 +343,16 @@ class UnifiedQueue:
                         or row['night_takeover']!=expected['night_takeover']
                         or row['employee']!=expected['employee'] or allocations!=expected['allocations']
                         or allowed!=expected['allowed_employees']):continue
-                if any(node in blocked_nodes or set(cards)&blocked_cards.get(node,set())
-                       for node,cards in allocations.items()):continue
                 end=(row['activated'] or row['not_before'])+row['requested_seconds']
                 if row['night_end_requested']:end=min(end,row['night_end_requested'])
                 if now>=end:
                     db.execute('DELETE FROM unified_tasks WHERE id=?',(row['id'],))
                     db.execute('DELETE FROM confirmations WHERE job=?',(row['id'],))
                     db.execute('DELETE FROM reservations WHERE id=?',(row['id'],))
-                elif row['state']=='queued' and row['night_fixed'] and now>=row['not_before']:
+                    continue
+                if any(node in blocked_nodes or set(cards)&blocked_cards.get(node,set())
+                       for node,cards in allocations.items()):continue
+                if row['state']=='queued' and row['night_fixed'] and now>=row['not_before']:
                     for normal in db.execute("SELECT id,allocations FROM unified_tasks WHERE not_before=0 AND state IN ('active','ready')").fetchall():
                         held=json.loads(normal['allocations']);remaining={}
                         for node,cards in held.items():
@@ -1161,13 +1162,9 @@ class UnifiedQueue:
                     if seconds<60:raise ControlError(409,'剩余使用时段不足 1 分钟，请重新排队')
                 db.execute("UPDATE unified_tasks SET state='active',activated=?,requested_seconds=? WHERE id=?", (now,seconds,job))
             elif action == 'finish' and row['state'] == 'active':
-                if self.strict_nights and row['not_before']:
-                    db.execute('UPDATE unified_tasks SET night_end_requested=? WHERE id=?',(now,job))
-                    return 'night_cleanup_pending'
-                else:
-                    db.execute('DELETE FROM unified_tasks WHERE id=?', (job,))
-                    db.execute('DELETE FROM confirmations WHERE job=?', (job,))
-                    db.execute('DELETE FROM reservations WHERE id=?', (job,))
+                db.execute('DELETE FROM unified_tasks WHERE id=?', (job,))
+                db.execute('DELETE FROM confirmations WHERE job=?', (job,))
+                db.execute('DELETE FROM reservations WHERE id=?', (job,))
             elif action == 'cancel' and row['state'] in ('queued', 'ready'):
                 if self.normal_priority and row['not_before'] and row['night_takeover']:
                     raise ControlError(409,'夜间资源已开始接管，不能取消；开始后可结束登记')

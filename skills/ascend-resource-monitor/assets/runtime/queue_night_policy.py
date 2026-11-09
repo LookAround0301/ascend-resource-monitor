@@ -50,7 +50,7 @@ def reserve_night(nodes, reservations, start, seconds, cards, dual=False, fixed_
 
 
 def enforcement_decisions(tasks, rows, fresh_nodes, now):
-    """Find unauthorized containers on active or expired night allocations.
+    """Find unauthorized containers when a night allocation is starting.
 
     Unknown ownership, unknown card mapping or conflicting shared containers
     are reported as unresolved instead of asserting an unsafe target.
@@ -59,7 +59,7 @@ def enforcement_decisions(tasks, rows, fresh_nodes, now):
     for task in tasks:
         start=task['not_before'];end=(task.get('activated') or start)+task['requested_seconds']
         if task.get('night_end_requested'):end=min(end,task['night_end_requested'])
-        if not start or now<start or task['state'] not in ('active','queued'):continue
+        if not start or now<start or now>=end or task['state']!='queued':continue
         for node,cards in task['allocations'].items():
             scope.setdefault(node,set()).update(cards)
             if now<end:

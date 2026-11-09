@@ -79,7 +79,7 @@ class NightPolicyTests(unittest.TestCase):
         self.assertEqual(reserve_night(nodes,reservations,1200,300,2,False,'a'),{'a':[2,6]})
 
     def test_enforcement_protects_owner_shared_and_unassigned_cards(self):
-        task={'state':'active','not_before':1000,'requested_seconds':600,'employee':'owner',
+        task={'state':'queued','not_before':1000,'requested_seconds':600,'employee':'owner',
               'allowed_employees':['shared'],'allocations':{'a':[0,1]}}
         def row(employee,cards,letter):
             return {'node':'a','employee':employee,'cards':cards,'control_ref':letter*64+'@started','process_key':letter}
@@ -87,8 +87,14 @@ class NightPolicyTests(unittest.TestCase):
         targets,errors=enforcement_decisions([task],rows,{'a'},1100)
         self.assertEqual([x['control_ref'] for x in targets],['c'*64+'@started'])
         self.assertEqual(errors,[])
+        self.assertEqual(enforcement_decisions([{**task,'state':'active'}],rows,{'a'},1100),([],[]))
         targets,errors=enforcement_decisions([task],rows,{'a'},1600)
-        self.assertEqual({x['control_ref'] for x in targets},{c*64+'@started' for c in 'abc'})
+        self.assertEqual(targets,[])
+        self.assertEqual(errors,[])
+
+        next_task={**task,'not_before':1600,'employee':'other','allowed_employees':[]}
+        targets,errors=enforcement_decisions([task,next_task],rows,{'a'},1600)
+        self.assertEqual({x['control_ref'] for x in targets},{c*64+'@started' for c in 'ab'})
         self.assertEqual(errors,[])
 
     def test_stale_or_ambiguous_data_never_issues_a_stop(self):
@@ -101,7 +107,7 @@ class NightPolicyTests(unittest.TestCase):
         self.assertEqual(targets,[]);self.assertEqual(errors[0]['reason'],'inventory_unavailable')
 
     def test_shared_container_conflict_does_not_kill_authorized_job(self):
-        task={'state':'active','not_before':1000,'requested_seconds':600,'employee':'owner',
+        task={'state':'queued','not_before':1000,'requested_seconds':600,'employee':'owner',
               'allowed_employees':[],'allocations':{'a':[0,1]}}
         rows=[{'node':'a','employee':name,'cards':[card],'control_ref':'a'*64+'@started','process_key':name}
               for name,card in [('owner',0),('other',1)]]

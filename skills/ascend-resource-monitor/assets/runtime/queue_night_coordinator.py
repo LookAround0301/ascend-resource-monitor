@@ -26,7 +26,8 @@ class NightCoordinator:
         for task in tasks:
             end=(task.get('activated') or task['not_before'])+task['requested_seconds']
             if task.get('night_end_requested'):end=min(end,task['night_end_requested'])
-            boundary=end if now>=end else task['not_before']
+            if task['state']!='queued' or now>=end:continue
+            boundary=task['not_before']
             for node in task['allocations']:
                 if self.monitor.inventory_times.get(node,0)<boundary:
                     blocked_nodes.add(node)
