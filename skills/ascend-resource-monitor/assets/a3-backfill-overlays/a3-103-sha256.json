@@ -1,0 +1,22 @@
+{
+  "queue_http.py": {
+    "line_endings": "lf",
+    "new": "0c53f2328efa18a56dac4081100e01af5a92aee2744d4ff059887519350ecf33",
+    "old": "45c2342b3ce70fb2400d5001a387f201c305bff0a1aba96893609fa854719184"
+  },
+  "queue_planner.py": {
+    "line_endings": "lf",
+    "new": "df7a39603a23e1cc844446333462ecbf6eb80653e081f66459644110015922a0",
+    "old": "734d7f429efd70c4a6093b29b51b9302967915abb0e52d2b064d6c20e611ccc6"
+  },
+  "queue_unified.py": {
+    "line_endings": "crlf",
+    "new": "e0cba1d4063dce3e4c14002d7377fb603aa127cae1e3c76a7b80107ac4dba051",
+    "old": "06a239159c60b25922f9fd0f366c0bd90b9a48118f0d40c2dc0382a49b3e39a2"
+  },
+  "queue_unified_ui.py": {
+    "line_endings": "crlf",
+    "new": "edd5821bbffaf688eaa315130ad10842f4891484838f01de4e2e91ef9392c8fc",
+    "old": "19ff949dfc1557ada6d1330ef7a98e2e5ba88bc88f4f38c6fd2bc1105c558333"
+  }
+}

@@ -1,0 +1,137 @@
+--- a/queue_planner.py
++++ b/queue_planner.py
+@@ -93,0 +94 @@
++    prior_reservations = []
+@@ -125,0 +127,7 @@
++            minimum=job.get('backfill_min_seconds',0)
++            if minimum and not job.get('night'):
++                for prior in prior_reservations:
++                    duration=math.floor(prior['start']-start-buffer_seconds)
++                    if minimum<=duration<seconds:
++                        durations.add(duration)
++                        truncation_sources.setdefault(duration,[]).extend((node,frozenset(cards)) for node,cards in prior['allocations'].items())
+@@ -163 +171,8 @@
+-        planned.append({'id': job['id'], 'start': start, 'allocations': allocations, 'seconds':seconds})
++        result={'id': job['id'], 'start': start, 'allocations': allocations, 'seconds':seconds}
++        if job.get('backfill_min_seconds') and seconds<job['seconds']:
++            relevant=[p['start'] for p in prior_reservations if p['start']>start and
++                      any(set(cards).intersection(p['allocations'].get(node,())) for node,cards in allocations.items())]
++            if relevant and start+seconds+buffer_seconds<=min(relevant):
++                result['backfill_end_before']=min(relevant)-buffer_seconds
++        planned.append(result)
++        prior_reservations.append({'start':start,'allocations':allocations})
+--- a/queue_unified.py
++++ b/queue_unified.py
+@@ -53,0 +54,2 @@
++                                     ('backfill_min_seconds', 'INTEGER NOT NULL DEFAULT 0'),
++                                     ('backfill_end_before', 'REAL NOT NULL DEFAULT 0'),
+@@ -282 +284 @@
+-            db.execute("UPDATE unified_tasks SET state='queued',allocations='{}',claim_before=0,ready_since=0,offer_id='',offer_end_before=0,missed_claims=missed_claims+? WHERE id=?",
++            db.execute("UPDATE unified_tasks SET state='queued',allocations='{}',claim_before=0,ready_since=0,offer_id='',offer_end_before=0,backfill_end_before=0,missed_claims=missed_claims+? WHERE id=?",
+@@ -420,0 +423,2 @@
++                if row['state']=='ready' and row.get('backfill_end_before'):
++                    end=row['backfill_end_before']+self.buffer
+@@ -437,0 +442 @@
++                    item['backfill_min_seconds']=row.get('backfill_min_seconds',0)
+@@ -550,0 +556 @@
++                if row['backfill_end_before']:end=min(end,row['backfill_end_before'])
+@@ -558 +564,2 @@
+-                deadline=min([row['claim_before'],self.normal_one_am(row['created']),end-60,*future_avoid])
++                minimum=row['backfill_min_seconds'] if row['backfill_end_before'] else 60
++                deadline=min([row['claim_before'],self.normal_one_am(row['created']),end-minimum+0.001,*future_avoid])
+@@ -560 +567 @@
+-                    db.execute("UPDATE unified_tasks SET state='queued',allocations='{}',claim_before=0,ready_since=0,offer_id='',offer_end_before=0 WHERE id=?",(row['id'],))
++                    db.execute("UPDATE unified_tasks SET state='queued',allocations='{}',claim_before=0,ready_since=0,offer_id='',offer_end_before=0,backfill_end_before=0 WHERE id=?",(row['id'],))
+@@ -635,0 +643,2 @@
++                    backfill_end=prediction.get('backfill_end_before',0)
++                    if backfill_end:offer_end=min(offer_end,backfill_end)
+@@ -645 +654 @@
+-                    deadlines.append(offer_end-60)
++                    deadlines.append(offer_end-(row['backfill_min_seconds'] if backfill_end else 60)+0.001)
+@@ -653 +662,2 @@
+-                            deadlines.append(earlier['start'] - prediction.get('seconds',row['requested_seconds'] or 3600) - self.buffer)
++                            if not prediction.get('backfill_end_before'):
++                                deadlines.append(earlier['start'] - prediction.get('seconds',row['requested_seconds'] or 3600) - self.buffer)
+@@ -655,2 +665,2 @@
+-                db.execute("UPDATE unified_tasks SET state='ready',allocations=?,claim_before=?,ready_since=?,offer_id=?,offer_end_before=? WHERE id=? AND state='queued'",
+-                           (json.dumps(prediction['allocations']), claim_before, now, secrets.token_hex(16),offer_end,row['id']))
++                db.execute("UPDATE unified_tasks SET state='ready',allocations=?,claim_before=?,ready_since=?,offer_id=?,offer_end_before=?,backfill_end_before=? WHERE id=? AND state='queued'",
++                           (json.dumps(prediction['allocations']), claim_before, now, secrets.token_hex(16),offer_end,prediction.get('backfill_end_before',0),row['id']))
+@@ -880,0 +891 @@
++            row['backfill_planned']=bool(row['backfill_end_before'] or prediction.get('backfill_end_before'))
+@@ -947,0 +959,2 @@
++        backfill=self.validate_backfill(data.get('backfill_min_seconds',0),seconds)
++        if backfill and (night or not self.strict_nights):raise ControlError(400,'只有普通任务支持短时插空')
+@@ -992,0 +1006,2 @@
++            if backfill:
++                db.execute('UPDATE unified_tasks SET backfill_min_seconds=? WHERE id=?',(backfill,job))
+@@ -1031,0 +1047,21 @@
++
++    @staticmethod
++    def validate_backfill(value,requested):
++        if type(value) is not int or value<0 or (value and (value<300 or value%300 or value>requested)):
++            raise ControlError(400,'最短插空时长须为 5 分钟的整数倍，且不超过预约时长')
++        return value
++
++    def update_backfill(self,user,job,value):
++        if not self.strict_nights or not isinstance(job,str):raise ControlError(400,'当前部署不支持短时插空')
++        with self.store.db() as db:
++            row=db.execute('SELECT * FROM unified_tasks WHERE id=?',(job,)).fetchone()
++            if not row:raise ControlError(404,'预约不存在')
++            if row['account']!=user['id'] and not user.get('admin'):raise ControlError(403,'只能修改自己的预约')
++            if row['not_before'] or row['state'] not in ('queued','ready'):raise ControlError(409,'只能修改尚未开始的普通任务')
++            value=self.validate_backfill(value,row['requested_seconds'])
++            now=time.time()
++            if row['state']=='ready' and row['backfill_end_before'] and (not value or row['backfill_end_before']-now<value):
++                db.execute("UPDATE unified_tasks SET backfill_min_seconds=?,state='queued',allocations='{}',claim_before=0,ready_since=0,offer_id='',offer_end_before=0,backfill_end_before=0 WHERE id=?",(value,job))
++            else:
++                db.execute('UPDATE unified_tasks SET backfill_min_seconds=? WHERE id=?',(value,job))
++            self._schedule(db,now)
+@@ -1144,0 +1181,2 @@
++                if row['backfill_end_before'] and new_end>row['backfill_end_before']:
++                    raise ControlError(409,'插空任务不能延长到影响前序预约，请按时结束登记并自行停止任务')
+@@ -1161,0 +1200,2 @@
++                    if row['backfill_end_before'] and seconds<row['backfill_min_seconds']:
++                        raise ControlError(409,'插空剩余时间不足最低接受时长，请继续等待')
+--- a/queue_unified_ui.py
++++ b/queue_unified_ui.py
+@@ -4 +4 @@
+-QUEUE_UI_VERSION = 'a3-night-handoff-only-2026-11-09'
++QUEUE_UI_VERSION = 'a3-140-backfill-2026-11-10'
+@@ -11 +11 @@
+-.urgent-badge{display:inline-block;padding:3px 8px;margin-right:6px;border-radius:5px;background:#a62b3d;color:#fff;font-size:12px;font-weight:700}.urgent-choice{display:flex;align-items:center;gap:6px;color:#ff9eab;font-weight:600;min-height:37px}.urgent-choice input{min-width:0;width:17px;height:17px;accent-color:#c33148}
++.urgent-badge{display:inline-block;padding:3px 8px;margin-right:6px;border-radius:5px;background:#a62b3d;color:#fff;font-size:12px;font-weight:700}.urgent-choice{display:flex;align-items:center;gap:6px;color:#ff9eab;font-weight:600;min-height:37px}.urgent-choice input{min-width:0;width:17px;height:17px;accent-color:#c33148}.backfill-choice{display:flex;align-items:center;gap:6px;min-height:37px;color:#d8e5f5}.backfill-choice input{min-width:0;width:17px;height:17px;accent-color:#316bd6}
+@@ -21 +21 @@
+-<section><h3>提交预约</h3><form id="join-form" class="row"><label>机器<select id="machine" required></select></label><label>卡数（合计）<select id="cards" required></select></label><label>预约类型<select id="kind"><option value="normal">普通任务</option><option value="night">夜间长任务</option></select></label><label id="duration-hour-label">预计时长（小时）<select id="hours" required></select></label><label id="duration-minute-label">分钟<select id="minutes" aria-label="预计时长（分钟）"></select></label><label id="start-date-label" class="hidden">预约开始日期<select id="start-date"><option value="">选择日期</option></select></label><label id="start-hour-label" class="hidden">开始时间（小时）<select id="start-hour"><option value="">选择小时</option></select></label><label id="start-minute-label" class="hidden">开始时间（分钟）<select id="start-minute"></select></label><label id="urgent-option" class="urgent-choice hidden"><input id="urgent" type="checkbox">紧急任务</label><button id="join" disabled>加入队列</button><span id="message" role="status"></span></form><div id="avoid-area" class="hidden"><p>默认避开午休 12:00–14:00 和晚饭 17:30–19:30；饭点可工作的用户可以取消选择。</p><button id="avoid-toggle" type="button" class="secondary">选择避开时段</button><div id="avoid-form" class="avoid-panel hidden"></div></div><p id="resource-hint"></p><p id="reservation-window"></p><p id="queue-rules">普通任务最长 2 小时，分配后最多 10 分钟内点击“开始使用”，最迟须在凌晨 2 点前开始。夜间任务按排程自动开始登记，由本人设置的 agent 启动；夜间交接不检查进程，其他情况可在卡连续空闲后自动结束。每日 9 点清空普通任务登记并取消未开始的夜间预约；已开始的夜间任务保留原时间，用完后自行结束登记。实际任务不会被停止。</p></section>
++<section><h3>提交预约</h3><form id="join-form" class="row"><label>机器<select id="machine" required></select></label><label>卡数（合计）<select id="cards" required></select></label><label>预约类型<select id="kind"><option value="normal">普通任务</option><option value="night">夜间长任务</option></select></label><label id="duration-hour-label">预计时长（小时）<select id="hours" required></select></label><label id="duration-minute-label">分钟<select id="minutes" aria-label="预计时长（分钟）"></select></label><label id="start-date-label" class="hidden">预约开始日期<select id="start-date"><option value="">选择日期</option></select></label><label id="start-hour-label" class="hidden">开始时间（小时）<select id="start-hour"><option value="">选择小时</option></select></label><label id="start-minute-label" class="hidden">开始时间（分钟）<select id="start-minute"></select></label><label id="urgent-option" class="urgent-choice hidden"><input id="urgent" type="checkbox">紧急任务</label><label id="backfill-option" class="backfill-choice hidden"><input id="backfill-enabled" type="checkbox">愿意缩短本任务，提前使用空档</label><label id="backfill-min-label" class="hidden">本任务最短使用时长<select id="backfill-min"></select></label><button id="join" disabled>加入队列</button><span id="message" role="status"></span></form><div id="avoid-area" class="hidden"><p>默认避开午休 12:00–14:00 和晚饭 17:30–19:30；饭点可工作的用户可以取消选择。</p><button id="avoid-toggle" type="button" class="secondary">选择避开时段</button><div id="avoid-form" class="avoid-panel hidden"></div></div><p id="resource-hint"></p><p id="reservation-window"></p><p id="queue-rules">普通任务最长 2 小时，分配后最多 10 分钟内点击“开始使用”，最迟须在凌晨 2 点前开始。夜间任务按排程自动开始登记，由本人设置的 agent 启动；夜间交接不检查进程，其他情况可在卡连续空闲后自动结束。每日 9 点清空普通任务登记并取消未开始的夜间预约；已开始的夜间任务保留原时间，用完后自行结束登记。实际任务不会被停止。</p></section>
+@@ -33 +33 @@
+-  let failure='';const delivered=new Map(),openNotices=new Set(),alertSeen=new Set(),overdueNotices=new Map(),bottleneckStates=new Map(),allowedEditors=new Map(),avoidEditors=new Map();
++  let failure='';const delivered=new Map(),openNotices=new Set(),alertSeen=new Set(),overdueNotices=new Map(),bottleneckStates=new Map(),allowedEditors=new Map(),avoidEditors=new Map(),backfillEditors=new Map();
+@@ -140,0 +141 @@
++   $('backfill-option').classList.toggle('hidden',!state||!state.strict_nights||night);$('backfill-min-label').classList.toggle('hidden',!state||!state.strict_nights||night||!$('backfill-enabled').checked);setOptions($('backfill-min'),Array.from({length:Math.max(0,Math.floor(seconds/300))},(_,i)=>[String((i+1)*300),((i+1)*5)+' 分钟']),'1200',null);
+@@ -190,0 +192 @@
++   if(state.strict_nights)$('queue-rules').textContent+=" 勾选“愿意缩短本任务”后，当前序任务暂不能开始时，系统可在不低于最短使用时长的前提下，让本任务提前使用空档。请按时自行停止任务，不能延长影响前序预约。";
+@@ -212,2 +214,2 @@
+-    const start=row.activated?dateMinute(row.activated):row.window_expired?'时段已过，请取消后重新预约':row.state==='ready'?'可立即开始':row.estimated_start?(row.night_fixed&&!state.normal_priority?'预约 ':'预计 ')+dateMinute(row.estimated_start):row.mine&&row.normal_start_after_two?(row.normal_start_after_midnight?'候补：午夜 0 点前未排到':row.normal_start_after_one?'候补：凌晨 1 点前未排到':'候补：凌晨 2 点前未排到'):'预计时间待确认';const end=element('td',row.activated&&row.requested_seconds?dateMinute(row.activated+row.requested_seconds):row.state==='ready'?dateMinute(state.server_time+(row.effective_requested_seconds??row.requested_seconds)):row.estimated_start?dateMinute(row.estimated_start+(row.effective_requested_seconds??row.requested_seconds)):'—');if(row.night_end_overdue)end.append(document.createElement('br'),element('strong','结束时间超出次日 9 点'));const length=element('td',duration(row.effective_requested_seconds??row.requested_seconds));if(row.effective_requested_seconds<row.requested_seconds)length.append(document.createElement('br'),element('small',state.normal_priority?'已按凌晨 1 点截止时间截短':'已按夜间预约和截止时间截短'));const startCell=element('td',start),startValue=row.activated||(row.state==='ready'?state.server_time:row.estimated_start);if(night&&state.normal_priority&&row.night_requested_start&&row.not_before>row.night_requested_start){startCell.append(document.createElement('br'),element('small','原预约 '+dateMinute(row.night_requested_start)));}if(!night&&mealStart(startValue)){const mark=element('small','🍴 饭点开始');mark.className='meal-start';startCell.append(document.createElement('br'),mark);}tr.append(startCell,length,end);
+-    const actions=element('td','');function button(label,action){const b=element('button',label);b.onclick=async()=>{if((action==='finish'||action==='cancel')&&!window.confirm(action==='finish'?(state.strict_nights&&row.not_before?'结束夜间预约只释放登记，不停止容器，确认结束？':'确认已自行停止服务并释放这些卡，结束登记？'):label+'？'))return;b.disabled=true;try{report((await api('unified-action',{job:row.id,action,offer_id:row.offer_id,confirmed:true})).message);await refresh();}catch(e){report(e.message,true);}finally{b.disabled=false;}};actions.append(b);}
++    const start=row.activated?dateMinute(row.activated):row.window_expired?'时段已过，请取消后重新预约':row.state==='ready'?'可立即开始':row.estimated_start?(row.night_fixed&&!state.normal_priority?'预约 ':'预计 ')+dateMinute(row.estimated_start):row.mine&&row.normal_start_after_two?(row.normal_start_after_midnight?'候补：午夜 0 点前未排到':row.normal_start_after_one?'候补：凌晨 1 点前未排到':'候补：凌晨 2 点前未排到'):'预计时间待确认';const end=element('td',row.activated&&row.requested_seconds?dateMinute(row.activated+row.requested_seconds):row.state==='ready'?dateMinute(state.server_time+(row.effective_requested_seconds??row.requested_seconds)):row.estimated_start?dateMinute(row.estimated_start+(row.effective_requested_seconds??row.requested_seconds)):'—');if(row.night_end_overdue)end.append(document.createElement('br'),element('strong','结束时间超出次日 9 点'));const length=element('td',duration(row.effective_requested_seconds??row.requested_seconds));if(row.backfill_planned)length.append(document.createElement('br'),element('small',"短时插空，剩余时间会随开始时间缩短"));else if(row.effective_requested_seconds<row.requested_seconds)length.append(document.createElement('br'),element('small',state.normal_priority?'已按凌晨 1 点截止时间截短':'已按夜间预约和截止时间截短'));const startCell=element('td',start),startValue=row.activated||(row.state==='ready'?state.server_time:row.estimated_start);if(night&&state.normal_priority&&row.night_requested_start&&row.not_before>row.night_requested_start){startCell.append(document.createElement('br'),element('small','原预约 '+dateMinute(row.night_requested_start)));}if(!night&&mealStart(startValue)){const mark=element('small','🍴 饭点开始');mark.className='meal-start';startCell.append(document.createElement('br'),mark);}tr.append(startCell,length,end);
++    const actions=element('td','');function button(label,action){const b=element('button',label);b.onclick=async()=>{if(action==='claim'&&row.backfill_planned&&!window.confirm("这是短时插空，当前最多使用约 "+Math.floor((row.effective_requested_seconds||0)/60)+" 分钟；确认后可用时长会继续减少。请按时自行停止任务，确认开始？"))return;if((action==='finish'||action==='cancel')&&!window.confirm(action==='finish'?(state.strict_nights&&row.not_before?'结束夜间预约只释放登记，不停止容器，确认结束？':'确认已自行停止服务并释放这些卡，结束登记？'):label+'？'))return;b.disabled=true;try{report((await api('unified-action',{job:row.id,action,offer_id:row.offer_id,confirmed:true})).message);await refresh();}catch(e){report(e.message,true);}finally{b.disabled=false;}};actions.append(b);}
+@@ -220,0 +223,4 @@
++    if(state.strict_nights&&!night&&state.user&&(row.mine||state.user.admin)&&['queued','ready'].includes(row.state)){
++     const edit=element('button',backfillEditors.has(row.id)?'收起提前使用设置':'修改提前使用设置');edit.type='button';edit.className='secondary';edit.onclick=()=>{if(backfillEditors.has(row.id))backfillEditors.delete(row.id);else backfillEditors.set(row.id,row.backfill_min_seconds||0);render();};actions.append(edit);
++     if(backfillEditors.has(row.id)){const select=element('select','');select.setAttribute('aria-label','短时插空最低时长');for(let minutes=0;minutes*60<=row.requested_seconds;minutes+=5){if(minutes&&minutes<5)continue;const option=element('option',minutes?'可缩短至至少 '+minutes+' 分钟':'不缩短本任务');option.value=String(minutes*60);select.append(option);}select.value=String(backfillEditors.get(row.id));select.onchange=()=>backfillEditors.set(row.id,Number(select.value));const save=element('button','保存提前使用设置');save.type='button';save.onclick=async()=>{save.disabled=true;try{const result=await api('unified-backfill',{job:row.id,backfill_min_seconds:backfillEditors.get(row.id),confirmed:true});backfillEditors.delete(row.id);report(result.message);await refresh();}catch(e){report(e.message,true);}finally{save.disabled=false;}};actions.append(select,save);}
++    }
+@@ -252,2 +258,2 @@
+-  $('kind').onchange=timeLimits;$('hours').onchange=timeLimits;$('minutes').onchange=timeLimits;for(const part of ['date','hour','minute'])$('start-'+part).onchange=timeLimits;timeLimits();
+-  $('join-form').onsubmit=async e=>{e.preventDefault();timeLimits();if(!$('join-form').reportValidity())return;if(!ready()){gate();report('请先开启桌面通知并通过测试，才能加入队列。',true);return;}const night=$('kind').value==='night';submitting=true;gate();try{report((await api('enqueue',{cards_per_node:state.cards_per_node||8,machine:$('machine').value,cards:Number($('cards').value),night,urgent:!night&&$('urgent').checked,not_before:night?selectedStart():0,requested_seconds:Number($('hours').value)*3600+Number($('minutes').value)*60,avoid_slots:state.strict_nights&&!night?[...initialAvoid]:[],notifications_ready:true})).message);$('urgent').checked=false;initialAvoid.clear();for(const slot of defaultAvoid)initialAvoid.add(slot);renderAvoidGrid($('avoid-form'),initialAvoid);await refresh();}catch(err){report(err.message,true);}finally{submitting=false;gate();}};
++  $('backfill-enabled').onchange=timeLimits;$('kind').onchange=timeLimits;$('hours').onchange=timeLimits;$('minutes').onchange=timeLimits;for(const part of ['date','hour','minute'])$('start-'+part).onchange=timeLimits;timeLimits();
++  $('join-form').onsubmit=async e=>{e.preventDefault();timeLimits();if(!$('join-form').reportValidity())return;if(!ready()){gate();report('请先开启桌面通知并通过测试，才能加入队列。',true);return;}const night=$('kind').value==='night';submitting=true;gate();try{report((await api('enqueue',{cards_per_node:state.cards_per_node||8,machine:$('machine').value,cards:Number($('cards').value),night,urgent:!night&&$('urgent').checked,not_before:night?selectedStart():0,requested_seconds:Number($('hours').value)*3600+Number($('minutes').value)*60,avoid_slots:state.strict_nights&&!night?[...initialAvoid]:[],backfill_min_seconds:state.strict_nights&&!night&&$('backfill-enabled').checked?Number($('backfill-min').value):0,notifications_ready:true})).message);$('urgent').checked=false;$('backfill-enabled').checked=false;initialAvoid.clear();for(const slot of defaultAvoid)initialAvoid.add(slot);renderAvoidGrid($('avoid-form'),initialAvoid);await refresh();}catch(err){report(err.message,true);}finally{submitting=false;gate();}};
+--- a/queue_http.py
++++ b/queue_http.py
+@@ -379,0 +380,6 @@
++                if operation=='unified-backfill':
++                    if not person.get('registered'):raise ControlError(401,'请先登录个人账号')
++                    if data.get('confirmed') is not True:raise ControlError(400,'请先确认操作')
++                    unified.update_backfill(person,data.get('job'),data.get('backfill_min_seconds'))
++                    event(person,'unified_backfill',job=data.get('job'))
++                    return web.json_response({'message':'已更新短时插空设置，队列已重新计算'})
