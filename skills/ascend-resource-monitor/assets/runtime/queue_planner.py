@@ -91,6 +91,7 @@ def plan(nodes, busy, jobs, now, buffer_seconds=600):
         return [choice for _, choice in sorted(choices, key=lambda pair: pair[0])]
 
     planned = []
+    prior_reservations = []
     for job in jobs:
         if (type(job.get('cards')) is not int or not 1 <= job['cards'] <= capacity
                 or (job.get('dual') and job['cards'] not in tuple(n for n in (1, 2, 4, 8, 16) if n <= capacity))
@@ -123,6 +124,13 @@ def plan(nodes, busy, jobs, now, buffer_seconds=600):
                     if begin>start and 60<=duration<seconds:
                         durations.add(duration)
                         truncation_sources.setdefault(duration,[]).append((node,cards))
+            minimum=job.get('backfill_min_seconds',0)
+            if minimum and not job.get('night'):
+                for prior in prior_reservations:
+                    duration=math.floor(prior['start']-start-buffer_seconds)
+                    if minimum<=duration<seconds:
+                        durations.add(duration)
+                        truncation_sources.setdefault(duration,[]).extend((node,frozenset(cards)) for node,cards in prior['allocations'].items())
             for candidate_seconds in sorted(durations,reverse=True):
                 if job.get('finish_before') and start+candidate_seconds>job['finish_before']:
                     continue
@@ -160,5 +168,12 @@ def plan(nodes, busy, jobs, now, buffer_seconds=600):
         for node, cards in allocations.items():
             direct_end = start + seconds
             intervals.append((node, frozenset(cards), start, finish, direct_end))
-        planned.append({'id': job['id'], 'start': start, 'allocations': allocations, 'seconds':seconds})
+        result={'id': job['id'], 'start': start, 'allocations': allocations, 'seconds':seconds}
+        if job.get('backfill_min_seconds') and seconds<job['seconds']:
+            relevant=[p['start'] for p in prior_reservations if p['start']>start and
+                      any(set(cards).intersection(p['allocations'].get(node,())) for node,cards in allocations.items())]
+            if relevant and start+seconds+buffer_seconds<=min(relevant):
+                result['backfill_end_before']=min(relevant)-buffer_seconds
+        planned.append(result)
+        prior_reservations.append({'start':start,'allocations':allocations})
     return planned

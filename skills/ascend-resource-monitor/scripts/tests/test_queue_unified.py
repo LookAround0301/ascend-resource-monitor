@@ -42,6 +42,22 @@ class UnifiedWindowTests(unittest.TestCase):
         self.assertEqual([r['requested_seconds'] for r in rows], [60, 5400, 7200])
         self.assertTrue(all(r['finish_before'] == self.deadline for r in rows))
 
+    def test_configurable_one_hour_limit_preserves_existing_and_night_tasks(self):
+        with patch('queue_unified.time.time', return_value=self.now):
+            existing=self.add(requested_seconds=7200)
+            limited=UnifiedQueue(self.store,['a','b'],timezone='Asia/Shanghai',normal_max_seconds=3600)
+            self.assertEqual(limited.view(self.user)['normal_max_seconds'],3600)
+            self.assertEqual(next(r for r in limited.view(self.user)['tasks'] if r['id']==existing)['requested_seconds'],7200)
+            normal=limited.enqueue(self.user,{'cards':1,'requested_seconds':3600,'notifications_ready':True})
+            self.assertTrue(normal)
+            with self.assertRaises(ControlError) as error:
+                limited.enqueue(self.user,{'cards':1,'requested_seconds':3660,'notifications_ready':True})
+            self.assertIn('普通任务最长 1 小时',str(error.exception))
+            night=limited.enqueue(self.user,{'cards':1,'requested_seconds':7200,'night':True,
+                                           'not_before':self.deadline-7200,'notifications_ready':True})
+            self.assertTrue(night)
+        self.assertEqual(self.queue.normal_max_seconds,7200)
+
     def test_scheduled_start_and_end_use_deployment_timezone(self):
         with patch('queue_unified.time.time', return_value=self.now):
             self.assertEqual(self.queue.view(self.user)['reservation_window']['end'], self.deadline)

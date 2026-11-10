@@ -130,7 +130,7 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
             return names_cache['names']
 
     strict_nights=settings.get('strict_nights') is True
-    unified=UnifiedQueue(store, config['nodes'], settings.get('reservation_buffer_seconds',600), settings.get('timezone','UTC'), settings.get('daily_reset',False), settings.get('cards_per_node',8),strict_nights,settings.get('overtime_control') is True,settings.get('normal_priority') is True) if settings.get('unified_queue') is True else None
+    unified=UnifiedQueue(store, config['nodes'], settings.get('reservation_buffer_seconds',600), settings.get('timezone','UTC'), settings.get('daily_reset',False), settings.get('cards_per_node',8),strict_nights,settings.get('overtime_control') is True,settings.get('normal_priority') is True,settings.get('normal_max_seconds',7200),settings.get('night_carryover_cutoff_hour')) if settings.get('unified_queue') is True else None
     auto=AutoQueue(store,agent) if not unified and settings.get('auto_match_employee') else None
     monitor=None
     if unified and settings.get('monitor_processes'):
@@ -271,7 +271,7 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                         state['overtime_control']=unified.overtime_control
                         state['normal_priority']=unified.normal_priority
                         if unified.normal_priority and request.headers.get('X-A5-Queue-UI-Version')!=QUEUE_UI_VERSION:
-                            state.setdefault('process_monitor_errors',[]).append('页面已更新，请刷新页面加载最新版本。普通任务须在午夜 0 点前开始，最晚凌晨 1 点自动结束登记；夜间预约接管时清理预约卡位上的非预约容器。')
+                            state.setdefault('process_monitor_errors',[]).append('页面已更新，请刷新页面加载最新版本。普通任务单次申请最长 '+str(unified.normal_max_seconds//60)+' 分钟，须在午夜 0 点前开始，最晚凌晨 1 点自动结束登记；夜间预约接管时清理预约卡位上的非预约容器。'+('夜间任务最晚上午 '+str(unified.night_carryover_cutoff_hour)+' 点释放登记，容器继续运行。' if unified.night_carryover_cutoff_hour is not None else ''))
                         names=await shared_names(employee for row in state['tasks'] for employee in row['allowed_employees'])
                         for row in state['tasks']:
                             row['allowed_people']=[{'employee':employee,'name':names.get(employee,'')} for employee in row['allowed_employees']]
@@ -377,6 +377,12 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                     unified.update_avoid_slots(person,data.get('job'),data.get('avoid_slots'))
                     event(person,'unified_avoid',job=data.get('job'))
                     return web.json_response({'message':'已更新避开时段，预计开始时间已重新计算'})
+                if operation=='unified-backfill':
+                    if not person.get('registered'):raise ControlError(401,'请先登录个人账号')
+                    if data.get('confirmed') is not True:raise ControlError(400,'请先确认操作')
+                    unified.update_backfill(person,data.get('job'),data.get('backfill_min_seconds'))
+                    event(person,'unified_backfill',job=data.get('job'))
+                    return web.json_response({'message':'已更新短时插空设置，队列已重新计算'})
                 if operation=='unified-urgent':
                     if not person.get('registered'):raise ControlError(401,'请先登录个人账号')
                     if data.get('confirmed') is not True:raise ControlError(400,'请先确认操作')
