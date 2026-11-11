@@ -127,9 +127,26 @@ class NormalPriorityTests(unittest.TestCase):
         other=self.store.user(self.store.register('u23456789','Other','fixture-password'))
         with self.assertRaises(ControlError):self.queue.update_backfill(other,later,0)
 
-    def with_carryover_cutoff(self):
+    def with_carryover_cutoff(self, hour=10):
         self.queue=UnifiedQueue(self.store,['a','b'],timezone='Asia/Shanghai',strict_nights=True,
-                                overtime_control=True,normal_priority=True,night_carryover_cutoff_hour=10)
+                                overtime_control=True,normal_priority=True,night_carryover_cutoff_hour=hour)
+
+    def test_nine_thirty_cap_and_exact_release(self):
+        self.with_carryover_cutoff(9.5)
+        start=self.stamp('2026-11-07T23:00:00')
+        deadline=self.stamp('2026-11-08T09:30:00')
+        job=self.add(night=True,not_before=start,requested_seconds=13*3600)
+        row=next(r for r in self.queue.view(self.user)['tasks'] if r['id']==job)
+        self.assertEqual(row['requested_seconds'],deadline-start)
+        self.clock.return_value=start
+        self.queue.lock_due_night_takeovers(start)
+        self.queue.finish_night_takeovers(self.queue.due_night_tasks(start),set(),{},start)
+        self.clock.return_value=deadline-1
+        self.assertTrue(any(r['id']==job for r in self.queue.view(self.user)['tasks']))
+        self.clock.return_value=deadline
+        self.queue.tick()
+        self.assertFalse(any(r['id']==job for r in self.queue.view(self.user)['tasks']))
+        self.assertFalse(self.queue.due_night_tasks(deadline))
 
     def test_night_is_shortened_only_if_it_crosses_ten(self):
         self.with_carryover_cutoff()
@@ -158,7 +175,7 @@ class NormalPriorityTests(unittest.TestCase):
         asyncio.run(NightCoordinator(self.queue,monitor,no_stop,lambda event:None).poll())
         view=self.queue.view(self.user)
         self.assertFalse(any(r['id']==job for r in view['tasks']))
-        self.assertTrue(any('上午 10 点' in a['message'] and '不会停止容器' in a['message'] for a in view['alerts']))
+        self.assertTrue(any('上午 10:00' in a['message'] and '不会停止容器' in a['message'] for a in view['alerts']))
         self.assertFalse(self.queue.due_night_tasks(self.clock.return_value))
 
     def test_unstarted_night_never_takes_over_at_cutoff(self):

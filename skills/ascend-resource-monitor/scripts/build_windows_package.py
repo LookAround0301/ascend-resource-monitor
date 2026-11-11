@@ -46,7 +46,10 @@ def build(mode, output, config=None, software=None, shared_url=None):
     for n in names:
         # Windows PowerShell 5.1 needs a BOM for Chinese strings.
         src = ROOT/'assets/windows'/n
-        (folder/n).write_text(src.read_text(encoding='utf-8-sig'),encoding='utf-8-sig' if n.endswith('.ps1') else 'ascii',newline='\r\n')
+        # Path.write_text gained the newline argument in Python 3.10; keep the
+        # package builder usable on hosts running Python 3.9 as well.
+        with (folder/n).open('w',encoding='utf-8-sig' if n.endswith('.ps1') else 'ascii',newline='\r\n') as output:
+            output.write(src.read_text(encoding='utf-8-sig'))
     if mode == 'wizard':
         (folder/'runtime').mkdir()
         for src in (ROOT/'assets/runtime').glob('*.py'):

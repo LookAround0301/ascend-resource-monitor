@@ -12,17 +12,20 @@ from queue_planner import plan
 
 
 class UnifiedQueue:
-    def __init__(self, store, nodes, buffer_seconds=600, timezone='UTC', daily_reset=False, cards_per_node=8, strict_nights=False, overtime_control=False, normal_priority=False, normal_max_seconds=7200, night_carryover_cutoff_hour=None):
+    def __init__(self, store, nodes, buffer_seconds=600, timezone='UTC', daily_reset=False, cards_per_node=8, strict_nights=False, overtime_control=False, normal_priority=False, normal_max_seconds=7200, night_carryover_cutoff_hour=None, missed_claim_limit=0):
         self.store = store
         self.timezone = dt_timezone.utc if timezone == 'UTC' else ZoneInfo(timezone)
         self.daily_reset = daily_reset
         self.strict_nights = strict_nights
         self.overtime_control = bool(strict_nights and (overtime_control or normal_priority))
         self.normal_priority = bool(strict_nights and normal_priority)
+        if type(missed_claim_limit) is not int or not 0<=missed_claim_limit<=100:
+            raise ValueError('missed_claim_limit must be an integer from 0 to 100')
+        self.missed_claim_limit=missed_claim_limit
         if type(normal_max_seconds) is not int or not 300 <= normal_max_seconds <= 7200 or normal_max_seconds % 300:
             raise ValueError('normal_max_seconds must be a multiple of five minutes, between 5 minutes and 2 hours')
         self.normal_max_seconds = normal_max_seconds
-        if night_carryover_cutoff_hour is not None and (type(night_carryover_cutoff_hour) is not int or not 9<=night_carryover_cutoff_hour<=23):
+        if night_carryover_cutoff_hour is not None and (type(night_carryover_cutoff_hour) not in (int, float) or not 9<=night_carryover_cutoff_hour<=23 or (night_carryover_cutoff_hour * 60) % 1):
             raise ValueError('night carryover cutoff must be a local hour between 9 and 23')
         if night_carryover_cutoff_hour is not None and not (self.strict_nights and self.normal_priority):
             raise ValueError('night carryover cutoff requires strict nights and normal priority')
@@ -77,6 +80,18 @@ class UnifiedQueue:
                 # Older versions saved only the most recent extension. Preserve it
                 # as a lower bound; earlier extensions cannot be reconstructed.
                 db.execute('UPDATE unified_tasks SET extension_total_minutes=extension_minutes, extension_total_complete=0 WHERE extension_at>0')
+            if 'extension_count' not in columns:
+                db.execute('ALTER TABLE unified_tasks ADD COLUMN extension_count INTEGER NOT NULL DEFAULT 0')
+                # Historical operations were not counted. Existing extensions are
+                # known to have happened at least once; do not invent a count.
+                db.execute('UPDATE unified_tasks SET extension_count=1 WHERE extension_at>0')
+            # A rollback to an older runtime may have performed an extension
+            # without updating the new counter; preserve the known lower bound.
+            db.execute('UPDATE unified_tasks SET extension_count=1 WHERE extension_at>0 AND extension_count=0')
+            db.execute('''CREATE TABLE IF NOT EXISTS unified_notice_events (
+                id TEXT PRIMARY KEY, kind TEXT NOT NULL, job TEXT NOT NULL,
+                employee TEXT NOT NULL, name TEXT NOT NULL, allowed_employees TEXT NOT NULL,
+                at REAL NOT NULL, payload TEXT NOT NULL)''')
             db.execute('CREATE TABLE IF NOT EXISTS unified_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
             db.execute('CREATE TABLE IF NOT EXISTS unified_urgent_users (employee TEXT PRIMARY KEY, name TEXT NOT NULL)')
             db.execute('''CREATE TABLE IF NOT EXISTS unified_night_reclaims (
@@ -149,7 +164,7 @@ class UnifiedQueue:
         original=row.get('night_requested_start') or row['not_before']
         nine=row.get('finish_before') or self.night_cutoff(original-0.001)
         local=datetime.fromtimestamp(nine,self.timezone)
-        return datetime.combine(local.date(),daytime(self.night_carryover_cutoff_hour),self.timezone).timestamp()
+        return datetime.combine(local.date(),daytime(int(self.night_carryover_cutoff_hour), int(self.night_carryover_cutoff_hour * 60) % 60),self.timezone).timestamp()
 
     def normal_two_am(self, created):
         local = datetime.fromtimestamp(created, self.timezone)
@@ -297,15 +312,29 @@ class UnifiedQueue:
         return result
 
     def _expire_offers(self, db, now):
+        db.execute('DELETE FROM unified_notice_events WHERE at<?',(now-7*86400,))
         pending = [dict(row) for row in db.execute("SELECT * FROM unified_tasks WHERE state IN ('queued','ready') ORDER BY queue_order,rowid")]
         expired = [row for row in pending if row['state']=='ready' and
                    ((row['claim_before'] and row['claim_before']<=now) or
                     (self.strict_nights and not row['not_before'] and any(a<=now<b for a,b in self.avoid_windows(json.loads(row['avoid_slots']),now))) or
                     (not row['not_before'] and now >= (self.normal_one_am(row['created']) if self.strict_nights else self.normal_two_am(row['created']))))]
         missed = {row['id'] for row in expired if row['ready_since'] and now>=row['ready_since']+600}
+        removed = {row['id'] for row in expired if self.missed_claim_limit and row['id'] in missed and row['missed_claims']+1>=self.missed_claim_limit}
         for row in expired:
+            if row['id'] in removed:
+                owner=db.execute('SELECT employee,name FROM accounts WHERE id=?',(row['account'],)).fetchone()
+                if owner:
+                    db.execute('INSERT OR IGNORE INTO unified_notice_events VALUES (?,?,?,?,?,?,?,?)',
+                        ('missed:'+row['id'], 'missed-cancel',row['id'],owner['employee'],owner['name'],
+                         row['allowed_employees'],now,json.dumps({'limit':self.missed_claim_limit})))
+                db.execute('DELETE FROM confirmations WHERE job=?',(row['id'],))
+                db.execute('DELETE FROM reservations WHERE id=?',(row['id'],))
+                db.execute('DELETE FROM unified_tasks WHERE id=?',(row['id'],))
+                continue
             db.execute("UPDATE unified_tasks SET state='queued',allocations='{}',claim_before=0,ready_since=0,offer_id='',offer_end_before=0,backfill_end_before=0,missed_claims=missed_claims+? WHERE id=?",
                        (int(row['id'] in missed), row['id']))
+        pending=[row for row in pending if row['id'] not in removed]
+        missed-=removed
         if not missed:
             return
         # Move missed offers back within their own task type. Keep the slots
@@ -886,7 +915,7 @@ class UnifiedQueue:
                 result[row['id']]=max(0,min(references)-max(now,row['activated']+row['requested_seconds']))
         return result
 
-    def view(self, user):
+    def view(self, user, notification_context=None):
         now = time.time()
         account = user['id'] if user else ''
         with self.store.db() as db:
@@ -898,14 +927,25 @@ class UnifiedQueue:
             reset=json.loads(reset_row[0]) if reset_row else None
             reclaimed={row['job'] for row in db.execute("SELECT DISTINCT job FROM unified_night_reclaims WHERE job IN (SELECT id FROM unified_tasks WHERE state IN ('active','ready','queued'))")}
             releases=[dict(row) for row in db.execute('SELECT * FROM unified_overtime_releases WHERE released_at>?',(now-86400,))] if self.overtime_control and user else []
+            missed_cancellations=[dict(row) for row in db.execute("SELECT * FROM unified_notice_events WHERE kind='missed-cancel' AND at>?",(now-86400,))] if user else []
             can_urgent=bool(user and user.get('employee') and db.execute('SELECT 1 FROM unified_urgent_users WHERE employee=?',(user['employee'],)).fetchone())
         blocked=self.bottlenecks(rows,now)
         dependent,joint=self.overdue_resource_dependencies(rows,now)
         allowances=self.overtime_allowances(rows,now,{**blocked,**dependent})
         alerts=self.alerts(rows,user,now,reset,blocked,dependent,joint)
+        for cancellation in missed_cancellations:
+            if user.get('employee','') in [cancellation['employee'],*json.loads(cancellation['allowed_employees'])]:
+                alerts.append({'id':cancellation['id'],'kind':'missed-cancel',
+                    'message':'预约多次分配后超过 10 分钟未登记开始，已自动取消；如仍需使用，请重新预约。'})
+        if notification_context is not None:
+            # A private exporter reuses the same calculation for every recipient.
+            # Copy before the public view removes account IDs and decodes fields.
+            import copy
+            notification_context.update(copy.deepcopy(dict(rows=rows,now=now,reset=reset,
+                blocked=blocked,dependent=dependent,joint=joint)))
         for release in releases:
             if release['account']==account or user.get('employee','') in json.loads(release['allowed_employees']):
-                prefix=('夜间预约已到上午 '+str(self.night_carryover_cutoff_hour or 10)+' 点截止时间' if release['reason']=='night-cutoff'
+                prefix=('夜间预约已到上午 '+f'{int(self.night_carryover_cutoff_hour):02d}:{int(self.night_carryover_cutoff_hour*60)%60:02d} 截止时间' if release['reason']=='night-cutoff'
                         else '已到凌晨 1 点截止时间' if release['reason']=='cutoff' else '预约超时超过 10 分钟')
                 suffix=('登记释放本身不会停止容器；如果预约卡进入夜间接管，将按夜间规则清理。'
                         if self.normal_priority else '容器和实际任务不会自动停止，请自行检查并停止任务。')
@@ -967,7 +1007,7 @@ class UnifiedQueue:
             pending=[r for r in rows if r['state'] in ('queued','ready') and bool(r['not_before'])==bool(row['not_before']) and r['urgent']==row['urgent']]
             row['can_raise_priority']=bool(user and user.get('admin') and not row['urgent'] and row in waiting and waiting.index(row)>0)
             row['can_lower_priority']=bool(user and not row['urgent'] and (row['mine'] or user.get('admin')) and row in pending and pending.index(row)<len(pending)-1)
-        return {'user': user, 'tasks': rows, 'nodes': list(self.nodes), 'cards_per_node': self.capacity, 'server_time': now, 'unified': True, 'can_urgent':can_urgent, 'normal_max_seconds':self.normal_max_seconds, 'night_carryover_cutoff_hour':self.night_carryover_cutoff_hour,
+        return {'user': user, 'tasks': rows, 'nodes': list(self.nodes), 'cards_per_node': self.capacity, 'server_time': now, 'unified': True, 'can_urgent':can_urgent, 'normal_max_seconds':self.normal_max_seconds, 'night_carryover_cutoff_hour':self.night_carryover_cutoff_hour, 'missed_claim_limit':self.missed_claim_limit,
                 'alerts':alerts, 'daily_reset_enabled':self.daily_reset, 'last_daily_reset':reset,
                 'reservation_buffer_seconds': self.buffer,
                 'reservation_window': {'start': now, 'end': self.cutoff(now), 'timezone': str(self.timezone),
@@ -1235,8 +1275,16 @@ class UnifiedQueue:
                 if row['backfill_end_before'] and new_end>row['backfill_end_before']:
                     raise ControlError(409,'插空任务不能延长到影响前序预约，请按时结束登记并自行停止任务')
                 if new_end>limit:raise ControlError(409,'延长后会超过凌晨 '+('1' if self.normal_priority else '2')+' 点截止时间，请选择更短时间或结束任务')
-                db.execute('UPDATE unified_tasks SET requested_seconds=?,extension_minutes=?,extension_total_minutes=extension_total_minutes+?,extension_at=? WHERE id=?',
+                db.execute('UPDATE unified_tasks SET requested_seconds=?,extension_minutes=?,extension_total_minutes=extension_total_minutes+?,extension_at=?,extension_count=extension_count+1 WHERE id=?',
                            (math.ceil(new_end-row['activated']),extension_minutes,extension_minutes,now,job))
+                if row['extension_count']+1>=2:
+                    owner=db.execute('SELECT employee,name FROM accounts WHERE id=?',(row['account'],)).fetchone()
+                    if owner:
+                        payload=json.dumps(dict(count=row['extension_count']+1,minutes=extension_minutes,
+                            total=row['extension_total_minutes']+extension_minutes,allocations=allocations),ensure_ascii=False)
+                        db.execute('INSERT INTO unified_notice_events VALUES (?,?,?,?,?,?,?,?)',
+                            ('extension:'+job+':'+str(row['extension_count']+1),'extension',job,
+                             owner['employee'],owner['name'],row['allowed_employees'],now,payload))
                 self._schedule(db,now)
                 return 'extended'
             if action == 'claim' and row['state'] == 'ready':

@@ -130,7 +130,7 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
             return names_cache['names']
 
     strict_nights=settings.get('strict_nights') is True
-    unified=UnifiedQueue(store, config['nodes'], settings.get('reservation_buffer_seconds',600), settings.get('timezone','UTC'), settings.get('daily_reset',False), settings.get('cards_per_node',8),strict_nights,settings.get('overtime_control') is True,settings.get('normal_priority') is True,settings.get('normal_max_seconds',7200),settings.get('night_carryover_cutoff_hour')) if settings.get('unified_queue') is True else None
+    unified=UnifiedQueue(store, config['nodes'], settings.get('reservation_buffer_seconds',600), settings.get('timezone','UTC'), settings.get('daily_reset',False), settings.get('cards_per_node',8),strict_nights,settings.get('overtime_control') is True,settings.get('normal_priority') is True,settings.get('normal_max_seconds',7200),settings.get('night_carryover_cutoff_hour'),settings.get('missed_claim_limit',0)) if settings.get('unified_queue') is True else None
     auto=AutoQueue(store,agent) if not unified and settings.get('auto_match_employee') else None
     monitor=None
     if unified and settings.get('monitor_processes'):
@@ -252,6 +252,44 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                             settings.get('metric_prefix','ascend'),settings.get('timezone','UTC'))+process_metrics,
                             content_type='text/plain',headers={'Cache-Control':'no-store'})
 
+    async def notification_export(request):
+        # Read-only local integration. Never trust forwarded IP headers.
+        from queue_notifications import authorize_export, build_feed
+        from pathlib import Path
+        token_file=settings.get('notification_export_token_file')
+        if not unified or not token_file:
+            raise web.HTTPNotFound()
+        try:
+            token=Path(token_file).read_text(encoding='utf-8').strip()
+        except OSError:
+            raise web.HTTPServiceUnavailable()
+        if not authorize_export(request.remote,request.headers.get('Authorization',''),token):
+            raise web.HTTPForbidden()
+        feed=await asyncio.to_thread(build_feed,unified,store,monitor)
+        return web.json_response(feed,headers={'Cache-Control':'no-store'})
+
+    async def mobile_command(request):
+        from queue_notifications import authorize_export
+        from queue_mobile import command
+        from pathlib import Path
+        token_file=settings.get('mobile_command_token_file')
+        if not unified or not token_file:raise web.HTTPNotFound()
+        try:token=Path(token_file).read_text(encoding='utf-8').strip()
+        except OSError:raise web.HTTPServiceUnavailable()
+        if not authorize_export(request.remote,request.headers.get('Authorization',''),token):raise web.HTTPForbidden()
+        if request.content_type!='application/json' or request.content_length is None or request.content_length>8192:
+            raise web.HTTPBadRequest()
+        try:
+            payload=await request.json()
+            result=await asyncio.to_thread(command,unified,store,payload)
+            if payload.get('mode')=='execute':
+                try:event({'employee':payload['employee'],'admin':False},'welink_'+payload['action'],job=payload['job'],operation=payload['operation'])
+                except Exception:logging.error('Mobile command secondary audit unavailable; receipt persisted')
+            return web.json_response(result,headers={'Cache-Control':'no-store'})
+        except ControlError as error:
+            return web.json_response({'message':error.message},status=error.status,headers={'Cache-Control':'no-store'})
+        except (ValueError,TypeError,KeyError):raise web.HTTPBadRequest()
+
     async def api(request):
         try:
             operation=request.match_info['operation']
@@ -271,7 +309,9 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                         state['overtime_control']=unified.overtime_control
                         state['normal_priority']=unified.normal_priority
                         if unified.normal_priority and request.headers.get('X-A5-Queue-UI-Version')!=QUEUE_UI_VERSION:
-                            state.setdefault('process_monitor_errors',[]).append('页面已更新，请刷新页面加载最新版本。普通任务单次申请最长 '+str(unified.normal_max_seconds//60)+' 分钟，须在午夜 0 点前开始，最晚凌晨 1 点自动结束登记；夜间预约接管时清理预约卡位上的非预约容器。'+('夜间任务最晚上午 '+str(unified.night_carryover_cutoff_hour)+' 点释放登记，容器继续运行。' if unified.night_carryover_cutoff_hour is not None else ''))
+                            cutoff=unified.night_carryover_cutoff_hour
+                            cutoff_text=(f'夜间任务最晚 {int(cutoff):02d}:{int(cutoff*60)%60:02d} 释放登记，容器继续运行。' if cutoff is not None else '')
+                            state.setdefault('process_monitor_errors',[]).append('页面已更新，请刷新页面加载最新版本。普通任务单次申请最长 '+str(unified.normal_max_seconds//60)+' 分钟，须在午夜 0 点前开始，最晚凌晨 1 点自动结束登记；夜间预约接管时清理预约卡位上的非预约容器。'+cutoff_text)
                         names=await shared_names(employee for row in state['tasks'] for employee in row['allowed_employees'])
                         for row in state['tasks']:
                             row['allowed_people']=[{'employee':employee,'name':names.get(employee,'')} for employee in row['allowed_employees']]
@@ -483,6 +523,8 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
     app.router.add_get('/a5-queue/queue.js',javascript)
     app.router.add_get('/a5-queue/home.js',javascript)
     app.router.add_get('/a5-queue/metrics',metrics)
+    app.router.add_get('/a5-queue/internal/notification-export',notification_export)
+    app.router.add_post('/a5-queue/internal/mobile-command',mobile_command)
     app.router.add_route('GET','/a5-queue/api/{operation}',session_api)
     app.router.add_route('POST','/a5-queue/api/{operation}',session_api)
     return store

@@ -1,5 +1,6 @@
 """Validate this repository with only standard-library Python dependencies."""
 import json
+import importlib.util
 import os
 from pathlib import Path
 import shutil
@@ -17,6 +18,10 @@ def main():
         if not any(part in {'.git','dist','.venv'} for part in path.parts):
             json.loads(path.read_text(encoding='utf-8-sig'))
     subprocess.run([sys.executable,'-m','unittest','discover','-s',str(SKILL/'scripts/tests'),'-v'],check=True,cwd=ROOT)
+    if importlib.util.find_spec('aiohttp') is not None:
+        subprocess.run([sys.executable,'-m','unittest','discover','-s',str(SKILL/'assets/welink-hub/tests'),'-v'],check=True,cwd=ROOT)
+    else:
+        print('Skipping optional messaging hub tests: aiohttp is not installed',flush=True)
     with tempfile.TemporaryDirectory(prefix='ascend-monitor-check-') as temporary:
         builder = str(SKILL/'scripts/build_windows_package.py')
         subprocess.run([sys.executable,builder,'--mode','wizard','--output',temporary],check=True)

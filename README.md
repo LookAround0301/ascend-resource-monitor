@@ -6,9 +6,11 @@
 
 面向 Linux 昇腾服务器的可复用 Skill，使用 Grafana、Prometheus、NPU Exporter 与轻量进程采集器。默认推荐本地一键脚本访问：Windows 向导完成部署验证后，生成当前环境的 SSH 隧道启动脚本和安装包。纯网页访问作为可选方式。
 
-部署步骤与配置位置见 [监控面板使用与部署总览](docs/monitoring-guide.zh.md)，预约的完整规则见 [统一队列参考](skills/ascend-resource-monitor/references/task-queue.md)。本文与当前 `main` 源码核对于 **2026-11-05**；Release 包对应其发布版本，已有服务和已下载的访问包不会随仓库提交自动升级。
+部署步骤与配置位置见 [监控面板使用与部署总览](docs/monitoring-guide.zh.md)，预约的完整规则见 [统一队列参考](skills/ascend-resource-monitor/references/task-queue.md)，可选手机查询和提醒见 [消息汇总服务](skills/ascend-resource-monitor/assets/welink-hub/README.md)。Release 包对应其发布版本，已有服务和已下载的访问包不会随仓库提交自动升级。
 
 当前 main 已包含 A3 每节点 16 逻辑卡位、A5/A3 个人登录隔离、工号与姓名免密码登录、共同使用人姓名显示，以及管理员自动容器管控开关。
+
+夜间跨日登记截止支持按部署配置到分钟，例如 `night_carryover_cutoff_hour: 9.5` 表示配置时区的 09:30，只释放登记。`missed_claim_limit: 3` 可按部署启用“累计三次未开始后取消预约”；默认不启用。消息服务和群通知也需单独配置，不会随监控部署自动开放。
 
 ## 能看到什么
 

@@ -1,0 +1,202 @@
+--- a/queue_unified.py
++++ b/queue_unified.py
+@@ -12,13 +12,18 @@
+ 
+ 
+ class UnifiedQueue:
+-    def __init__(self, store, nodes, buffer_seconds=600, timezone='UTC', daily_reset=False, cards_per_node=8, strict_nights=False, overtime_control=False, normal_priority=False):
++    def __init__(self, store, nodes, buffer_seconds=600, timezone='UTC', daily_reset=False, cards_per_node=8, strict_nights=False, overtime_control=False, normal_priority=False, night_carryover_cutoff_hour=None):
+         self.store = store
+         self.timezone = dt_timezone.utc if timezone == 'UTC' else ZoneInfo(timezone)
+         self.daily_reset = daily_reset
+         self.strict_nights = strict_nights
+         self.overtime_control = bool(strict_nights and (overtime_control or normal_priority))
+         self.normal_priority = bool(strict_nights and normal_priority)
++        if night_carryover_cutoff_hour is not None and (type(night_carryover_cutoff_hour) not in (int, float) or not 9<=night_carryover_cutoff_hour<=23 or (night_carryover_cutoff_hour * 60) % 1):
++            raise ValueError('night carryover cutoff must be a local hour between 9 and 23')
++        if night_carryover_cutoff_hour is not None and not (self.strict_nights and self.normal_priority):
++            raise ValueError('night carryover cutoff requires strict nights and normal priority')
++        self.night_carryover_cutoff_hour = night_carryover_cutoff_hour
+         if type(cards_per_node) is not int or cards_per_node not in (8, 16):
+             raise ValueError('cards_per_node must be 8 or 16')
+         self.capacity = cards_per_node
+@@ -129,6 +134,14 @@
+         day = local.date() if local.hour < 9 else local.date() + timedelta(days=1)
+         return datetime.combine(day, daytime(9), self.timezone).timestamp()
+ 
++    def night_hard_cutoff(self, row):
++        if self.night_carryover_cutoff_hour is None or not row.get('not_before'):
++            return None
++        original=row.get('night_requested_start') or row['not_before']
++        nine=row.get('finish_before') or self.night_cutoff(original-0.001)
++        local=datetime.fromtimestamp(nine,self.timezone)
++        return datetime.combine(local.date(),daytime(int(self.night_carryover_cutoff_hour), int(self.night_carryover_cutoff_hour * 60) % 60),self.timezone).timestamp()
++
+     def normal_two_am(self, created):
+         local = datetime.fromtimestamp(created, self.timezone)
+         day = local.date() if local.hour < 2 else local.date() + timedelta(days=1)
+@@ -325,6 +338,7 @@
+                 JOIN accounts a ON a.id=r.account WHERE r.not_before>0 AND r.not_before<=?
+                 AND (r.state='active' OR (r.state='queued' AND r.night_fixed=1 AND r.night_schedule_blocked=0
+                 AND (?=0 OR r.night_takeover=1)))''',(now,int(self.normal_priority)))]
++        rows=[row for row in rows if self.night_hard_cutoff(row) is None or now<self.night_hard_cutoff(row)]
+         for row in rows:
+             row['allocations']=json.loads(row['allocations'])
+             row['allowed_employees']=json.loads(row['allowed_employees'])
+@@ -345,7 +359,12 @@
+                         or row['night_takeover']!=expected['night_takeover']
+                         or row['employee']!=expected['employee'] or allocations!=expected['allocations']
+                         or allowed!=expected['allowed_employees']):continue
++                deadline=self.night_hard_cutoff(row)
++                if deadline is not None and now>=deadline:
++                    self._schedule(db,now)
++                    continue
+                 end=(row['activated'] or row['not_before'])+row['requested_seconds']
++                if deadline is not None:end=min(end,deadline)
+                 if row['night_end_requested']:end=min(end,row['night_end_requested'])
+                 if now>=end:
+                     db.execute('DELETE FROM unified_tasks WHERE id=?',(row['id'],))
+@@ -475,9 +494,12 @@
+                     if row.get('night_end_requested'):end=min(end,row['night_end_requested'])
+                     blockers.append({'start':start,'end':end if end>now else None,'allocations':allocations})
+                 elif row['state']=='queued' and row['night_fixed']:
+-                    nights.append({'id':row['id'],'requested':row['night_requested_start'] or row['not_before'],
++                    night={'id':row['id'],'requested':row['night_requested_start'] or row['not_before'],
+                                    'scheduled':row['not_before'],'seconds':row['requested_seconds'],
+-                                   'order':row['queue_order'],'allocations':allocations})
++                                   'order':row['queue_order'],'allocations':allocations}
++                    hard_end=self.night_hard_cutoff(row)
++                    if hard_end is not None:night.update(latest_end=hard_end,minimum_seconds=60)
++                    nights.append(night)
+                 continue
+             if row['state']=='active' and row['activated']:
+                 start=row['activated'];end=min(start+row['requested_seconds']+600,self.normal_night_end(start))
+@@ -501,13 +523,30 @@
+                 row['night_schedule_blocked']=1
+             else:
+                 changed=start>row['not_before']
+-                db.execute('UPDATE unified_tasks SET not_before=?,night_schedule_blocked=0,night_rescheduled_at=CASE WHEN ? THEN ? ELSE night_rescheduled_at END WHERE id=?',
+-                           (start,int(changed),now,row['id']))
+-                row['not_before']=start;row['night_schedule_blocked']=0
++                hard_end=self.night_hard_cutoff(row)
++                seconds=min(row['requested_seconds'],math.floor(hard_end-start)) if hard_end is not None else row['requested_seconds']
++                db.execute('UPDATE unified_tasks SET not_before=?,requested_seconds=?,night_schedule_blocked=0,night_rescheduled_at=CASE WHEN ? THEN ? ELSE night_rescheduled_at END WHERE id=?',
++                           (start,seconds,int(changed),now,row['id']))
++                row['not_before']=start;row['requested_seconds']=seconds;row['night_schedule_blocked']=0
+                 if changed:row['night_rescheduled_at']=now
+ 
+     def _schedule(self, db, now):
+         self._reset_if_due(db, now)
++        if self.night_carryover_cutoff_hour is not None:
++            nights=[dict(row) for row in db.execute('''SELECT r.*,a.employee FROM unified_tasks r JOIN accounts a ON a.id=r.account
++                WHERE r.not_before>0 AND r.state IN ('queued','ready','active')''')]
++            for row in nights:
++                deadline=self.night_hard_cutoff(row)
++                if now>=deadline:
++                    if row['state']=='active':
++                        db.execute('''INSERT OR IGNORE INTO unified_overtime_releases(job,account,employee,allowed_employees,released_at,reason,allocations)
++                                      VALUES (?,?,?,?,?,?,?)''', (row['id'],row['account'],row['employee'],row['allowed_employees'],now,'night-cutoff',row['allocations']))
++                    db.execute('DELETE FROM confirmations WHERE job=?',(row['id'],))
++                    db.execute('DELETE FROM reservations WHERE id=?',(row['id'],))
++                    db.execute('DELETE FROM unified_tasks WHERE id=?',(row['id'],))
++                elif row['state']=='active' and row['activated'] and row['activated']+row['requested_seconds']>deadline:
++                    db.execute('UPDATE unified_tasks SET requested_seconds=? WHERE id=?',
++                               (max(1,math.floor(deadline-row['activated'])),row['id']))
+         if self.normal_priority:
+             for row in db.execute("SELECT id,activated,requested_seconds FROM unified_tasks WHERE state='active' AND not_before=0 AND activated>0").fetchall():
+                 limit=self.normal_night_end(row['activated'])
+@@ -856,7 +895,7 @@
+         alerts=self.alerts(rows,user,now,reset,blocked,dependent,joint)
+         for release in releases:
+             if release['account']==account or user.get('employee','') in json.loads(release['allowed_employees']):
+-                prefix='已到凌晨 3 点截止时间' if release['reason']=='cutoff' else '预约超时超过 10 分钟'
++                prefix=('夜间预约已到上午 09:30 截止时间' if release['reason']=='night-cutoff' else '已到凌晨 3 点截止时间' if release['reason']=='cutoff' else '预约超时超过 10 分钟')
+                 suffix=('登记释放不会停止容器；请自行停止任务并释放资源。'
+                         if self.normal_priority else '容器和实际任务不会自动停止，请自行检查并停止任务。')
+                 alerts.append({'id':'overtime-release:'+release['job'],'kind':'overtime-release',
+@@ -917,7 +956,7 @@
+             pending=[r for r in rows if r['state'] in ('queued','ready') and bool(r['not_before'])==bool(row['not_before']) and r['urgent']==row['urgent']]
+             row['can_raise_priority']=bool(user and user.get('admin') and not row['urgent'] and row in waiting and waiting.index(row)>0)
+             row['can_lower_priority']=bool(user and not row['urgent'] and (row['mine'] or user.get('admin')) and row in pending and pending.index(row)<len(pending)-1)
+-        return {'user': user, 'tasks': rows, 'nodes': list(self.nodes), 'cards_per_node': self.capacity, 'server_time': now, 'unified': True, 'can_urgent':can_urgent,
++        return {'user': user, 'tasks': rows, 'nodes': list(self.nodes), 'cards_per_node': self.capacity, 'server_time': now, 'unified': True, 'can_urgent':can_urgent, 'night_carryover_cutoff_hour':self.night_carryover_cutoff_hour,
+                 'alerts':alerts, 'daily_reset_enabled':self.daily_reset, 'last_daily_reset':reset,
+                 'reservation_buffer_seconds': self.buffer,
+                 'reservation_window': {'start': now, 'end': self.cutoff(now), 'timezone': str(self.timezone),
+@@ -969,6 +1008,9 @@
+         avoid=self.validate_avoid_slots(data.get('avoid_slots',[24,25,26,27,35,36,37,38])) if self.strict_nights and not night else []
+         # Exactly 09:00 belongs to the preceding night, not the following one.
+         finish_before = self.night_cutoff(start - 0.001) if night else self.cutoff(now)
++        if night and self.night_carryover_cutoff_hour is not None:
++            deadline=self.night_hard_cutoff({'not_before':start,'finish_before':finish_before})
++            seconds=min(seconds,math.floor(deadline-start))
+         if not night and max(now, start) + seconds > finish_before:
+             raise ControlError(400, '预约开始和预计结束时间都必须在次日上午 9 点前（含 9 点）')
+         with self.store.db() as db:
+--- a/queue_unified_ui.py
++++ b/queue_unified_ui.py
+@@ -1,7 +1,7 @@
+ """Queue controls mounted in the Grafana homepage, inside an isolated shadow DOM."""
+ import json
+ 
+-QUEUE_UI_VERSION = 'a3-103-backfill-2026-11-10'
++QUEUE_UI_VERSION = 'cutoff0930-a3-103-backfill-2026-11-10'
+ 
+ HOME_FRAGMENT = '''<style>
+ :host{display:block;height:100%;overflow:auto;color:#d8d9da;font:14px system-ui,sans-serif}*{box-sizing:border-box}.row{display:flex;gap:10px;align-items:end;flex-wrap:wrap}section{padding:10px 4px;border-bottom:1px solid #34383f}h3{font-size:15px;margin:0 0 10px}label{display:grid;gap:5px}input,select{background:#111217;color:#eee;border:1px solid #555b66;border-radius:4px;padding:7px;font:inherit;min-width:110px}input[type=password]{max-width:200px}button{font:inherit;border:0;border-radius:4px;padding:8px 12px;background:#316bd6;color:#fff;cursor:pointer}.secondary{background:#343f51}button:disabled{opacity:.45;cursor:not-allowed}.hidden{display:none!important}p{margin:8px 0;line-height:1.5;color:#adb9cb}.good{color:#7ed9a9}.error{color:#ff7886}.warning{color:#ffb457}.scroll{overflow:auto}table{width:100%;border-collapse:collapse}th,td{text-align:left;border-bottom:1px solid #34383f;padding:9px 7px;vertical-align:top;white-space:nowrap}th{color:#adb9cb;font-weight:500}small{color:#a4b1c4}.allowed-users{white-space:normal;max-width:320px;overflow-wrap:anywhere;line-height:1.5;margin:6px 0;color:#c6d2e0}td button{padding:6px 9px;margin:0 5px 4px 0}#message:empty{display:none}
+@@ -240,6 +240,7 @@
+    $('account-status').textContent=state.user?translateUi('已登录：')+(state.user.employee||'')+' '+state.user.name:translateUi('未登录');
+    $('account-form').classList.toggle('hidden',registered());$('logout').classList.toggle('hidden',!registered());gate();notify();resourceFields();timeLimits();renderCards();
+    if(state.strict_nights)$('queue-rules').textContent=state.normal_priority?translateUi('普通任务须在凌晨 2 点前开始，最晚凌晨 3 点自动结束登记，无需手动操作；超时最多宽限 10 分钟。普通任务优先，未开始的夜间预约可能顺延，机器和卡位保持不变；已进入接管或运行的夜间任务不会被新普通任务中断。本部署不会停止容器，夜间任务需等待实际使用人自行释放资源。夜间预约结束只释放登记，容器继续运行。'):'普通任务须在凌晨 3 点前开始，时长超过凌晨 2 点的部分会自动截短。'+(state.overtime_control?translateUi('普通任务超时后有 10 分钟可延长，未延长则自动释放登记，容器和任务不会被停止。'):'')+'夜间预约提交后机器、卡位和时段固定；预约结束只释放登记，容器继续运行。异常时资源接管待核实。';
++   if(state.strict_nights&&state.night_carryover_cutoff_hour!=null)$('queue-rules').textContent+=locale==='ru'?' Ночная бронь заканчивается не позднее 04:30 по Москве; контейнеры продолжают работать.':' 夜间任务最晚次日北京时间 09:30 结束登记，容器继续运行。';
+    if(state.strict_nights)$('queue-rules').textContent+=translateUi(" 勾选“愿意缩短本任务”后，当前序任务暂不能开始时，系统可在不低于最短使用时长的前提下，让本任务提前使用空档。请按时自行停止任务，不能延长影响前序预约。");
+    const alerts=$('queue-alerts');alerts.replaceChildren();for(const alert of state.alerts||[]){if(alert.kind==='unregistered')continue;const p=element('p',alert.message);p.className=alert.kind==='reset'?'good':alert.kind==='overdue-nonblocking'?'warning':'error';alerts.append(p);}for(const text of state.process_monitor_errors||[])alerts.append(element('p',text));alerts.classList.toggle('hidden',!alerts.children.length);
+    const body=$('tasks'),active=root.activeElement,focusJob=active&&active.dataset.allowedFor,selection=focusJob?[active.selectionStart,active.selectionEnd]:null;body.replaceChildren();
+--- a/queue_http.py
++++ b/queue_http.py
+@@ -130,7 +130,7 @@
+             return names_cache['names']
+ 
+     strict_nights=settings.get('strict_nights') is True
+-    unified=UnifiedQueue(store, config['nodes'], settings.get('reservation_buffer_seconds',600), settings.get('timezone','UTC'), settings.get('daily_reset',False), settings.get('cards_per_node',8),strict_nights,settings.get('overtime_control') is True,settings.get('normal_priority') is True) if settings.get('unified_queue') is True else None
++    unified=UnifiedQueue(store, config['nodes'], settings.get('reservation_buffer_seconds',600), settings.get('timezone','UTC'), settings.get('daily_reset',False), settings.get('cards_per_node',8),strict_nights,settings.get('overtime_control') is True,settings.get('normal_priority') is True,settings.get('night_carryover_cutoff_hour')) if settings.get('unified_queue') is True else None
+     auto=AutoQueue(store,agent) if not unified and settings.get('auto_match_employee') else None
+     monitor=None
+     if unified and settings.get('monitor_processes'):
+--- a/queue_night_replan.py
++++ b/queue_night_replan.py
+@@ -14,24 +14,29 @@
+     for night in sorted(nights,key=lambda item:(item['requested'],item['order'],item['id'])):
+         start=max(night['requested'],night['scheduled'])
+         while True:
++            end=min(start+night['seconds'],night.get('latest_end',math.inf))
++            if end-start<night.get('minimum_seconds',0) or end<=start:
++                result[night['id']]=None
++                break
+             conflicts=[]
+             for item in occupied:
+-                end=math.inf if item['end'] is None else item['end']
+-                if item['start']>=start+night['seconds'] or end<=start:
++                occupied_end=math.inf if item['end'] is None else item['end']
++                if item['start']>=end or occupied_end<=start:
+                     continue
+                 if any(set(cards).intersection(item['allocations'].get(node,()))
+                        for node,cards in night['allocations'].items()):
+-                    conflicts.append(end)
++                    conflicts.append(occupied_end)
+             if not conflicts:
+                 result[night['id']]=start
+-                occupied.append({'start':start,'end':start+night['seconds'],
++                occupied.append({'start':start,'end':end,
+                                  'allocations':night['allocations']})
+                 break
+             new_start=max(conflicts)
+             if not math.isfinite(new_start):
+                 result[night['id']]=None
+                 # Reserve these cards indefinitely for downstream night jobs.
+-                occupied.append({'start':start,'end':None,'allocations':night['allocations']})
++                latest=night.get('latest_end')
++                occupied.append({'start':start,'end':latest if latest and math.isfinite(latest) else None,'allocations':night['allocations']})
+                 break
+             start=new_start
+     return result
