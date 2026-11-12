@@ -1,0 +1,20 @@
+---
+name: a5-reservation
+description: Use natural language to create and query A5 NPU reservations using the user's configured employee ID and name. Use for A5-118 and A5-124 queue requests, including regular and night reservations.
+---
+
+# A5 预约
+
+通过 `scripts/a5_client.py` 调用 A5 预约接口。工号和姓名由本人的本机配置或环境变量 `A5_EMPLOYEE`、`A5_NAME` 提供，系统按用户要求默认其真实；不要冒用其他人。首次使用若未配置，询问用户本人工号、姓名和连接地址，然后运行 `configure`。不要把这些配置加入代码仓库。
+
+默认连接 `http://127.0.0.1:13000`：在个人电脑先启动现有 Open-Monitor 隧道；Agent 直接运行在 A5 中央服务器时可用 `http://127.0.0.1:3000`。其他服务器使用 SSH 隧道，或使用证书可验证的 HTTPS 入口。可通过 `A5_QUEUE_URL` 覆盖；自定义可信 CA 可用 `A5_CA_FILE`。不关闭证书校验。
+
+- 配置：`python <skill目录>/scripts/a5_client.py configure --employee 工号 --name 姓名 --url 地址`
+- 查询：`python <skill目录>/scripts/a5_client.py query`
+- 普通预约：`python <skill目录>/scripts/a5_client.py create --machine auto --cards 2 --minutes 60`。`--machine` 可用 `auto`、`A5-118`、`A5-124`、`dual`，双机卡数为总数且平均分配。
+- 夜间预约：在创建命令增加 `--night-start "YYYY-MM-DD HH:MM"`，默认北京时间；避免自行猜测日期、时间、机器或卡数，用户未说明且不能合理推断时先问。普通任务最长 2 小时，夜间受现行预约规则约束。
+- 用户明确允许短时插空时可增加 `--backfill-minutes N`，否则不启用。普通任务的避开时段沿用服务端默认值。共同使用人、开始/结束使用、修改和取消暂用预约网页或已有小鲁班功能，不声称此 Skill 已支持。
+
+用户明确要求预约并给出必要条件后，直接创建，无需小鲁班私聊确认；小鲁班照常发送业务提醒。返回任务编号、预约状态、分配卡位或队列位置；`ready` 时提醒用户在领取期限内到网页开始使用，预约不启动业务进程。
+
+创建前客户端会保存唯一请求编号。网络中断或结果未知时，使用 `recover 编号` 查结果；需要重试时仅用 `retry 编号` 重发同一请求，不要重新执行 `create`。结果为 404 时可能仍在处理中，使用同编号 retry 可以安全重试。不要把请求失败或未知说成预约成功。

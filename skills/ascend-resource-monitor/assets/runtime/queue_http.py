@@ -429,6 +429,22 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                     unified.set_urgent(person,data.get('job'),data.get('enabled'))
                     event(person,'unified_urgent',job=data.get('job'),enabled=data.get('enabled'))
                     return web.json_response({'message':'紧急标记已更新，队列已重新排序'})
+                if operation in ('agent-enqueue','agent-result'):
+                    if settings.get('agent_reservations_enabled') is not True:raise ControlError(404,'Agent 预约接口未启用')
+                    if not person.get('registered'):raise ControlError(401,'请先使用工号和姓名登录')
+                    from queue_agent import command as agent_command, receipt as agent_receipt
+                    operation_id=data.get('operation')
+                    if operation=='agent-result':
+                        if set(data)!={'operation'}:raise ControlError(400,'无效请求')
+                        result=await asyncio.to_thread(agent_receipt,store,person['employee'],operation_id)
+                    else:
+                        if set(data)!={'operation','request'}:raise ControlError(400,'无效预约请求')
+                        result=await asyncio.to_thread(agent_command,unified,store,dict(
+                            mode='agent_execute',employee=person['employee'],request=data['request'],
+                            operation=operation_id,expires=time.time()+300))
+                        try:event(person,'agent_enqueue',job=result['job'],operation=operation_id)
+                        except Exception:logging.error('Agent reservation secondary audit unavailable; receipt persisted')
+                    return web.json_response(result,headers={'Cache-Control':'no-store'})
                 if operation=='enqueue':
                     if not person['registered']:raise ControlError(400,'提交预约前请先登录个人账号')
                     event(person,'enqueue_unified')
