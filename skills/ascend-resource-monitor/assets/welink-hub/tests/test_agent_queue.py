@@ -94,7 +94,7 @@ class AgentQueueTests(unittest.TestCase):
         with self.store.db() as db:
             db.execute("UPDATE unified_tasks SET activated=(julianday('now')-2440587.5)*86400.0 WHERE id=?",(job,))
         action(self.queue,self.store,'a00000001',secrets.token_hex(16),job,'finish')
-        self.assertEqual(len(list_events(self.store,account,0,job)),2)
+        self.assertEqual([e['state'] for e in list_events(self.store,account,0,job)],['ready','active','ended'])
 
     def test_due_event_once_per_deadline_and_after_extension(self):
         job=command(self.queue,self.store,self.payload('agent_execute'))['job']
@@ -119,6 +119,6 @@ class AgentQueueTests(unittest.TestCase):
             account=dict(db.execute('SELECT id,employee FROM accounts WHERE employee=?',('a00000001',)).fetchone())
             db.execute("UPDATE unified_tasks SET state='active',activated=1,requested_seconds=60 WHERE id=?",(job,))
             db.execute('DELETE FROM unified_tasks WHERE id=?',(job,))
-        self.assertEqual([e['state'] for e in list_events(self.store,account,0,job)],['ready','active','due'])
+        self.assertEqual([e['state'] for e in list_events(self.store,account,0,job)],['ready','active','due','ended'])
 
 if __name__=='__main__':unittest.main()

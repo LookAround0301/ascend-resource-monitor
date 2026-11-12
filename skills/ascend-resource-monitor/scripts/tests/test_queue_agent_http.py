@@ -121,11 +121,57 @@ class AgentHTTPTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((await self.post('agent-action',{'operation':secrets.token_hex(16),'job':job,
                 'action':'claim','offer_id':ready['offer_id']})).status,200)
             process=await start();await wait_count(2)
+            all_events=(await (await self.post('agent-events',{'job':job,'after':0})).json())['events']
+            active_seq=all_events[-1]['seq']
+            for _ in range(100):
+                cursors=list((root/'client'/'push').glob('*/cursor.json'))
+                if cursors and json.loads(cursors[0].read_text(encoding='utf-8'))['after']>=active_seq:break
+                await asyncio.sleep(.1)
+            else:self.fail('active event not acknowledged')
+            self.assertEqual((await self.post('agent-action',{'operation':secrets.token_hex(16),'job':job,
+                'action':'finish'})).status,200)
+            await asyncio.wait_for(process.wait(),10);self.assertEqual(process.returncode,0);process=None
             events=[json.loads(line) for line in received.read_text(encoding='utf-8').splitlines()]
-            self.assertEqual([e['state'] for e in events],['ready','active'])
+            self.assertEqual([e['state'] for e in events],['ready','active','ended'])
             self.assertTrue(all(e['session']=='fixture-session' for e in events))
         finally:
             if process and process.returncode is None:process.terminate();await process.wait()
+
+    async def test_background_listener_binds_owner_and_stops_on_end(self):
+        self.assertEqual((await self.post('login',{'employee':'a00000001','name':'User One'})).status,200)
+        created=await (await self.post('agent-enqueue',{'operation':secrets.token_hex(16),
+            'request':{'machine':'auto','cards':1,'requested_seconds':1800}})).json()
+        job=created['job'];root=Path(self.temp.name);received=root/'bg-received.jsonl'
+        adapter=root/'bg-adapter.py'
+        adapter.write_text('import json,sys\nfrom pathlib import Path\ne=json.load(sys.stdin)\n'
+            'with Path('+repr(str(received))+').open("a",encoding="utf-8") as f:f.write(json.dumps(e)+"\\n")\n'
+            'print(json.dumps({"accepted":True,"event_id":e["event_id"]}))\n',encoding='utf-8')
+        config=root/'bg-adapter.json';config.write_text(json.dumps([sys.executable,str(adapter)]),encoding='utf-8')
+        script=Path(__file__).resolve().parents[3]/'a5-reservation/scripts/a5_push.py'
+        env={**os.environ,'A5_RESERVATION_HOME':str(root/'bg-client'),'PYTHONUTF8':'1',
+             'A5_EMPLOYEE':'a00000001','A5_NAME':'User One','A5_QUEUE_URL':str(self.server.make_url('')).rstrip('/')}
+        process=await asyncio.create_subprocess_exec(sys.executable,str(script),'--job',job,'--session','bg-session',
+            '--adapter',str(config),'--background',env=env,stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.PIPE)
+        out,err=await process.communicate();self.assertEqual(process.returncode,0,err.decode())
+        self.assertTrue(json.loads(out)['started']);self.assertTrue(json.loads(out)['connected'])
+        async def wait_state(state):
+            for _ in range(100):
+                if received.exists() and any(json.loads(x)['state']==state for x in received.read_text(encoding='utf-8').splitlines()):return
+                await asyncio.sleep(.1)
+            self.fail('background listener did not receive '+state)
+        try:
+            await wait_state('ready')
+            ready=(await (await self.post('agent-events',{'job':job,'after':0})).json())['events'][0]
+            self.assertEqual((await self.post('agent-action',{'operation':secrets.token_hex(16),'job':job,
+                'action':'claim','offer_id':ready['offer_id']})).status,200)
+        finally:
+            await self.post('agent-action',{'operation':secrets.token_hex(16),'job':job,'action':'finish'})
+        await wait_state('ended')
+        for _ in range(100):
+            statuses=list((root/'bg-client'/'push').glob('*/status.json'))
+            if statuses and json.loads(statuses[0].read_text(encoding='utf-8'))['state']=='ended':break
+            await asyncio.sleep(.1)
+        else:self.fail('background listener did not stop after reservation end')
 
     async def test_skill_client_create_and_retry_real_http(self):
         script=Path(__file__).resolve().parents[3]/'a5-reservation/scripts/a5_client.py'

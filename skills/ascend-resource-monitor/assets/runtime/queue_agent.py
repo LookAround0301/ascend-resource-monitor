@@ -138,6 +138,14 @@ def initialize_events(store):
                      OLD.activated,OLD.not_before,OLD.requested_seconds,OLD.allocations,
                      (julianday('now')-2440587.5)*86400.0 WHERE changes()=1;
             END''')
+        db.execute('''CREATE TRIGGER IF NOT EXISTS agent_ended_after_delete AFTER DELETE ON unified_tasks
+            BEGIN
+                INSERT INTO agent_queue_events(job,account,allowed_employees,state,offer_id,claim_before,
+                     activated,not_before,requested_seconds,allocations,occurred)
+                VALUES(OLD.id,OLD.account,OLD.allowed_employees,'ended',OLD.offer_id,OLD.claim_before,
+                     COALESCE(OLD.activated,0),OLD.not_before,OLD.requested_seconds,OLD.allocations,
+                     (julianday('now')-2440587.5)*86400.0);
+            END''')
 
 
 def record_due_events(store, now=None):
