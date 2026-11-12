@@ -13,7 +13,7 @@ sys.path.insert(0,str(Path(os.environ.get('QUEUE_TEST_RUNTIME',ROOT.parent/'runt
 from control_common import ControlError
 from queue_store import QueueStore
 from queue_unified import UnifiedQueue
-from queue_agent import command,receipt
+from queue_agent import command,receipt,action,initialize_events,list_events
 
 class AgentQueueTests(unittest.TestCase):
     def setUp(self):
@@ -23,6 +23,7 @@ class AgentQueueTests(unittest.TestCase):
         self.store.login_without_password('a00000001','User One')
         self.queue=UnifiedQueue(self.store,['A5-118','A5-124'],strict_nights=True,
                                 overtime_control=True,normal_priority=True,timezone='Asia/Shanghai',night_carryover_cutoff_hour=9.5)
+        initialize_events(self.store)
         self.request=dict(machine='auto',cards=1,night=False,not_before=0,requested_seconds=1800,
                           avoid_slots=[],backfill_min_seconds=0)
     def tearDown(self):self.clock.stop();self.temp.cleanup()
@@ -56,5 +57,40 @@ class AgentQueueTests(unittest.TestCase):
         for p in invalid:
             with self.subTest(p=p),self.assertRaises(ControlError):command(self.queue,self.store,p)
         self.assertEqual(self.count(),0)
+
+    def test_claim_extend_finish_are_idempotent_and_bound_to_owner(self):
+        created=command(self.queue,self.store,self.payload('agent_execute'))
+        with self.store.db() as db:row=db.execute('SELECT * FROM unified_tasks WHERE id=?',(created['job'],)).fetchone()
+        self.assertEqual(row['state'],'ready');job=created['job'];offer=row['offer_id']
+        op=secrets.token_hex(16)
+        first=action(self.queue,self.store,'a00000001',op,job,'claim',offer)
+        self.assertEqual(first['reservation']['state'],'active')
+        self.assertEqual(action(self.queue,self.store,'a00000001',op,job,'claim',offer),first)
+        with self.assertRaises(ControlError):action(self.queue,self.store,'a00000001',op,job,'claim','other')
+        self.store.login_without_password('a00000002','User Two')
+        with self.assertRaises(ControlError):action(self.queue,self.store,'a00000002',secrets.token_hex(16),job,'finish')
+        with patch('time.time',return_value=self.now+1801):
+            extid=secrets.token_hex(16)
+            extended=action(self.queue,self.store,'a00000001',extid,job,'extend',minutes=10)
+            self.assertEqual(action(self.queue,self.store,'a00000001',extid,job,'extend',minutes=10),extended)
+            with self.store.db() as db:self.assertEqual(db.execute('SELECT extension_count FROM unified_tasks WHERE id=?',(job,)).fetchone()[0],1)
+        finalid=secrets.token_hex(16);finished=action(self.queue,self.store,'a00000001',finalid,job,'finish')
+        self.assertEqual(action(self.queue,self.store,'a00000001',finalid,job,'finish'),finished)
+        self.assertEqual(self.count(),0)
+
+    def test_queue_transitions_are_persistent_scoped_and_preview_is_rolled_back(self):
+        command(self.queue,self.store,self.payload())
+        with self.store.db() as db:account=dict(db.execute('SELECT id,employee FROM accounts WHERE employee=?',('a00000001',)).fetchone())
+        self.assertEqual(list_events(self.store,account,0),[])
+        created=command(self.queue,self.store,self.payload('agent_execute'));job=created['job']
+        events=list_events(self.store,account,0,job)
+        self.assertEqual(len(events),1);self.assertEqual(events[0]['state'],'ready')
+        self.assertTrue(events[0]['allocations']);seq=events[0]['seq']
+        self.assertEqual(list_events(self.store,{'id':'other','employee':'a00000002'},0),[])
+        action(self.queue,self.store,'a00000001',secrets.token_hex(16),job,'claim',events[0]['offer_id'])
+        events=list_events(self.store,account,seq,job)
+        self.assertEqual(len(events),1);self.assertEqual(events[0]['state'],'active')
+        action(self.queue,self.store,'a00000001',secrets.token_hex(16),job,'finish')
+        self.assertEqual(len(list_events(self.store,account,0,job)),2)
 
 if __name__=='__main__':unittest.main()

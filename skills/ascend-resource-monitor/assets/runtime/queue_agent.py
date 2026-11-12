@@ -1,8 +1,10 @@
 """Idempotent, transaction-scoped A5 agent reservation creation."""
 import copy
+from contextlib import closing
 import hashlib
 import json
 import math
+from pathlib import Path
 import time
 
 from control_common import ControlError
@@ -67,3 +69,76 @@ def receipt(store, employee, operation):
         row=db.execute('SELECT result FROM agent_reservation_receipts WHERE operation=? AND employee=?',(operation,employee)).fetchone() if table else None
         if row is None:raise ControlError(404,'尚未找到预约结果，请使用原请求编号核对')
         return json.loads(row['result'])
+
+
+def action(unified, store, employee, operation, job, kind, offer_id='', minutes=None):
+    """Apply one queue action and its idempotency receipt atomically."""
+    if (not isinstance(employee,str) or not EMPLOYEE.fullmatch(employee)
+            or not isinstance(operation,str) or not HEX32.fullmatch(operation)
+            or not isinstance(job,str) or not HEX32.fullmatch(job)
+            or kind not in ('claim','extend','finish')):
+        raise ControlError(400,'无效 Agent 操作')
+    if kind=='claim':
+        if not isinstance(offer_id,str) or not offer_id or minutes is not None:raise ControlError(400,'开始操作需要当前分配编号')
+    elif kind=='extend':
+        if offer_id or type(minutes) is not int or minutes not in (10,20,30):raise ControlError(400,'无效延长时间')
+    elif offer_id or minutes is not None:raise ControlError(400,'无效结束操作')
+    fingerprint=hashlib.sha256(json.dumps(dict(job=job,kind=kind,offer_id=offer_id,minutes=minutes),sort_keys=True).encode()).hexdigest()
+    with store.db() as db:
+        db.execute('''CREATE TABLE IF NOT EXISTS agent_action_receipts (
+            operation TEXT PRIMARY KEY,employee TEXT NOT NULL,fingerprint TEXT NOT NULL,
+            result TEXT NOT NULL,created REAL NOT NULL)''')
+        old=db.execute('SELECT * FROM agent_action_receipts WHERE operation=?',(operation,)).fetchone()
+        if old:
+            if (old['employee'],old['fingerprint'])!=(employee,fingerprint):raise ControlError(409,'操作编号已用于其他请求')
+            return json.loads(old['result'])
+        account=db.execute('SELECT id,employee,name FROM accounts WHERE employee=?',(employee,)).fetchone()
+        if not account:raise ControlError(403,'预约账号不存在')
+        user=dict(account,admin=False,registered=True)
+        queue=copy.copy(unified);queue.store=TransactionStore(db)
+        outcome=queue.action(user,job,kind,offer_id or None,minutes)
+        row=db.execute('SELECT id,state,activated,requested_seconds,allocations,not_before FROM unified_tasks WHERE id=?',(job,)).fetchone()
+        result=dict(operation=operation,job=job,action=kind,outcome=outcome or 'ok',
+                    reservation=(dict(row) if row else None))
+        if result['reservation']:result['reservation']['allocations']=json.loads(result['reservation']['allocations'])
+        db.execute('INSERT INTO agent_action_receipts VALUES (?,?,?,?,?)',
+                   (operation,employee,fingerprint,json.dumps(result,ensure_ascii=False),time.time()))
+        return result
+
+
+def initialize_events(store):
+    """Persist allocation transitions in the same transaction as the queue."""
+    with store.db() as db:
+        db.execute('''CREATE TABLE IF NOT EXISTS agent_queue_events (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT, job TEXT NOT NULL, account TEXT NOT NULL,
+            allowed_employees TEXT NOT NULL, state TEXT NOT NULL, offer_id TEXT NOT NULL,
+            claim_before REAL NOT NULL, activated REAL NOT NULL, not_before REAL NOT NULL,
+            requested_seconds INTEGER NOT NULL, allocations TEXT NOT NULL, occurred REAL NOT NULL)''')
+        db.execute('CREATE INDEX IF NOT EXISTS agent_queue_events_account_seq ON agent_queue_events(account,seq)')
+        db.execute('''CREATE TRIGGER IF NOT EXISTS agent_queue_transition AFTER UPDATE OF state ON unified_tasks
+            WHEN NEW.state IN ('ready','active') AND OLD.state<>NEW.state
+            BEGIN
+                INSERT INTO agent_queue_events(job,account,allowed_employees,state,offer_id,claim_before,
+                     activated,not_before,requested_seconds,allocations,occurred)
+                VALUES(NEW.id,NEW.account,NEW.allowed_employees,NEW.state,NEW.offer_id,NEW.claim_before,
+                     COALESCE(NEW.activated,0),NEW.not_before,NEW.requested_seconds,NEW.allocations,
+                     CAST(strftime('%s','now') AS REAL));
+            END''')
+
+
+def list_events(store, user, after, job=None):
+    import sqlite3
+    if type(after) is not int or after<0:raise ControlError(400,'无效事件游标')
+    if job is not None and (not isinstance(job,str) or not HEX32.fullmatch(job)):raise ControlError(400,'无效预约编号')
+    uri=Path(store.path).resolve().as_uri()+'?mode=ro'
+    with closing(sqlite3.connect(uri,uri=True,timeout=5)) as db:
+        db.row_factory=sqlite3.Row
+        rows=db.execute('''SELECT seq,job,state,offer_id,claim_before,activated,not_before,
+                          requested_seconds,allocations,occurred FROM agent_queue_events e
+                          WHERE e.seq>? AND (? IS NULL OR e.job=?) AND
+                          (e.account=? OR EXISTS (SELECT 1 FROM json_each(e.allowed_employees) WHERE value=?))
+                          ORDER BY e.seq LIMIT 100''',(after,job,job,user['id'],user['employee'])).fetchall()
+        result=[]
+        for row in rows:
+            item=dict(row);item['allocations']=json.loads(item['allocations']);result.append(item)
+        return result

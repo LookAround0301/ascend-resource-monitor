@@ -43,6 +43,21 @@ class AgentHTTPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.post('agent-enqueue',body)).status,400)
         self.assertEqual((await self.post('login',{'employee':'a00000001','name':'Other'})).status,401)
 
+    async def test_event_delivery_and_action_replay(self):
+        self.assertEqual((await self.post('login',{'employee':'a00000001','name':'User One'})).status,200)
+        body={'operation':secrets.token_hex(16),'request':{'machine':'auto','cards':1,'requested_seconds':1800}}
+        response=await self.post('agent-enqueue',body);created=await response.json()
+        response=await self.post('agent-events',{'after':0,'job':created['job'],'wait_seconds':0})
+        events=(await response.json())['events'];self.assertEqual(len(events),1);self.assertEqual(events[0]['state'],'ready')
+        operation=secrets.token_hex(16);claim={'operation':operation,'job':created['job'],'action':'claim','offer_id':events[0]['offer_id']}
+        response=await self.post('agent-action',claim);self.assertEqual(response.status,200,await response.text());first=await response.json()
+        self.assertEqual((await (await self.post('agent-action',claim)).json()),first)
+        response=await self.post('agent-events',{'after':events[0]['seq'],'job':created['job'],'wait_seconds':0})
+        self.assertEqual((await response.json())['events'][0]['state'],'active')
+        await self.post('login',{'employee':'b00000002','name':'User Two'})
+        response=await self.post('agent-events',{'after':0,'job':created['job'],'wait_seconds':0})
+        self.assertEqual((await response.json())['events'],[])
+
     async def test_skill_client_create_and_retry_real_http(self):
         script=Path(__file__).resolve().parents[3]/'a5-reservation/scripts/a5_client.py'
         env={**os.environ,'A5_RESERVATION_HOME':str(Path(self.temp.name)/'client'),'PYTHONUTF8':'1'}
@@ -59,6 +74,16 @@ class AgentHTTPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(retried['job'],first['job'])
         self.assertEqual(json.loads((await run('recover',operation)).splitlines()[0])['job'],first['job'])
         self.assertEqual(len(json.loads(await run('query'))['tasks']),1)
-        with self.store.db() as db:self.assertEqual(db.execute('SELECT count(*) FROM unified_tasks').fetchone()[0],1)
+        events=json.loads(await run('events','--job',first['job']))['events']
+        self.assertEqual(events[0]['state'],'ready')
+        claimed=json.loads(await run('action','claim','--job',first['job'],'--offer-id',events[0]['offer_id']))
+        self.assertEqual(claimed['reservation']['state'],'active')
+        self.assertEqual(json.loads(await run('action-retry',claimed['operation'])),claimed)
+        active=json.loads(await run('events','--job',first['job'],'--after',str(events[0]['seq'])))['events']
+        self.assertEqual(active[0]['state'],'active')
+        finished=json.loads(await run('action','finish','--job',first['job']))
+        self.assertEqual(json.loads(await run('action-retry',finished['operation'])),finished)
+        self.assertIsNone(finished['reservation'])
+        with self.store.db() as db:self.assertEqual(db.execute('SELECT count(*) FROM unified_tasks').fetchone()[0],0)
 
 if __name__=='__main__':unittest.main()

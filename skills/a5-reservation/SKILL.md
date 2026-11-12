@@ -1,6 +1,6 @@
 ---
 name: a5-reservation
-description: Use natural language to create and query A5 NPU reservations using the user's configured employee ID and name. Use for A5-118 and A5-124 queue requests, including regular and night reservations.
+description: Create, query, and manage A5 NPU reservations using the user's configured employee ID and name, including agent-led task monitoring for A5-118 and A5-124.
 ---
 
 # A5 预约
@@ -13,8 +13,10 @@ description: Use natural language to create and query A5 NPU reservations using 
 - 查询：`python <skill目录>/scripts/a5_client.py query`
 - 普通预约：`python <skill目录>/scripts/a5_client.py create --machine auto --cards 2 --minutes 60`。`--machine` 可用 `auto`、`A5-118`、`A5-124`、`dual`，双机卡数为总数且平均分配。
 - 夜间预约：在创建命令增加 `--night-start "YYYY-MM-DD HH:MM"`，默认北京时间；避免自行猜测日期、时间、机器或卡数，用户未说明且不能合理推断时先问。普通任务最长 2 小时，夜间受现行预约规则约束。
-- 用户明确允许短时插空时可增加 `--backfill-minutes N`，否则不启用。普通任务的避开时段沿用服务端默认值。共同使用人、开始/结束使用、修改和取消暂用预约网页或已有小鲁班功能，不声称此 Skill 已支持。
+- 用户明确允许短时插空时可增加 `--backfill-minutes N`，否则不启用。普通任务的避开时段沿用服务端默认值。共同使用人、修改和取消暂用预约网页或已有小鲁班功能。
 
-用户明确要求预约并给出必要条件后，直接创建，无需小鲁班私聊确认；小鲁班照常发送业务提醒。返回任务编号、预约状态、分配卡位或队列位置；`ready` 时提醒用户在领取期限内到网页开始使用，预约不启动业务进程。
+用户明确要求预约并给出必要条件后，直接创建，无需小鲁班私聊确认；小鲁班照常发送业务提醒。返回任务编号、预约状态、分配卡位或队列位置；未委托 Agent 继续执行时，`ready` 提醒用户及时开始使用，预约本身不启动业务进程。
 
 创建前客户端会保存唯一请求编号。网络中断或结果未知时，使用 `recover 编号` 查结果；需要重试时仅用 `retry 编号` 重发同一请求，不要重新执行 `create`。结果为 404 时可能仍在处理中，使用同编号 retry 可以安全重试。不要把请求失败或未知说成预约成功。
+
+当用户要求 Agent 在预约到号后继续执行任务，或要求绑定已有预约并自动开始、延长、结束时，读取 [自动执行说明](references/agent-loop.md)。该流程由 Agent 负责任务管理；只有运行环境具备可靠的原会话唤醒能力时才能承诺无人值守执行。

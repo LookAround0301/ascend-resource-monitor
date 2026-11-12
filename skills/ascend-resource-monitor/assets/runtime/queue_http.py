@@ -131,6 +131,9 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
 
     strict_nights=settings.get('strict_nights') is True
     unified=UnifiedQueue(store, config['nodes'], settings.get('reservation_buffer_seconds',600), settings.get('timezone','UTC'), settings.get('daily_reset',False), settings.get('cards_per_node',8),strict_nights,settings.get('overtime_control') is True,settings.get('normal_priority') is True,settings.get('normal_max_seconds',7200),settings.get('night_carryover_cutoff_hour'),settings.get('missed_claim_limit',0)) if settings.get('unified_queue') is True else None
+    if unified and settings.get('agent_reservations_enabled') is True:
+        from queue_agent import initialize_events
+        initialize_events(store)
     auto=AutoQueue(store,agent) if not unified and settings.get('auto_match_employee') else None
     monitor=None
     if unified and settings.get('monitor_processes'):
@@ -429,14 +432,31 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                     unified.set_urgent(person,data.get('job'),data.get('enabled'))
                     event(person,'unified_urgent',job=data.get('job'),enabled=data.get('enabled'))
                     return web.json_response({'message':'紧急标记已更新，队列已重新排序'})
-                if operation in ('agent-enqueue','agent-result'):
+                if operation in ('agent-enqueue','agent-result','agent-action','agent-events'):
                     if settings.get('agent_reservations_enabled') is not True:raise ControlError(404,'Agent 预约接口未启用')
                     if not person.get('registered'):raise ControlError(401,'请先使用工号和姓名登录')
-                    from queue_agent import command as agent_command, receipt as agent_receipt
+                    from queue_agent import command as agent_command, receipt as agent_receipt, action as agent_action, list_events
                     operation_id=data.get('operation')
-                    if operation=='agent-result':
+                    if operation=='agent-events':
+                        if set(data)-{'after','job','wait_seconds'}:raise ControlError(400,'无效事件请求')
+                        after=data.get('after',0);job=data.get('job');wait=data.get('wait_seconds',0)
+                        if type(wait) is not int or not 0<=wait<=25:raise ControlError(400,'无效等待时长')
+                        deadline=time.monotonic()+wait
+                        while True:
+                            events=await asyncio.to_thread(list_events,store,person,after,job)
+                            if events or time.monotonic()>=deadline:break
+                            await asyncio.sleep(min(1,max(0,deadline-time.monotonic())))
+                        result={'events':events}
+                    elif operation=='agent-result':
                         if set(data)!={'operation'}:raise ControlError(400,'无效请求')
                         result=await asyncio.to_thread(agent_receipt,store,person['employee'],operation_id)
+                    elif operation=='agent-action':
+                        if set(data)-{'operation','job','action','offer_id','minutes'} or not {'operation','job','action'}<=set(data):
+                            raise ControlError(400,'无效 Agent 操作')
+                        result=await asyncio.to_thread(agent_action,unified,store,person['employee'],operation_id,
+                            data['job'],data['action'],data.get('offer_id',''),data.get('minutes'))
+                        try:event(person,'agent_'+data['action'],job=data['job'],operation=operation_id)
+                        except Exception:logging.error('Agent action secondary audit unavailable; receipt persisted')
                     else:
                         if set(data)!={'operation','request'}:raise ControlError(400,'无效预约请求')
                         result=await asyncio.to_thread(agent_command,unified,store,dict(

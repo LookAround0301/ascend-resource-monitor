@@ -60,7 +60,7 @@ class Client:
         if data is not None:headers.update({'Content-Type':'application/json','Origin':self.origin,'X-A5-Queue':'queue-v1'})
         req=Request(self.origin+'/a5-queue/api/'+op,data=None if data is None else json.dumps(data,ensure_ascii=False).encode(),headers=headers)
         try:
-            with self.opener.open(req,timeout=15) as response:return json.loads(response.read(4000001))
+            with self.opener.open(req,timeout=35 if op=='agent-events' else 15) as response:return json.loads(response.read(4000001))
         except HTTPError as e:
             try:message=json.loads(e.read(8192)).get('message','接口返回错误')
             except Exception:message='接口返回错误'
@@ -68,8 +68,9 @@ class Client:
     def login(self):self.call('login',{'employee':self.config['employee'],'name':self.config['name']})
     def state(self):
         state=self.call('state')
-        keys=('id','state','employee','name','mine','collaborator','position','machine','total_cards','requested_seconds','effective_requested_seconds','estimated_start','not_before','allocations','claim_before','offer_id','activated')
+        keys=('id','state','employee','name','mine','collaborator','position','machine','total_cards','requested_seconds','effective_requested_seconds','estimated_start','not_before','allocations','claim_before','offer_id','activated','overdue','overdue_seconds','overtime_release_at')
         return {'server_time':state.get('server_time'),'nodes':state.get('nodes'),
+                'card_usage':state.get('card_usage'),'process_monitor_errors':state.get('process_monitor_errors'),
                 'tasks':[{k:r.get(k) for k in keys if k in r} for r in state.get('tasks',[]) if r.get('mine') or r.get('collaborator')]}
 
 def main():
@@ -80,6 +81,9 @@ def main():
     create=sub.add_parser('create');create.add_argument('--machine',default='auto');create.add_argument('--cards',type=int,required=True);create.add_argument('--minutes',type=int,required=True);create.add_argument('--night-start');create.add_argument('--backfill-minutes',type=int,default=0)
     recover=sub.add_parser('recover');recover.add_argument('operation')
     retry=sub.add_parser('retry');retry.add_argument('operation')
+    events=sub.add_parser('events');events.add_argument('--job',required=True);events.add_argument('--after',type=int,default=0);events.add_argument('--wait',type=int,default=0,choices=range(26),metavar='SECONDS')
+    act=sub.add_parser('action');act.add_argument('kind',choices=('claim','extend','finish'));act.add_argument('--job',required=True);act.add_argument('--offer-id');act.add_argument('--minutes',type=int,choices=(10,20,30))
+    act_retry=sub.add_parser('action-retry');act_retry.add_argument('operation')
     args=p.parse_args()
     if args.action=='configure':
         employee=args.employee.strip().lower();name=args.name.strip()
@@ -89,6 +93,34 @@ def main():
         save_private(CONFIG,data);print(json.dumps({'configured':True,'url':data['url']},ensure_ascii=False));return
     config=settings();client=Client(config);client.login()
     if args.action=='query':print(json.dumps(client.state(),ensure_ascii=False));return
+    if args.action=='events':
+        if not re.fullmatch('[0-9a-f]{32}',args.job) or args.after<0:raise ValueError('预约编号或事件游标无效')
+        print(json.dumps(client.call('agent-events',{'job':args.job,'after':args.after,'wait_seconds':args.wait}),ensure_ascii=False));return
+    if args.action in ('action','action-retry'):
+        if args.action=='action':
+            if not re.fullmatch('[0-9a-f]{32}',args.job):raise ValueError('预约编号无效')
+            if args.kind=='claim' and (not args.offer_id or args.minutes is not None):raise ValueError('开始使用需要当前 offer-id')
+            if args.kind=='extend' and (args.minutes is None or args.offer_id):raise ValueError('延长需要 10、20 或 30 分钟')
+            if args.kind=='finish' and (args.minutes is not None or args.offer_id):raise ValueError('结束操作不接受其他参数')
+            operation=secrets.token_hex(16)
+            request={'operation':operation,'job':args.job,'action':args.kind}
+            if args.offer_id:request['offer_id']=args.offer_id
+            if args.minutes is not None:request['minutes']=args.minutes
+            journal={'employee':config['employee'],'url':config['url'],'request':request}
+            save_private(ROOT/'actions'/(operation+'.json'),journal)
+            print('操作编号：'+operation,file=sys.stderr,flush=True)
+        else:
+            operation=args.operation
+            if not re.fullmatch('[0-9a-f]{32}',operation):raise ValueError('操作编号无效')
+            journal=json.loads((ROOT/'actions'/(operation+'.json')).read_text(encoding='utf-8'))
+            if journal['employee']!=config['employee'] or journal['url']!=config['url']:raise ValueError('该操作属于其他工号或接口地址')
+        try:result=client.call('agent-action',journal['request'])
+        except ApiError as e:
+            if e.status<500:raise
+            raise RuntimeError('操作结果未确认，请用 action-retry 加原操作编号 '+operation+' 核对；不要新建操作') from e
+        except (URLError,TimeoutError,OSError,ValueError) as e:
+            raise RuntimeError('操作结果未确认，请用 action-retry 加原操作编号 '+operation+' 核对；不要新建操作') from e
+        print(json.dumps(result,ensure_ascii=False));return
     if args.action=='create':
         if args.cards<1 or args.minutes<1 or args.backfill_minutes<0:raise ValueError('卡数、时长和插空时长无效')
         night=bool(args.night_start)
