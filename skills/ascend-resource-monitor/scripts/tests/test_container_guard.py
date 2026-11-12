@@ -4,11 +4,12 @@ from pathlib import Path
 import sys
 import tempfile
 import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'assets/runtime'))
-from container_guard import ContainerGuard, load_candidates
+from container_guard import ContainerGuard, load_candidates, load_unknown_candidates
 from control_common import ControlError, StopEngine
 from process_exporter import guard_metrics, metric_lines
 from patch_dashboard import add_guard_panel
@@ -236,6 +237,63 @@ class GuardTests(unittest.TestCase):
             with self.assertRaises(ValueError): load_candidates(config)
             owners.write_text('{"employee_names":{}}')
             with self.assertRaises(ValueError): load_candidates(config)
+
+    def test_unknown_reader_requires_explicit_unknown_and_fresh_complete_inventory(self):
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def read(self, _): return raw.encode()
+        config={'process_url':'http://127.0.0.1/metrics'}
+        base=('ascend_process_inventory_success 1\nascend_process_inventory_truncated 0\n'
+              'ascend_process_container_metadata_age_seconds 1\n'
+              f'ascend_process_inventory_timestamp_seconds {time.time()}\n')
+        def line(employee, attribution, pid='23', ref=CID+'@'+START, container='test'):
+            labels={'employee_id':employee,'attribution':attribution,'pid':pid,
+                    'control_ref':ref,'container':container,'process_key':'boot:'+pid+':12'}
+            return 'ascend_process_start_time_seconds{'+','.join(k+'='+json.dumps(v,ensure_ascii=False) for k,v in labels.items())+'} 1'
+        raw=base+'\n'.join([line('未知','无可用工号线索'),line('待确认','多个工号线索'),
+                            line('a12345678','运行用户'),line('未知','无可用工号线索','24','','')])
+        with patch('container_guard.urllib.request.build_opener') as opener:
+            opener.return_value.open.return_value=Response()
+            rows=load_unknown_candidates(config)
+            self.assertEqual([(r['pid'],r['container_id']) for r in rows],[(23,CID),(24,'')])
+            raw=raw.replace('inventory_truncated 0','inventory_truncated 1')
+            with self.assertRaises(ValueError):load_unknown_candidates(config)
+
+    def test_unknown_process_termination_is_scoped_and_rechecks_identity(self):
+        self.config['guard']['unknown_npu_processes']=True
+        self.guard.unknown_candidates=lambda:[dict(container_id=CID,started_at=START,container='test-container',pid=23,process_key='boot:23:1')]
+        class Poll:
+            def register(self,*args):pass
+            def poll(self,*args):return []
+        with patch('container_guard.os.pidfd_open',return_value=77,create=True), \
+             patch('container_guard.os.close'), patch('container_guard.select.poll',return_value=Poll(),create=True), \
+             patch('container_guard.select.POLLIN',1,create=True), \
+             patch('container_guard.signal.SIGKILL',SimpleNamespace(name='SIGKILL'),create=True), \
+             patch('container_guard.signal.pidfd_send_signal',create=True) as send, \
+             patch('container_guard.time.monotonic',return_value=100) as clock:
+            self.guard.enforce_unknown()
+            self.assertEqual(send.call_args.args[1].name,'SIGTERM')
+            self.assertFalse(self.docker.calls)
+            self.guard.enforce_unknown();self.assertEqual(send.call_count,1)
+            clock.return_value=106;self.guard.enforce_unknown()
+            self.assertEqual(send.call_args.args[1].name,'SIGKILL')
+            self.guard.identity_check=lambda row:False
+            clock.return_value=120;self.guard.enforce_unknown();self.assertEqual(send.call_count,2)
+            self.guard.identity_check=lambda row:True
+            self.guard.entries()[CID]={'whitelisted':True}
+            self.guard.enforce_unknown();self.assertEqual(send.call_count,2)
+            self.guard.entries().clear();self.config['protected_containers']=['test-container']
+            self.guard.enforce_unknown();self.assertEqual(send.call_count,2)
+
+    def test_unknown_policy_requires_both_explicit_configuration_and_guard_switch(self):
+        self.rows.clear()
+        with patch.object(self.guard,'enforce_unknown') as intercept:
+            self.guard.scan();intercept.assert_not_called()
+            self.config['guard']['unknown_npu_processes']=True
+            self.guard.next_discovery=0;self.guard.scan();intercept.assert_called_once()
+            self.guard.set_enabled({'node':'test','enabled':False,'confirmed':True},ACTOR)
+            self.guard.next_discovery=0;self.guard.scan();intercept.assert_called_once()
 
 
 if __name__ == '__main__': unittest.main()

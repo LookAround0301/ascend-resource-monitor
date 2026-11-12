@@ -4,6 +4,8 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
+import select
 import threading
 import time
 import urllib.request
@@ -20,9 +22,12 @@ def current_process(row):
         proc = Path('/proc') / str(row['pid'])
         ticks = parse_stat((proc/'stat').read_text())['start_ticks']
         boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()[:12]
-        match = CONTAINER.search((proc/'cgroup').read_text())
+        cgroup = (proc/'cgroup').read_text()
+        match = CONTAINER.search(cgroup)
+        container = row.get('container_id', '')
         return (row['process_key'] == f'{boot}:{row["pid"]}:{ticks}'
-                and match is not None and match.group(1) == row['container_id'])
+                and ((container and match is not None and match.group(1) == container)
+                     or (not container and match is None and 'kubepods' not in cgroup)))
     except (OSError, ValueError, KeyError, IndexError): return False
 
 
@@ -60,6 +65,39 @@ def load_candidates(config):
     return rows
 
 
+def load_unknown_candidates(config):
+    """Read only explicit unknown owners from a fresh, complete NPU inventory."""
+    op = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with op.open(config['process_url'], timeout=3) as response:
+        raw = response.read(8 * 1024 * 1024).decode()
+    prefix = config.get('metric_prefix', 'ascend_process_')
+    scalars, rows = {}, []
+    for line in raw.splitlines():
+        if line.startswith(prefix) and '{' not in line:
+            name, value = line.split(); scalars[name[len(prefix):]] = float(value)
+        elif line.startswith(prefix + 'start_time_seconds{'):
+            labels = {k: json.loads(v) for k, v in LABEL.findall(line)}
+            if labels.get('employee_id') != '未知' or labels.get('attribution') != '无可用工号线索': continue
+            target = labels.get('control_ref', '')
+            if target:
+                parts = target.split('@', 1)
+                if len(parts) != 2 or not CONTAINER_ID.fullmatch(parts[0]) or not parts[1]: continue
+                cid, started = parts
+            elif not labels.get('container'):
+                cid, started = '', ''
+            else: continue
+            pid = int(labels['pid'])
+            if pid <= 1: continue
+            rows.append({'container_id':cid, 'started_at':started, 'container':labels.get('container',''),
+                         'pid':pid, 'process_key':labels.get('process_key','')})
+    age = time.time() - scalars.get('inventory_timestamp_seconds', 0)
+    if (scalars.get('inventory_success') != 1 or not 0 <= age <= 30
+            or scalars.get('inventory_truncated') != 0
+            or not 0 <= scalars.get('container_metadata_age_seconds', 1e9) <= 45):
+        raise ValueError('Stale or incomplete process inventory')
+    return rows
+
+
 class ContainerGuard:
     def __init__(self, engine, candidates=None, identity_check=None):
         self.engine = engine
@@ -79,6 +117,8 @@ class ContainerGuard:
         self.error = ''
         self.last_scan = 0
         self.next_discovery = 0
+        self.unknown_candidates = lambda: load_unknown_candidates(self.config)
+        self.unknown_terminated = {}
         self.stopped = threading.Event()
 
     def save(self):
@@ -258,13 +298,55 @@ class ContainerGuard:
             if self.stopped.is_set(): raise RuntimeError('Guard state writes failed')
             if time.monotonic() >= self.next_discovery:
                 self.next_discovery = time.monotonic() + 10
-                try: self.discover()
+                try:
+                    self.discover()
+                    if self.enabled() and self.config.get('unknown_npu_processes') is True:
+                        self.enforce_unknown()
                 except Exception: self.error = '新增标记已暂停：姓名表、采集数据或容器状态核验失败'
             if self.enabled():
                 for cid, entry in list(self.entries().items()):
                     try: self.enforce(cid, entry)
                     except Exception: self.error = '部分容器核验或审计失败；请检查服务日志'
             self.last_scan = time.time()
+
+    def enforce_unknown(self):
+        if not hasattr(os, 'pidfd_open') or not hasattr(signal, 'pidfd_send_signal'):
+            raise RuntimeError('Safe PID handles unavailable')
+        rows = self.unknown_candidates()
+        npu = self.engine.get_npu()
+        seen = set()
+        for row in rows:
+            cid, pid, key = row['container_id'], row['pid'], row['process_key']
+            if not key or pid not in npu: continue
+            if cid:
+                entry = self.entries().get(cid, {})
+                if entry.get('whitelisted') or entry.get('personnel_whitelisted'): continue
+                info = self.engine.docker.inspect(cid)
+                if (info.get('Id') != cid or self.protected(info)
+                        or not info.get('State', {}).get('Running')
+                        or info['State'].get('StartedAt') != row['started_at']
+                        or pid not in self.engine.docker.pids(cid)): continue
+            if not self.identity_check(row): continue
+            seen.add(key)
+            prior = self.unknown_terminated.get(key)
+            if prior is not None and time.monotonic() - prior < 5: continue
+            try: fd = os.pidfd_open(pid)
+            except ProcessLookupError: continue
+            try:
+                if not self.identity_check(row): continue
+                poll = select.poll(); poll.register(fd, select.POLLIN)
+                if poll.poll(0): continue
+                sig = signal.SIGTERM if prior is None else signal.SIGKILL
+                event = {'action':'process.guard.stop', 'node':self.engine.config['node'],
+                         'container_id':cid, 'pid':pid, 'process_key':key,
+                         'reason':'no-employee-evidence', 'signal':sig.name}
+                self.engine.write_audit({**event, 'result':'requested'})
+                try: signal.pidfd_send_signal(fd, sig)
+                except ProcessLookupError: continue
+                self.unknown_terminated[key] = time.monotonic()
+                self.engine.write_audit({**event, 'result':'signal-sent'})
+            finally: os.close(fd)
+        self.unknown_terminated = {k:v for k,v in self.unknown_terminated.items() if k in seen}
 
     def run(self):
         while not self.stopped.is_set():
