@@ -1,4 +1,4 @@
-"""Idempotent, transaction-scoped A5 agent reservation creation."""
+"""Idempotent agent operations and durable reservation events."""
 import copy
 from contextlib import closing
 import hashlib
@@ -115,6 +115,9 @@ def initialize_events(store):
             claim_before REAL NOT NULL, activated REAL NOT NULL, not_before REAL NOT NULL,
             requested_seconds INTEGER NOT NULL, allocations TEXT NOT NULL, occurred REAL NOT NULL)''')
         db.execute('CREATE INDEX IF NOT EXISTS agent_queue_events_account_seq ON agent_queue_events(account,seq)')
+        db.execute('''CREATE TABLE IF NOT EXISTS agent_due_receipts (
+            job TEXT NOT NULL, activated REAL NOT NULL, requested_seconds INTEGER NOT NULL,
+            PRIMARY KEY(job,activated,requested_seconds))''')
         db.execute('''CREATE TRIGGER IF NOT EXISTS agent_queue_transition AFTER UPDATE OF state ON unified_tasks
             WHEN NEW.state IN ('ready','active') AND OLD.state<>NEW.state
             BEGIN
@@ -124,11 +127,48 @@ def initialize_events(store):
                      COALESCE(NEW.activated,0),NEW.not_before,NEW.requested_seconds,NEW.allocations,
                      CAST(strftime('%s','now') AS REAL));
             END''')
+        db.execute('''CREATE TRIGGER IF NOT EXISTS agent_due_before_delete BEFORE DELETE ON unified_tasks
+            WHEN OLD.state='active' AND OLD.activated>0 AND OLD.requested_seconds>0
+                 AND OLD.activated+OLD.requested_seconds<=(julianday('now')-2440587.5)*86400.0
+            BEGIN
+                INSERT OR IGNORE INTO agent_due_receipts VALUES(OLD.id,OLD.activated,OLD.requested_seconds);
+                INSERT INTO agent_queue_events(job,account,allowed_employees,state,offer_id,claim_before,
+                     activated,not_before,requested_seconds,allocations,occurred)
+                SELECT OLD.id,OLD.account,OLD.allowed_employees,'due',OLD.offer_id,OLD.claim_before,
+                     OLD.activated,OLD.not_before,OLD.requested_seconds,OLD.allocations,
+                     (julianday('now')-2440587.5)*86400.0 WHERE changes()=1;
+            END''')
+
+
+def record_due_events(store, now=None):
+    """Record each active reservation deadline once, including after a restart."""
+    now=time.time() if now is None else now
+    import sqlite3
+    uri=Path(store.path).resolve().as_uri()+'?mode=ro'
+    with closing(sqlite3.connect(uri,uri=True,timeout=5)) as check:
+        due=check.execute('''SELECT 1 FROM unified_tasks t WHERE t.state='active' AND t.activated>0
+             AND t.requested_seconds>0 AND t.activated+t.requested_seconds<=?
+             AND NOT EXISTS(SELECT 1 FROM agent_due_receipts d WHERE d.job=t.id
+                 AND d.activated=t.activated AND d.requested_seconds=t.requested_seconds) LIMIT 1''',(now,)).fetchone()
+    if not due:return
+    with store.db() as db:
+        rows=db.execute('''SELECT * FROM unified_tasks WHERE state='active' AND activated>0
+                           AND requested_seconds>0 AND activated+requested_seconds<=?''',(now,)).fetchall()
+        for row in rows:
+            inserted=db.execute('INSERT OR IGNORE INTO agent_due_receipts VALUES (?,?,?)',
+                                (row['id'],row['activated'],row['requested_seconds'])).rowcount
+            if inserted:
+                db.execute('''INSERT INTO agent_queue_events(job,account,allowed_employees,state,offer_id,
+                           claim_before,activated,not_before,requested_seconds,allocations,occurred)
+                           VALUES (?,?,?,'due',?,?,?,?,?,?,?)''',
+                           (row['id'],row['account'],row['allowed_employees'],row['offer_id'],
+                            row['claim_before'],row['activated'],row['not_before'],row['requested_seconds'],
+                            row['allocations'],now))
 
 
 def list_events(store, user, after, job=None):
     import sqlite3
-    if type(after) is not int or after<0:raise ControlError(400,'无效事件游标')
+    if type(after) is not int or not 0<=after<=9223372036854775807:raise ControlError(400,'无效事件游标')
     if job is not None and (not isinstance(job,str) or not HEX32.fullmatch(job)):raise ControlError(400,'无效预约编号')
     uri=Path(store.path).resolve().as_uri()+'?mode=ro'
     with closing(sqlite3.connect(uri,uri=True,timeout=5)) as db:

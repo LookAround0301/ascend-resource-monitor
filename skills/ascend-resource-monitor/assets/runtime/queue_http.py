@@ -1,6 +1,7 @@
 """Same-origin reservation UI/API with separate personal account sessions."""
 import asyncio
 import hashlib
+import json
 import logging
 from collections import defaultdict, deque
 import secrets
@@ -29,7 +30,7 @@ def session_cookie_name(namespace, authority):
 def install_queue(app,config,read_identity,admin_identity,agent_override=None):
     from aiohttp import web
     settings=config['task_queue'];store=QueueStore(settings['database'])
-    limits=defaultdict(deque)
+    limits=defaultdict(deque);stream_counts=defaultdict(int)
 
     async def agent(node,path,data=None):
         if node not in config['nodes']: raise ControlError(400,'未知主机')
@@ -205,6 +206,9 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
         async def poll():
             while True:
                 try:
+                    if unified and settings.get('agent_reservations_enabled') is True:
+                        from queue_agent import record_due_events
+                        await asyncio.to_thread(record_due_events,store)
                     if unified: await asyncio.to_thread(unified.tick)
                     else: await reconcile()
                     if monitor:
@@ -432,12 +436,42 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                     unified.set_urgent(person,data.get('job'),data.get('enabled'))
                     event(person,'unified_urgent',job=data.get('job'),enabled=data.get('enabled'))
                     return web.json_response({'message':'紧急标记已更新，队列已重新排序'})
-                if operation in ('agent-enqueue','agent-result','agent-action','agent-events'):
+                if operation in ('agent-enqueue','agent-result','agent-action','agent-events','agent-stream'):
                     if settings.get('agent_reservations_enabled') is not True:raise ControlError(404,'Agent 预约接口未启用')
                     if not person.get('registered'):raise ControlError(401,'请先使用工号和姓名登录')
                     from queue_agent import command as agent_command, receipt as agent_receipt, action as agent_action, list_events
                     operation_id=data.get('operation')
-                    if operation=='agent-events':
+                    if operation=='agent-stream':
+                        if set(data)!={'after','job'}:raise ControlError(400,'无效事件订阅')
+                        after=data['after'];job=data['job']
+                        if not isinstance(job,str):raise ControlError(400,'无效预约编号')
+                        events=await asyncio.to_thread(list_events,store,person,after,job)
+                        if stream_counts[person['id']]>=8 or sum(stream_counts.values())>=128:
+                            raise ControlError(429,'事件订阅连接过多，请稍后重试')
+                        stream_counts[person['id']]+=1
+                        response=web.StreamResponse(headers={'Content-Type':'text/event-stream; charset=utf-8',
+                            'Cache-Control':'no-store, no-transform','X-Accel-Buffering':'no'})
+                        try:
+                            await response.prepare(request)
+                            await response.write(b': connected\n\n')
+                            heartbeat=time.monotonic()
+                            while True:
+                                if request.transport is None or request.transport.is_closing():break
+                                for item in events:
+                                    wire='id: '+str(item['seq'])+'\ndata: '+json.dumps(item,ensure_ascii=False,separators=(',',':'))+'\n\n'
+                                    await response.write(wire.encode('utf-8'));after=item['seq']
+                                if time.monotonic()-heartbeat>=15:
+                                    current=await asyncio.to_thread(store.user,session_token(request))
+                                    if not current or current['id']!=person['id']:break
+                                    await response.write(b': keepalive\n\n');heartbeat=time.monotonic()
+                                await asyncio.sleep(1)
+                                events=await asyncio.to_thread(list_events,store,person,after,job)
+                        except (ConnectionResetError,BrokenPipeError):pass
+                        finally:
+                            stream_counts[person['id']]-=1
+                            if not stream_counts[person['id']]:del stream_counts[person['id']]
+                        return response
+                    elif operation=='agent-events':
                         if set(data)-{'after','job','wait_seconds'}:raise ControlError(400,'无效事件请求')
                         after=data.get('after',0);job=data.get('job');wait=data.get('wait_seconds',0)
                         if type(wait) is not int or not 0<=wait<=25:raise ControlError(400,'无效等待时长')

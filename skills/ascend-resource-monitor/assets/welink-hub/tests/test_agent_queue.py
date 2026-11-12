@@ -13,7 +13,7 @@ sys.path.insert(0,str(Path(os.environ.get('QUEUE_TEST_RUNTIME',ROOT.parent/'runt
 from control_common import ControlError
 from queue_store import QueueStore
 from queue_unified import UnifiedQueue
-from queue_agent import command,receipt,action,initialize_events,list_events
+from queue_agent import command,receipt,action,initialize_events,list_events,record_due_events
 
 class AgentQueueTests(unittest.TestCase):
     def setUp(self):
@@ -90,7 +90,35 @@ class AgentQueueTests(unittest.TestCase):
         action(self.queue,self.store,'a00000001',secrets.token_hex(16),job,'claim',events[0]['offer_id'])
         events=list_events(self.store,account,seq,job)
         self.assertEqual(len(events),1);self.assertEqual(events[0]['state'],'active')
+        # SQLite's clock is independent of the mocked Python clock.
+        with self.store.db() as db:
+            db.execute("UPDATE unified_tasks SET activated=(julianday('now')-2440587.5)*86400.0 WHERE id=?",(job,))
         action(self.queue,self.store,'a00000001',secrets.token_hex(16),job,'finish')
         self.assertEqual(len(list_events(self.store,account,0,job)),2)
+
+    def test_due_event_once_per_deadline_and_after_extension(self):
+        job=command(self.queue,self.store,self.payload('agent_execute'))['job']
+        with self.store.db() as db:
+            row=db.execute('SELECT offer_id FROM unified_tasks WHERE id=?',(job,)).fetchone()
+            account=dict(db.execute('SELECT id,employee FROM accounts WHERE employee=?',('a00000001',)).fetchone())
+        action(self.queue,self.store,'a00000001',secrets.token_hex(16),job,'claim',row['offer_id'])
+        record_due_events(self.store,self.now+1799)
+        self.assertEqual([e['state'] for e in list_events(self.store,account,0,job)],['ready','active'])
+        record_due_events(self.store,self.now+1801);record_due_events(self.store,self.now+1802)
+        self.assertEqual([e['state'] for e in list_events(self.store,account,0,job)],['ready','active','due'])
+        with patch('time.time',return_value=self.now+1801):
+            action(self.queue,self.store,'a00000001',secrets.token_hex(16),job,'extend',minutes=10)
+        record_due_events(self.store,self.now+2400)
+        self.assertEqual(len(list_events(self.store,account,0,job)),3)
+        record_due_events(self.store,self.now+2402);record_due_events(self.store,self.now+2403)
+        self.assertEqual([e['state'] for e in list_events(self.store,account,0,job)],['ready','active','due','due'])
+
+    def test_expired_row_deletion_records_due_before_cleanup(self):
+        job=command(self.queue,self.store,self.payload('agent_execute'))['job']
+        with self.store.db() as db:
+            account=dict(db.execute('SELECT id,employee FROM accounts WHERE employee=?',('a00000001',)).fetchone())
+            db.execute("UPDATE unified_tasks SET state='active',activated=1,requested_seconds=60 WHERE id=?",(job,))
+            db.execute('DELETE FROM unified_tasks WHERE id=?',(job,))
+        self.assertEqual([e['state'] for e in list_events(self.store,account,0,job)],['ready','active','due'])
 
 if __name__=='__main__':unittest.main()

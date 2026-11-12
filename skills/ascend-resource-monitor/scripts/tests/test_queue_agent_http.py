@@ -58,6 +58,75 @@ class AgentHTTPTests(unittest.IsolatedAsyncioTestCase):
         response=await self.post('agent-events',{'after':0,'job':created['job'],'wait_seconds':0})
         self.assertEqual((await response.json())['events'],[])
 
+    async def test_stream_push_and_reconnect_replays_only_after_cursor(self):
+        self.assertEqual((await self.post('login',{'employee':'a00000001','name':'User One'})).status,200)
+        created=await (await self.post('agent-enqueue',{'operation':secrets.token_hex(16),
+            'request':{'machine':'auto','cards':1,'requested_seconds':1800}})).json()
+        job=created['job']
+        events=(await (await self.post('agent-events',{'job':job,'after':0})).json())['events']
+        response=await self.post('agent-stream',{'job':job,'after':events[0]['seq']})
+        self.assertEqual(response.status,200)
+        self.assertEqual(await asyncio.wait_for(response.content.readline(),3),b': connected\n')
+        await response.content.readline()
+        claimed=await self.post('agent-action',{'operation':secrets.token_hex(16),'job':job,
+                                                 'action':'claim','offer_id':events[0]['offer_id']})
+        self.assertEqual(claimed.status,200)
+        ident=await asyncio.wait_for(response.content.readline(),5)
+        payload=await asyncio.wait_for(response.content.readline(),5)
+        self.assertTrue(ident.startswith(b'id: '));active=json.loads(payload.removeprefix(b'data: '))
+        self.assertEqual(active['state'],'active');response.close()
+        replay=await self.post('agent-stream',{'job':job,'after':events[0]['seq']})
+        await asyncio.wait_for(replay.content.readline(),3);await replay.content.readline()
+        await asyncio.wait_for(replay.content.readline(),3)
+        self.assertEqual(json.loads((await replay.content.readline()).removeprefix(b'data: '))['seq'],active['seq'])
+        replay.close()
+        await self.post('login',{'employee':'b00000002','name':'User Two'})
+        self.assertEqual((await (await self.post('agent-events',{'job':job,'after':0})).json())['events'],[])
+
+    async def test_listener_delivers_and_recovers_cursor_after_restart(self):
+        self.assertEqual((await self.post('login',{'employee':'a00000001','name':'User One'})).status,200)
+        created=await (await self.post('agent-enqueue',{'operation':secrets.token_hex(16),
+            'request':{'machine':'auto','cards':1,'requested_seconds':1800}})).json()
+        job=created['job'];root=Path(self.temp.name);received=root/'received.jsonl'
+        adapter=root/'adapter.py'
+        adapter.write_text('import json,sys\nfrom pathlib import Path\n'
+            'event=json.load(sys.stdin)\np=Path('+repr(str(received))+')\n'
+            'seen=[json.loads(x)["event_id"] for x in p.read_text().splitlines()] if p.exists() else []\n'
+            'if event["event_id"] not in seen:\n'
+            ' with p.open("a",encoding="utf-8") as f:f.write(json.dumps(event)+"\\n")\n'
+            ' sys.exit(1)\n'
+            'print(json.dumps({"accepted":True,"event_id":event["event_id"]}))\n',encoding='utf-8')
+        config=root/'adapter.json';config.write_text(json.dumps([sys.executable,str(adapter)]),encoding='utf-8')
+        scripts=Path(__file__).resolve().parents[3]/'a5-reservation/scripts'
+        env={**os.environ,'A5_RESERVATION_HOME':str(root/'client'),'PYTHONUTF8':'1',
+             'A5_EMPLOYEE':'a00000001','A5_NAME':'User One','A5_QUEUE_URL':str(self.server.make_url('')).rstrip('/')}
+        async def start():
+            return await asyncio.create_subprocess_exec(sys.executable,str(scripts/'a5_push.py'),
+                '--job',job,'--session','fixture-session','--adapter',str(config),env=env,
+                stdout=asyncio.subprocess.DEVNULL,stderr=asyncio.subprocess.DEVNULL)
+        async def wait_count(count):
+            for _ in range(100):
+                if received.exists() and len(received.read_text(encoding='utf-8').splitlines())>=count:return
+                await asyncio.sleep(.1)
+            self.fail('push adapter did not receive event')
+        process=await start()
+        try:
+            await wait_count(1)
+            for _ in range(50):
+                if list((root/'client'/'push').glob('*/cursor.json')):break
+                await asyncio.sleep(.1)
+            else:self.fail('cursor not persisted')
+            process.terminate();await process.wait();process=None
+            ready=(await (await self.post('agent-events',{'job':job,'after':0})).json())['events'][0]
+            self.assertEqual((await self.post('agent-action',{'operation':secrets.token_hex(16),'job':job,
+                'action':'claim','offer_id':ready['offer_id']})).status,200)
+            process=await start();await wait_count(2)
+            events=[json.loads(line) for line in received.read_text(encoding='utf-8').splitlines()]
+            self.assertEqual([e['state'] for e in events],['ready','active'])
+            self.assertTrue(all(e['session']=='fixture-session' for e in events))
+        finally:
+            if process and process.returncode is None:process.terminate();await process.wait()
+
     async def test_skill_client_create_and_retry_real_http(self):
         script=Path(__file__).resolve().parents[3]/'a5-reservation/scripts/a5_client.py'
         env={**os.environ,'A5_RESERVATION_HOME':str(Path(self.temp.name)/'client'),'PYTHONUTF8':'1'}
