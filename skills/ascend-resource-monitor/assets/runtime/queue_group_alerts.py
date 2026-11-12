@@ -30,9 +30,8 @@ def violations(monitor,tasks,continuing,releases,now):
         cards=cards-permitted
         matched=set();jobs=set()
         for task in tasks:
-            if (task['state'] not in ('active','ready') or
+            if (task['state']!='active' or
                     employee in [task['employee'],*task.get('allowed_employees',[])]) :continue
-            if classification=='已登记使用' and task['state']!='active':continue
             overlap=cards & set(task['allocations'].get(node,[]))
             if overlap:matched.update(overlap);jobs.add(task['id'])
         if not matched:continue

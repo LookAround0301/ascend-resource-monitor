@@ -46,8 +46,12 @@ class CandidateTests(unittest.TestCase):
         self.monitor.inventory_times={'A5-118':1000};self.process['npu_ids']='unknown'
         self.assertEqual(self.events([self.task()]),[])
 
-    def test_reserved_ready_and_multiple_victims_coalesce_without_mass_mentions(self):
+    def test_only_started_reservations_trigger_group_candidates(self):
+        self.assertEqual(self.events([self.task(state='ready')]),[])
+        self.assertEqual(self.events([self.task(state='queued')]),[])
         result=self.events([self.task(state='ready'),self.task(owner='c00000003',cards=(1,))])
+        self.assertEqual(len(result),1);self.assertEqual(result[0]['cards'],[1])
+        result=self.events([self.task(state='active'),self.task(owner='c00000003',cards=(1,))])
         self.assertEqual(len(result),1);self.assertEqual(result[0]['cards'],[0,1])
         self.process['name']='所有人';self.assertEqual(self.events([self.task()]),[])
 
