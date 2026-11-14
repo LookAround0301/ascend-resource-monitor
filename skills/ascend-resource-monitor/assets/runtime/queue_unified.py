@@ -20,8 +20,8 @@ class UnifiedQueue:
         self.overtime_control = bool(strict_nights and (overtime_control or normal_priority))
         self.midnight_separation = bool(midnight_separation and strict_nights)
         self.normal_priority = bool(strict_nights and normal_priority and not self.midnight_separation)
-        if midnight_separation and (not strict_nights or not self.overtime_control or night_carryover_cutoff_hour != 9.5):
-            raise ValueError('midnight separation requires strict nights, overtime control and a 09:30 night cutoff')
+        if midnight_separation and (not strict_nights or not self.overtime_control or night_carryover_cutoff_hour != 9):
+            raise ValueError('midnight separation requires strict nights, overtime control and a 09:00 night cutoff')
         if type(missed_claim_limit) is not int or not 0<=missed_claim_limit<=100:
             raise ValueError('missed_claim_limit must be an integer from 0 to 100')
         self.missed_claim_limit=missed_claim_limit
@@ -189,7 +189,7 @@ class UnifiedQueue:
 
     def normal_allowed_from(self, now):
         local=datetime.fromtimestamp(now,self.timezone)
-        boundary=datetime.combine(local.date(),daytime(9,30),self.timezone).timestamp()
+        boundary=datetime.combine(local.date(),daytime(9),self.timezone).timestamp()
         return max(now,boundary) if self.midnight_separation else now
 
     @staticmethod
@@ -210,7 +210,7 @@ class UnifiedQueue:
         if self.midnight_separation:
             for date in (day,day+timedelta(days=1)):
                 start=datetime.combine(date,daytime.min,self.timezone).timestamp()
-                end=datetime.combine(date,daytime(9,30),self.timezone).timestamp()
+                end=datetime.combine(date,daytime(9),self.timezone).timestamp()
                 if end>now:result.append({'start':max(start,now),'end':end})
             return result
         for date in (day - timedelta(days=1), day):
@@ -230,7 +230,7 @@ class UnifiedQueue:
             return
         if self.midnight_separation:
             # Overnight submissions must still be queued when normal starts
-            # reopen at 09:30. Expired active reservations are handled below.
+            # reopen at 09:00. Expired active reservations are handled below.
             return
         boundary = self.reset_boundary(now)
         previous = db.execute("SELECT value FROM unified_meta WHERE key='reset_checkpoint'").fetchone()
@@ -1081,7 +1081,7 @@ class UnifiedQueue:
         if night and start <= now:
             raise ControlError(400, '夜间预约需填写未来开始时间')
         if night and not any(window['start'] <= start < window['end'] for window in self.night_windows(now)):
-            raise ControlError(400, '夜间任务开始时间须在 00:00 至 09:30 前' if self.midnight_separation else '夜间任务开始时间须在晚上 20:00 至次日 09:00 前')
+            raise ControlError(400, '夜间任务开始时间须在 00:00 至 09:00 前' if self.midnight_separation else '夜间任务开始时间须在晚上 20:00 至次日 09:00 前')
         if not night and start:
             raise ControlError(400, '普通任务无需填写预约开始时间')
         avoid=self.validate_avoid_slots(data.get('avoid_slots',[24,25,26,27,35,36,37,38])) if self.strict_nights and not night else []
@@ -1322,7 +1322,7 @@ class UnifiedQueue:
                 seconds=row['requested_seconds']
                 if self.strict_nights and not row['not_before']:
                     if self.midnight_separation and self.normal_allowed_from(now)>now:
-                        raise ControlError(409,'00:00 至 09:30 不允许普通任务开始')
+                        raise ControlError(409,'00:00 至 09:00 不允许普通任务开始')
                     if not self.midnight_separation and now>=self.normal_one_am(row['created']):
                         raise ControlError(409,'普通任务最晚须在'+('午夜 0 点' if self.normal_priority else '凌晨 1 点')+'前开始')
                     seconds=min(seconds,math.floor(self.normal_night_end(now if self.midnight_separation else row['created'])-now))

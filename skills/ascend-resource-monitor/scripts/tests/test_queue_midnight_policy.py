@@ -19,7 +19,7 @@ class MidnightPolicyTests(unittest.TestCase):
         self.user=self.store.user(self.store.register('u12345678','Test','fixture-password'))
         self.q=UnifiedQueue(self.store,['a','b'],timezone='Asia/Shanghai',daily_reset=True,
              strict_nights=True,overtime_control=True,normal_priority=True,normal_max_seconds=3600,
-             night_carryover_cutoff_hour=9.5,midnight_separation=True)
+             night_carryover_cutoff_hour=9,midnight_separation=True)
         self.clock=patch('queue_unified.time.time').start();self.addCleanup(patch.stopall)
         self.clock.return_value=self.ts('2026-11-14T23:30:00')
 
@@ -40,22 +40,23 @@ class MidnightPolicyTests(unittest.TestCase):
     def test_overnight_normal_waits_and_survives_nine_reset(self):
         self.clock.return_value=self.ts('2026-11-15T00:30:00')
         job=self.add();r=self.row(job);self.assertEqual(r['state'],'queued')
-        self.assertGreaterEqual(r['estimated_start'],self.ts('2026-11-15T09:30:00'))
-        self.clock.return_value=self.ts('2026-11-15T09:00:00');self.q.tick();self.assertEqual(self.row(job)['state'],'queued')
-        self.clock.return_value=self.ts('2026-11-15T09:30:00');self.q.tick();self.assertEqual(self.row(job)['state'],'ready')
+        self.assertGreaterEqual(r['estimated_start'],self.ts('2026-11-15T09:00:00'))
+        self.clock.return_value=self.ts('2026-11-15T08:59:00');self.q.tick();self.assertEqual(self.row(job)['state'],'queued')
+        self.clock.return_value=self.ts('2026-11-15T09:00:00');self.q.tick();self.assertEqual(self.row(job)['state'],'ready')
 
-    def test_night_midnight_to_0930_and_conflict(self):
+    def test_night_midnight_to_0900_and_conflict(self):
         start=self.ts('2026-11-15T00:00:00')
         night=self.add(night=True,not_before=start)
-        r=self.row(night);self.assertEqual(r['requested_seconds'],int(self.ts('2026-11-15T09:30:00')-start))
+        r=self.row(night);self.assertEqual(r['requested_seconds'],int(self.ts('2026-11-15T09:00:00')-start))
         normal=self.add();r=self.row(normal);self.q.action(self.user,normal,'claim',r['offer_id'])
         self.assertEqual(self.row(normal)['activated']+self.row(normal)['requested_seconds'],start)
         with self.assertRaises(ControlError):self.add(night=True,not_before=start)
 
-    def test_night_before_midnight_is_rejected_and_late_start_ends_at_0930(self):
+    def test_night_before_midnight_is_rejected_and_late_start_ends_at_0900(self):
         with self.assertRaises(ControlError):self.add(night=True,not_before=self.ts('2026-11-14T23:55:00'))
-        job=self.add(night=True,not_before=self.ts('2026-11-15T09:15:00'))
-        r=self.row(job);self.assertEqual(r['not_before']+r['requested_seconds'],self.ts('2026-11-15T09:30:00'))
+        job=self.add(night=True,not_before=self.ts('2026-11-15T08:45:00'))
+        r=self.row(job);self.assertEqual(r['not_before']+r['requested_seconds'],self.ts('2026-11-15T09:00:00'))
+        with self.assertRaises(ControlError):self.add(night=True,not_before=self.ts('2026-11-15T09:00:00'))
 
     def test_extension_cannot_cross_midnight(self):
         job=self.add(requested_seconds=1200);r=self.row(job)
@@ -75,3 +76,14 @@ class MidnightPolicyTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             UnifiedQueue(self.store,['a','b'],timezone='Asia/Shanghai',strict_nights=True,
                          overtime_control=True,midnight_separation=True)
+
+    def test_night_registration_releases_at_nine_then_normal_can_start(self):
+        start=self.ts('2026-11-15T00:00:00');night=self.add(night=True,not_before=start)
+        with self.store.db() as db:
+            db.execute("UPDATE unified_tasks SET state='active',activated=? WHERE id=?",(start,night))
+        self.clock.return_value=self.ts('2026-11-15T08:50:00')
+        normal=self.add();self.assertEqual(self.row(normal)['state'],'queued')
+        self.clock.return_value=self.ts('2026-11-15T09:00:00');self.q.tick()
+        rows=self.q.view(self.user)['tasks']
+        self.assertFalse(any(r['id']==night for r in rows))
+        self.assertEqual(next(r for r in rows if r['id']==normal)['state'],'ready')
