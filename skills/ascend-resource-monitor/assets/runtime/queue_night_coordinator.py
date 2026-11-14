@@ -22,7 +22,7 @@ class NightCoordinator:
         tasks,targets,unknown=self.decisions(now)
         if not tasks:
             self.status=[];return
-        blocked_nodes={item['node'] for item in unknown}
+        blocked_nodes={item['node'] for item in unknown if item.get('reason')!='shared_container_conflict' or not item.get('cards')}
         for task in tasks:
             end=(task.get('activated') or task['not_before'])+task['requested_seconds']
             if task.get('night_end_requested'):end=min(end,task['night_end_requested'])
@@ -32,9 +32,12 @@ class NightCoordinator:
                 if self.monitor.inventory_times.get(node,0)<boundary:
                     blocked_nodes.add(node)
         blocked_cards={}
+        for item in unknown:
+            if item.get('reason')=='shared_container_conflict' and item.get('cards'):
+                blocked_cards.setdefault(item['node'],set()).update(item['cards'])
         for item in targets:blocked_cards.setdefault(item['node'],set()).update(item['cards'])
         self.status=[]
-        if blocked_nodes:self.status.append('夜间资源接管待核实：进程采集、归属或共享容器存在不确定情况。')
+        if blocked_nodes or unknown:self.status.append('夜间资源接管待核实：进程采集、归属或共享容器存在不确定情况。')
         if targets:self.status.append('夜间资源接管正在清理非预约容器，确认释放后开始登记。')
         for target in targets:
             if target['node'] in blocked_nodes:continue

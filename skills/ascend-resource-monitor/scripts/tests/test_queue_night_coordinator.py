@@ -64,6 +64,29 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         await self.poll_at(start)
         self.assertFalse(self.calls);self.assertTrue(self.coordinator.status)
         self.assertEqual(next(r for r in self.queue.view(self.user)['tasks'] if r['id']==night)['state'],'queued')
+
+    async def test_shared_container_blocks_only_unauthorized_cards_without_stopping_owner(self):
+        start=self.now+1200
+        owner=self.add(self.user,cards=7,night=True,not_before=start)
+        other=self.add(self.other,cards=1,night=True,not_before=start)
+        self.monitor.rows=[{'node':'a','employee':'u12345678','card_ids':[card],
+            'control_ref':'a'*64+'@2026-11-04T20:00:00Z','process_key':'process:'+str(card)}
+            for card in range(8)]
+        self.monitor.inventory_times['a']=start
+        await self.poll_at(start)
+        rows={r['id']:r for r in self.queue.view(self.user)['tasks']}
+        self.assertEqual(rows[owner]['state'],'active')
+        self.assertEqual(rows[other]['state'],'queued')
+        self.assertFalse(self.calls)
+        # Even after the owner becomes active, their container remains protected.
+        self.monitor.inventory_times['a']=start+10
+        await self.poll_at(start+10)
+        self.assertFalse(self.calls)
+        self.assertEqual(next(r for r in self.queue.view(self.user)['tasks'] if r['id']==other)['state'],'queued')
+        self.monitor.rows=self.monitor.rows[:-1];self.monitor.inventory_times['a']=start+20
+        await self.poll_at(start+20)
+        self.assertEqual(next(r for r in self.queue.view(self.user)['tasks'] if r['id']==other)['state'],'active')
+        self.assertFalse(self.calls)
     async def test_expired_night_releases_without_stopping_even_if_inventory_unavailable(self):
         start=self.now+1200;night=self.add(self.user,night=True,not_before=start)
         self.monitor.inventory_times['a']=start

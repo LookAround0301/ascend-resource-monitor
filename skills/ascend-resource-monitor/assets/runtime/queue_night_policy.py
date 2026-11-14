@@ -55,17 +55,26 @@ def enforcement_decisions(tasks, rows, fresh_nodes, now):
     Unknown ownership, unknown card mapping or conflicting shared containers
     are reported as unresolved instead of asserting an unsafe target.
     """
-    scope={};allowed={}
+    scope={};allowed={};active_allowed={}
     for task in tasks:
         start=task['not_before'];end=(task.get('activated') or start)+task['requested_seconds']
         if task.get('night_end_requested'):end=min(end,task['night_end_requested'])
+        if start and start<=now<end and task['state']=='active':
+            for node,cards in task['allocations'].items():
+                for card in cards:
+                    active_allowed.setdefault((node,card),set()).update([task['employee'],*task.get('allowed_employees',[])])
         if not start or now<start or now>=end or task['state']!='queued':continue
         for node,cards in task['allocations'].items():
             scope.setdefault(node,set()).update(cards)
             if now<end:
                 for card in cards:
                     allowed.setdefault((node,card),set()).update([task['employee'],*task.get('allowed_employees',[])])
-    grouped={};unresolved=[]
+    grouped={};unresolved=[];protected_containers=set()
+    for row in rows:
+        node=row.get('node');cards=row.get('cards');employee=row.get('employee','');ref=row.get('control_ref','')
+        if node in scope and cards is not None and employee and ref:
+            if any(employee in active_allowed.get((node,card),set()) for card in cards):
+                protected_containers.add((node,ref))
     for node in scope:
         if node not in fresh_nodes:unresolved.append({'node':node,'reason':'inventory_unavailable'})
     for row in rows:
@@ -80,15 +89,17 @@ def enforcement_decisions(tasks, rows, fresh_nodes, now):
         ref=row.get('control_ref','')
         if not employee or employee in ('未知','待确认') or not re.fullmatch(r'[0-9a-f]{64}@.+',ref):
             unresolved.append({'node':node,'reason':'unknown_owner_or_container'});continue
-        group=grouped.setdefault((node,ref),{'authorized':False,'unauthorized':False,'employees':set(),'cards':set(),'process_keys':set()})
+        group=grouped.setdefault((node,ref),{'authorized':(node,ref) in protected_containers,'unauthorized':False,'employees':set(),'cards':set(),'unauthorized_cards':set(),'process_keys':set()})
         group['authorized'] |= any(employee in allowed.get((node,card),set()) for card in overlap)
         group['unauthorized'] |= any(employee not in allowed.get((node,card),set()) for card in overlap)
+        group['unauthorized_cards'].update(card for card in overlap if employee not in allowed.get((node,card),set()))
         group['employees'].add(employee);group['cards'].update(overlap)
         group['process_keys'].add(row['process_key'])
     targets=[]
     for (node,ref),item in grouped.items():
         if item['authorized'] and item['unauthorized']:
-            unresolved.append({'node':node,'reason':'shared_container_conflict','control_ref':ref})
+            unresolved.append({'node':node,'reason':'shared_container_conflict','control_ref':ref,
+                               'cards':sorted(item['unauthorized_cards'])})
         elif item['unauthorized']:
             targets.append({'node':node,'control_ref':ref,'employees':sorted(item['employees']),
                             'cards':sorted(item['cards']),'process_keys':sorted(item['process_keys']),
