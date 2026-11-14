@@ -247,7 +247,7 @@ class QueueMonitor:
             if process_cards <= set(grant['cards']):return '跨日继续使用'
         return '未登记使用（疑似插队）'
 
-    def decorate(self, state, continuing=(), released=()):
+    def decorate(self, state, continuing=(), released=(), alert_self_reserved_only=False):
         now=state['server_time']; grouped={}; excess_grouped={}
         owned={}; active_owned={}
         if state.get('user'):
@@ -276,7 +276,15 @@ class QueueMonitor:
                 cards-=self.shared_cards(row,state['tasks'],continuing)
                 overlap=cards & owned.get(row['node'],set())
                 own=bool(state.get('user') and state['user'].get('employee','').lower()==row['employee'])
-                for role,matched in (('affected',overlap),('self',cards if own else set())):
+                self_cards=cards if own else set()
+                if self_cards and alert_self_reserved_only:
+                    reserved=set()
+                    for task in state['tasks']:
+                        if (task['state'] in ('active','ready') and row['employee']!=task.get('employee')
+                                and row['employee'] not in task.get('allowed_employees',[])):
+                            reserved.update(task['allocations'].get(row['node'],[]))
+                    self_cards=self_cards & reserved
+                for role,matched in (('affected',overlap),('self',self_cards)):
                     if matched:
                         group=grouped.setdefault((row['node'],row['employee'],row['name'],role,classification),{'keys':[],'cards':set()})
                         group['keys'].append(row['process_key']);group['cards'].update(matched)

@@ -63,6 +63,19 @@ class Logical16Tests(unittest.TestCase):
         self.assertIn(('a',15),occupied);self.assertIn(('b',15),occupied)
         self.assertEqual(result[-1]['start'],1200)
 
+    def test_fractional_boundary_clips_16_cards_before_night(self):
+        for boundary in (86400, 93600):
+            with self.subTest(boundary=boundary):
+                now=boundary-1800+0.75
+                busy=[dict(node='a',cards=list(range(16)),start=boundary,end=boundary+25200,
+                           direct_end=boundary+25200,fixed_night=True)]
+                job=dict(id='normal',cards=16,seconds=2400,allowed_nodes=['a'],
+                         clip_finish_before=boundary,start_before=boundary,midnight_separation=True)
+                result=plan(self.nodes,busy,[job],now)[0]
+                self.assertEqual(result['start'],now)
+                self.assertLessEqual(result['start']+result['seconds'],boundary)
+                self.assertGreater(result['start']+result['seconds'],boundary-1)
+
     def test_upper_half_and_large_single_requests(self):
         busy=[{'node':'a','cards':list(range(8)),'start':0,'end':None}]
         result=plan(self.nodes,busy,[{'id':'upper','cards':8,'seconds':600,'allowed_nodes':['a']}],1)

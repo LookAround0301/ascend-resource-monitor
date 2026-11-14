@@ -52,6 +52,18 @@ class MidnightPolicyTests(unittest.TestCase):
         self.assertEqual(self.row(normal)['activated']+self.row(normal)['requested_seconds'],start)
         with self.assertRaises(ControlError):self.add(night=True,not_before=start)
 
+    def test_fractional_clock_normal_can_use_cards_until_midnight_night_start(self):
+        start=self.ts('2026-11-15T00:00:00')
+        self.clock.return_value=self.ts('2026-11-14T23:32:00')+0.75
+        self.add(night=True,not_before=start,requested_seconds=9*3600)
+        normal=self.add(requested_seconds=40*60,backfill_min_seconds=600)
+        ready=self.row(normal)
+        self.assertEqual(ready['state'],'ready')
+        self.q.action(self.user,normal,'claim',ready['offer_id'])
+        active=self.row(normal)
+        self.assertLessEqual(active['activated']+active['requested_seconds'],start)
+        self.assertGreater(active['activated']+active['requested_seconds'],start-1)
+
     def test_night_before_midnight_is_rejected_and_late_start_ends_at_0900(self):
         with self.assertRaises(ControlError):self.add(night=True,not_before=self.ts('2026-11-14T23:55:00'))
         job=self.add(night=True,not_before=self.ts('2026-11-15T08:45:00'))

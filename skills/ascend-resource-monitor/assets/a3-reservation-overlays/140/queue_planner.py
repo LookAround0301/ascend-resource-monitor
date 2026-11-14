@@ -74,7 +74,12 @@ def plan(nodes, busy, jobs, now, buffer_seconds=600):
         return sorted(choices, key=lambda pair: pair[0])
 
     def options(job, start, seconds):
-        reaches_midnight=job.get('midnight_separation') and start+seconds>=job.get('clip_finish_before',math.inf)
+        boundary=job.get('clip_finish_before',math.inf)
+        # Durations are whole seconds but the clock may have a fractional part.
+        # A clipped job can therefore end less than one second before the
+        # boundary; do not add a buffer that would overlap the night booking.
+        reaches_midnight=(job.get('midnight_separation') and math.isfinite(boundary)
+                          and seconds>=math.floor(boundary-start))
         end = start + seconds + (0 if reaches_midnight else buffer_seconds)
         available = {node: free(node, start, end, job.get('night', False)) for node in nodes}
         count = job['cards']

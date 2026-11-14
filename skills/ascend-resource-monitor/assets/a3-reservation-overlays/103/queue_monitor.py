@@ -1,0 +1,333 @@
+"""Read-only comparison of fresh NPU process identities with active reservations."""
+import hashlib
+import asyncio
+import json
+import math
+import re
+import time
+from datetime import datetime
+from urllib.parse import urlsplit
+
+EMPLOYEE = re.compile(r'(?:[a-z][0-9]{8}|[a-z]wx[0-9]{7}|p_[a-z][a-z0-9_]{0,31})\Z')
+MAX_FUTURE_SKEW_SECONDS = 15
+
+
+class QueueMonitor:
+    def __init__(self, nodes, settings, fetch):
+        self.nodes=list(nodes); self.fetch=fetch; self.rows=[]; self.valid=set()
+        self.correct_node_clock_skew=settings.get('correct_node_clock_skew',False)
+        self.sampled=0; self.next_poll=0;self.inventory_times={};self.night_empty={}
+        self.night_log=None;self.night_log_error=''
+        if settings.get('night_inventory_log_dir'):
+            from queue_night_inventory import NightInventoryLog
+            self.night_log=NightInventoryLog(settings['night_inventory_log_dir'],settings.get('timezone','UTC'))
+        self.prefix=settings.get('metric_prefix','ascend')
+        self.process_prefix=settings.get('process_metric_prefix',self.prefix+'_process_')
+        self.capacity=settings.get('cards_per_node',8)
+        if type(self.capacity) is not int or self.capacity not in (8,16):
+            raise ValueError('cards_per_node must be 8 or 16')
+        self.npu_card_map=settings.get('npu_card_map')
+        if self.npu_card_map is not None:
+            if (not isinstance(self.npu_card_map,dict) or set(self.npu_card_map)!=set(self.nodes)
+                    or any(not isinstance(mapping,dict) or not mapping or any(
+                        not isinstance(chip,str) or not re.fullmatch(r'[0-9]+',chip)
+                        or type(card) is not int or not 0<=card<self.capacity
+                        for chip,card in mapping.items()) for mapping in self.npu_card_map.values())):
+                raise ValueError('Invalid per-node NPU chip-to-card mapping')
+
+        if not re.fullmatch(r'[a-zA-Z_][a-zA-Z0-9_]*',self.prefix) or not re.fullmatch(r'[a-zA-Z_][a-zA-Z0-9_]*',self.process_prefix):
+            raise ValueError('Invalid monitoring metric prefix')
+        self.url=settings.get('prometheus_url','http://127.0.0.1:9090').rstrip('/')
+        parsed=urlsplit(self.url)
+        if parsed.scheme!='http' or parsed.hostname not in ('127.0.0.1','localhost','::1') or parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise ValueError('Queue process monitoring requires a loopback Prometheus URL')
+
+    def physical_npu_ids(self,node,value):
+        if self.npu_card_map is None:return value
+        mapping=self.npu_card_map[node]
+        chips=value.split(',')
+        if not chips or any(chip not in mapping for chip in chips):return ''
+        return ','.join(str(card) for card in sorted({mapping[chip] for chip in chips}))
+
+    @property
+    def query(self):
+        names='|'.join(self.process_prefix+x for x in ('inventory_success','inventory_truncated','inventory_timestamp_seconds','container_metadata_age_seconds','inventory_processes','start_time_seconds','cpu_percent','resident_memory_bytes'))
+        base='{__name__=~"'+names+'"}'
+        if not self.correct_node_clock_skew:return base
+        stamp=self.process_prefix+'inventory_timestamp_seconds'
+        process_start=self.process_prefix+'start_time_seconds'
+        remainder='{__name__=~"'+names+'",__name__!="'+stamp+'",__name__!="'+process_start+'"}'
+        offset='(node_time_seconds - timestamp(node_time_seconds))'
+        normalized='('+stamp+' - on(node) '+offset+')'
+        normalized_start='('+process_start+' - on(node) group_left() '+offset+')'
+        fresh='((time() - timestamp(node_time_seconds)) >= 0 and (time() - timestamp(node_time_seconds)) < 30)'
+        name=lambda query,metric:'label_replace(('+query+' and on(node) '+fresh+'), "__name__", "'+metric+'", "node", ".*")'
+        return remainder+' or on(__name__,node,process_key) '+name(normalized,stamp)+' or on(__name__,node,process_key) '+name(normalized_start,process_start)
+
+
+    async def poll(self):
+        if time.monotonic()<self.next_poll:
+            return
+        self.next_poll=time.monotonic()+10
+        try:
+            data=await self.fetch(self.url,self.query)
+            self.ingest(data,time.time())
+        except Exception:
+            self.rows=[]; self.valid=set();self.inventory_times={}; self.sampled=time.time()
+        if self.night_log:
+            try:
+                now=time.time()
+                await asyncio.to_thread(self.night_log.write,now,self.nodes,self.inventory_times,self.current(now))
+                self.night_log_error=''
+            except Exception:
+                self.night_log_error='夜间 NPU 使用日志写入失败，请联系管理员检查。'
+
+    def ingest(self, data, now):
+        if data.get('status')!='success' or data.get('data',{}).get('resultType')!='vector':
+            raise ValueError('Unavailable process inventory')
+        scalars={node:{} for node in self.nodes}; rows={node:[] for node in self.nodes}; process_metrics={}
+        for item in data['data']['result']:
+            labels=item['metric']; node=labels.get('node'); name=labels.get('__name__','')
+            if node not in rows or not name.startswith(self.process_prefix):
+                continue
+            value=float(item['value'][1])
+            if not math.isfinite(value):raise ValueError('Invalid inventory value')
+            suffix=name[len(self.process_prefix):]
+            if suffix in ('cpu_percent','resident_memory_bytes'):
+                key=labels.get('process_key','')
+                if not key:raise ValueError('Missing process metric identity')
+                process_metrics.setdefault((node,key),{})[suffix]=value
+                continue
+            if suffix=='start_time_seconds':
+                key=labels.get('process_key','');pid=labels.get('pid','')
+                if not key or not pid.isdigit():raise ValueError('Missing process identity')
+                rows[node].append({'node':node,'process_key':key,'pid':pid,
+                                  'employee':labels.get('employee_id','').strip().lower(),
+                                  'name':labels.get('employee_name','').strip(),
+                                  'container':labels.get('container',''),
+                                  'user':labels.get('user',''),'process_name':labels.get('name',''),
+                                  'cwd':labels.get('cwd',''),'host_cwd':labels.get('host_cwd',''),
+                                  'attribution':labels.get('attribution',''),'entrypoint':labels.get('entrypoint',''),
+                                  'directory_group':labels.get('directory_group',''),'start_time_seconds':value,
+                                  'npu_ids':self.physical_npu_ids(node,labels.get('npu_ids','')),
+                                  'control_ref':labels.get('control_ref','')})
+            else:
+                scalars[node][suffix]=value
+        valid=set()
+        for node,values in scalars.items():
+            if (values.get('inventory_success')==1 and values.get('inventory_truncated')==0
+                    and -MAX_FUTURE_SKEW_SECONDS<=now-values.get('inventory_timestamp_seconds',0)<=30
+                    and 0<=values.get('container_metadata_age_seconds',1e9)<=45
+                    and values.get('inventory_processes')==len(rows[node])
+                    and len({r['process_key'] for r in rows[node]})==len(rows[node])):
+                valid.add(node)
+        self.rows=[{**r,**process_metrics.get((node,r['process_key']),{})} for node in valid for r in rows[node]]; self.valid=valid; self.sampled=now
+        self.inventory_times={node:scalars[node]['inventory_timestamp_seconds'] for node in valid}
+
+    def fresh_nodes(self,now):
+        return {node for node in self.valid if 0<=now-self.sampled<=20 and -MAX_FUTURE_SKEW_SECONDS<=now-self.inventory_times.get(node,0)<=30}
+
+    def current(self, now):
+        valid=self.fresh_nodes(now)
+        return [r for r in self.rows if r['node'] in valid]
+
+    def night_completion_decisions(self, tasks, now):
+        active={task['id'] for task in tasks}
+        for job in set(self.night_empty)-active:
+            del self.night_empty[job]
+        observed,finished=set(),set()
+        valid=self.fresh_nodes(now)
+        rows=self.current(now)
+        for task in tasks:
+            job=task['id'];allocations=task['allocations'];nodes=set(allocations)
+            if (not isinstance(task['activated'],(int,float)) or not task['activated'] or task['requested_seconds']<=0 or
+                    not nodes or not nodes <= valid or any(node not in self.nodes or not cards or
+                    any(type(card) is not int or not 0<=card<self.capacity for card in cards)
+                    for node,cards in allocations.items())):
+                self.night_empty.pop(job,None);continue
+            assigned={node:set(cards) for node,cards in allocations.items()}
+            relevant=[row for row in rows if row['node'] in nodes]
+            if any(self.cards(row) is None for row in relevant):
+                self.night_empty.pop(job,None);continue
+            overlapping=[row for row in relevant if self.cards(row) & assigned[row['node']]]
+            authorized={task['employee'],*task['allowed_employees']}
+            if any(row['employee'] in authorized for row in overlapping):observed.add(job)
+            if overlapping or not (task['night_seen_usage'] or now >= task['activated']+task['requested_seconds']):
+                self.night_empty.pop(job,None);continue
+            item=self.night_empty.setdefault(job,{'since':now,'samples':{node:set() for node in nodes}})
+            if now<item['since'] or set(item['samples'])!=nodes:
+                self.night_empty.pop(job,None);continue
+            for node in nodes:item['samples'][node].add(self.inventory_times[node])
+            if now-item['since']>=20 and all(len(samples)>=3 for samples in item['samples'].values()):
+                finished.add(job);self.night_empty.pop(job,None)
+        return observed,finished
+
+    def cards(self,row):
+        raw=row.get('npu_ids','').split(',')
+        return {int(card) for card in raw} if raw and all(re.fullmatch(r'0|[1-9][0-9]?',card) and int(card)<self.capacity for card in raw) else None
+
+    def card_usage(self, tasks, now):
+        """Describe observed processes per reserved card without exposing process identities."""
+        capacity=getattr(self,'capacity',8)
+        fresh=self.fresh_nodes(now);rows=self.current(now)
+        result={}
+        for node in self.nodes:
+            processes=[(row,self.cards(row)) for row in rows if row['node']==node]
+            unknown_cards=any(mapped is None for _,mapped in processes)
+            cards=[]
+            for card in range(capacity):
+                reservations=[task for task in tasks if task['state'] in ('active','ready')
+                              and card in task.get('allocations',{}).get(node,[])]
+                matching=[row for row,mapped in processes if mapped is not None and card in mapped]
+                if len(reservations)>1:status='reservation_conflict'
+                elif node not in fresh:status='reserved_unknown' if reservations else 'unreserved_unknown'
+                elif not reservations:
+                    status='unreserved_used' if matching else 'unreserved_unknown' if unknown_cards else 'unreserved_empty'
+                elif not matching:
+                    status='reserved_unknown' if unknown_cards else 'reserved_empty'
+                else:
+                    task=reservations[0]
+                    allowed={task.get('employee',''),*task.get('allowed_employees',[])}
+                    own=other=unknown=False
+                    for row in matching:
+                        employee=row.get('employee','');name=row.get('name','')
+                        if not EMPLOYEE.fullmatch(employee) or not name or len(name)>100 or any(ord(c)<32 for c in name):
+                            unknown=True
+                        elif employee in allowed:own=True
+                        else:other=True
+                    if not EMPLOYEE.fullmatch(task.get('employee','')):status='reserved_unverified'
+                    elif own and other:status='reserved_mixed'
+                    elif other:status='reserved_other'
+                    elif unknown or unknown_cards:status='reserved_unverified'
+                    else:status='reserved_user'
+                cards.append(status)
+            result[node]=cards
+        return result
+
+    @staticmethod
+    def shared_cards(row, tasks, continuing=()):
+        cards=set()
+        for task in tasks:
+            if task['state']=='active' and row['employee'] in task.get('allowed_employees',[]):
+                cards.update(task['allocations'].get(row['node'],[]))
+        _,_,started=row.get('control_ref','').partition('@')
+        try:start=datetime.fromisoformat(started.replace('Z','+00:00')).timestamp()
+        except ValueError:return cards
+        process_start=row.get('start_time_seconds')
+        if not isinstance(process_start,(int,float)) or not math.isfinite(process_start) or process_start<=0:return cards
+        for grant in continuing:
+            if 'cards' in grant and grant['node']==row['node'] and grant['employee']==row['employee'] and start<=grant['cutoff'] and process_start<=grant['cutoff']:
+                cards.update(grant['cards'])
+        return cards
+
+    def classification(self,row, tasks, continuing=(), released=()):
+        if not EMPLOYEE.fullmatch(row['employee']) or not row['name'] or len(row['name'])>100 or any(ord(c)<32 for c in row['name']):
+            return '待核实'
+        matched=any(task['state']=='active' and task['employee']==row['employee']
+                    and row['node'] in task['allocations'] for task in tasks)
+        if matched:return '已登记使用'
+        shared=self.shared_cards(row,tasks)
+        process_cards=self.cards(row)
+        if shared and process_cards is None:return '待核实'
+        if shared and process_cards and process_cards <= shared:return '已登记使用'
+        cid,_,started=row.get('control_ref','').partition('@')
+        if not cid or not started:return '未登记使用（疑似插队）'
+        try:start=datetime.fromisoformat(started.replace('Z','+00:00')).timestamp()
+        except ValueError:return '待核实'
+        process_start=row.get('start_time_seconds')
+        if not isinstance(process_start,(int,float)) or not math.isfinite(process_start) or process_start<=0:return '待核实'
+        for release in sorted(released,key=lambda item:item['released_at'],reverse=True):
+            if row['employee'] not in [release['employee'],*release.get('allowed_employees',[])]:continue
+            if process_start>release['released_at']:continue
+            allocations=release.get('allocations') or {}
+            if allocations:
+                if row['node'] not in allocations:continue
+                if process_cards is None:return '待核实'
+                if process_cards and process_cards<=set(allocations[row['node']]):
+                    return '超时释放后仍有进程' if release.get('reason')=='overtime' else '到时释放后仍有进程'
+            elif any(grant['node']==row['node'] and grant['employee']==row['employee']
+                     and grant['cutoff']<=release['released_at'] for grant in continuing):
+                return '近期超时释放（待核实）' if release.get('reason')=='overtime' else '近期到时释放（待核实）'
+        shared_total=self.shared_cards(row,tasks,continuing)
+        if process_cards and shared_total and process_cards <= shared_total:
+            return '跨日继续使用'
+        for grant in continuing:
+            if grant['node']!=row['node'] or grant['employee']!=row['employee'] or start>grant['cutoff'] or process_start>grant['cutoff']:
+                continue
+            if 'cards' not in grant:return '跨日继续使用'
+            if process_cards is None:return '待核实'
+            if process_cards <= set(grant['cards']):return '跨日继续使用'
+        return '未登记使用（疑似插队）'
+
+    def decorate(self, state, continuing=(), released=(), alert_self_reserved_only=False):
+        now=state['server_time']; grouped={}; excess_grouped={}
+        owned={}; active_owned={}
+        if state.get('user'):
+            for task in state['tasks']:
+                if task.get('mine') and task['state'] in ('active','ready'):
+                    for node,cards in task['allocations'].items():
+                        owned.setdefault(node,set()).update(cards)
+                        if task['state']=='active':active_owned.setdefault(node,set()).update(cards)
+        for row in self.current(now):
+            classification=self.classification(row,state['tasks'],continuing,released)
+            if classification=='已登记使用' and state.get('user'):
+                cards=self.cards(row)
+                if cards is not None:
+                    permitted=set(self.shared_cards(row,state['tasks'],continuing))
+                    for task in state['tasks']:
+                        if task['state']=='active' and task['employee']==row['employee']:
+                            permitted.update(task['allocations'].get(row['node'],[]))
+                    overlap=(cards-permitted) & active_owned.get(row['node'],set())
+                    if overlap:
+                        group=excess_grouped.setdefault((row['node'],row['employee'],row['name']),{'keys':[],'cards':set()})
+                        group['keys'].append(row['process_key']);group['cards'].update(overlap)
+            if classification in ('未登记使用（疑似插队）','超时释放后仍有进程','到时释放后仍有进程','近期超时释放（待核实）','近期到时释放（待核实）'):
+                cards=self.cards(row)
+                if cards is None:
+                    continue
+                cards-=self.shared_cards(row,state['tasks'],continuing)
+                overlap=cards & owned.get(row['node'],set())
+                own=bool(state.get('user') and state['user'].get('employee','').lower()==row['employee'])
+                self_cards=cards if own else set()
+                if self_cards and alert_self_reserved_only:
+                    reserved=set()
+                    for task in state['tasks']:
+                        if (task['state'] in ('active','ready') and row['employee']!=task.get('employee')
+                                and row['employee'] not in task.get('allowed_employees',[])):
+                            reserved.update(task['allocations'].get(row['node'],[]))
+                    self_cards=self_cards & reserved
+                for role,matched in (('affected',overlap),('self',self_cards)):
+                    if matched:
+                        group=grouped.setdefault((row['node'],row['employee'],row['name'],role,classification),{'keys':[],'cards':set()})
+                        group['keys'].append(row['process_key']);group['cards'].update(matched)
+        alerts=list(state.get('alerts',[]))
+        for (node,employee,name,role,classification),group in sorted(grouped.items()):
+            cards=sorted(group['cards'])
+            digest=hashlib.sha256(('\0'.join(sorted(group['keys']))+':'+','.join(map(str,cards))).encode()).hexdigest()[:20]
+            description = ('你在 '+node+' 的 '+ '、'.join(map(str,cards))+' 号卡有未登记进程，请核对并登记。'
+                           if role=='self' else name+'（'+employee+'）在 '+node+' 的 '+ '、'.join(map(str,cards))+' 号卡有未登记进程，占用了你的预约资源，请核对。')
+            prefix=('未登记使用提醒（疑似插队）：' if classification=='未登记使用（疑似插队）' else
+                    '预约释放后仍有进程，请核对：' if classification in ('超时释放后仍有进程','到时释放后仍有进程') else
+                    '近期预约已释放，进程归属待核实：')
+            alerts.append({'id':'unregistered:'+role+':'+node+':'+employee+':'+digest,'kind':'unregistered',
+                           'message':prefix+description})
+        for (node,employee,name),group in sorted(excess_grouped.items()):
+            cards=sorted(group['cards'])
+            digest=hashlib.sha256(('\0'.join(sorted(group['keys']))+':'+','.join(map(str,cards))).encode()).hexdigest()[:20]
+            alerts.append({'id':'over-allocation:'+node+':'+employee+':'+digest,'kind':'over-allocation',
+                           'message':name+'（'+employee+'）在 '+node+' 的 '+ '、'.join(map(str,cards))+' 号卡使用超出其预约范围，占用了你的预约资源，请核对。'})
+        valid=self.fresh_nodes(now)
+        return {**state,'alerts':alerts,'card_usage':self.card_usage(state['tasks'],now),
+                'process_monitor_errors':[node+' 的进程采集暂不可用，暂停插队判断' for node in self.nodes if node not in valid]}
+
+    def metrics(self, tasks, now=None, continuing=(), released=()):
+        now=time.time() if now is None else now
+        metric=self.prefix+'_queue_process_registration'
+        lines=['# HELP '+metric+' Current NPU process registration, joined by node and process_key.', '# TYPE '+metric+' gauge']
+        for row in self.current(now):
+            labels={'node':row['node'],'process_key':row['process_key'],'queue_registration':self.classification(row,tasks,continuing,released)}
+            lines.append(metric+'{'+','.join(k+'='+json.dumps(v,ensure_ascii=False) for k,v in labels.items())+'} 1')
+        lines.append('# TYPE '+self.prefix+'_queue_process_source_up gauge')
+        for node in self.nodes:
+            lines.append(self.prefix+'_queue_process_source_up{node='+json.dumps(node)+'} '+str(int(node in self.fresh_nodes(now))))
+        return '\n'.join(lines)+'\n'

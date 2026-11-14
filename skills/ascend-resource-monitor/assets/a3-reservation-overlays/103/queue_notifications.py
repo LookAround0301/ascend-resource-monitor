@@ -159,7 +159,7 @@ def build_feed(unified,store,monitor):
         if monitor:
             # Co-users own the same reservation cards for notification purposes.
             monitor_rows=[dict(row,mine=row['mine'] or row['collaborator']) for row in rows]
-            alerts=monitor.decorate(dict(state,tasks=monitor_rows),continuing,releases)['alerts']
+            alerts=monitor.decorate(dict(state,tasks=monitor_rows),continuing,releases,alert_self_reserved_only=True)['alerts']
         unique={}
         for alert in alerts:
             event=dict(recipient=employee,key='alert:'+alert['id'],kind=alert['kind'],

@@ -101,6 +101,23 @@ class FeedTests(unittest.TestCase):
         self.assertEqual({e['recipient'] for e in intrusion},{'a00000001','b00000002','d00000004'})
         self.assertNotIn('private-process',json.dumps(feed))
 
+    def test_free_cards_do_not_generate_private_unregistered_notice(self):
+        monitor=QueueMonitor(self.queue.nodes,{},None)
+        monitor.current=lambda now:[dict(node='A5-118',employee='b00000002',name='Other',
+            npu_ids='0,1',process_key='process',start_time_seconds=self.now-1000)]
+        monitor.fresh_nodes=lambda now:set(self.queue.nodes)
+        feed=build_feed(self.queue,self.store,monitor)
+        self.assertFalse([e for e in feed['events'] if e['kind']=='unregistered'])
+        self.task('owner','a00000001',cards=1)
+        feed=build_feed(self.queue,self.store,monitor)
+        notices=[e for e in feed['events'] if e['kind']=='unregistered']
+        self.assertEqual({e['recipient'] for e in notices},{'a00000001','b00000002'})
+        self.assertTrue(all('0 号卡' in e['body'] and '1 号卡' not in e['body'] for e in notices))
+        with self.store.db() as db:
+            db.execute("UPDATE unified_tasks SET allowed_employees=? WHERE id='owner'",(json.dumps(['b00000002']),))
+        feed=build_feed(self.queue,self.store,monitor)
+        self.assertFalse([e for e in feed['events'] if e['kind']=='unregistered'])
+
     def test_expired_registration_release_reaches_owner_and_couser(self):
         self.task('expired','a00000001',age=4300,allowed=['d00000004'])
         feed=build_feed(self.queue,self.store,None)
