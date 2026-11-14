@@ -1090,7 +1090,7 @@ class UnifiedQueue:
         finish_before = self.night_cutoff(start if self.midnight_separation else start - 0.001) if night else (0 if self.midnight_separation else self.cutoff(now))
         if night and self.night_carryover_cutoff_hour is not None:
             deadline=self.night_hard_cutoff({'not_before':start,'finish_before':finish_before})
-            seconds=math.floor(deadline-start) if self.midnight_separation else min(seconds,math.floor(deadline-start))
+            seconds=min(seconds,math.floor(deadline-start))
         if not night and not self.midnight_separation and max(now, start) + seconds > finish_before:
             raise ControlError(400, '预约开始和预计结束时间都必须在次日上午 9 点前（含 9 点）')
         with self.store.db() as db:

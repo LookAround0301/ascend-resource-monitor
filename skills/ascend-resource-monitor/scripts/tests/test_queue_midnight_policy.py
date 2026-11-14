@@ -46,7 +46,7 @@ class MidnightPolicyTests(unittest.TestCase):
 
     def test_night_midnight_to_0900_and_conflict(self):
         start=self.ts('2026-11-15T00:00:00')
-        night=self.add(night=True,not_before=start)
+        night=self.add(night=True,not_before=start,requested_seconds=9*3600)
         r=self.row(night);self.assertEqual(r['requested_seconds'],int(self.ts('2026-11-15T09:00:00')-start))
         normal=self.add();r=self.row(normal);self.q.action(self.user,normal,'claim',r['offer_id'])
         self.assertEqual(self.row(normal)['activated']+self.row(normal)['requested_seconds'],start)
@@ -64,6 +64,27 @@ class MidnightPolicyTests(unittest.TestCase):
             self.add(night=True,not_before=start,requested_seconds=9*3600+60)
         job=self.add(night=True,not_before=start,requested_seconds=9*3600)
         self.assertEqual(self.row(job)['requested_seconds'],9*3600)
+
+    def test_night_duration_respects_choice_and_cutoff(self):
+        start=self.ts('2026-11-15T00:00:00')
+        first=self.add(night=True,not_before=start,requested_seconds=2*3600)
+        self.assertEqual(self.row(first)['requested_seconds'],2*3600)
+        second=self.add(night=True,not_before=start+2*3600,requested_seconds=2*3600)
+        self.assertEqual(self.row(second)['requested_seconds'],2*3600)
+        late=self.add(night=True,not_before=self.ts('2026-11-15T08:00:00'),requested_seconds=2*3600)
+        self.assertEqual(self.row(late)['requested_seconds'],3600)
+        self.assertEqual(self.row(late)['not_before']+self.row(late)['requested_seconds'],self.ts('2026-11-15T09:00:00'))
+
+    def test_short_night_releases_registration_at_selected_end(self):
+        start=self.ts('2026-11-15T00:00:00')
+        job=self.add(night=True,not_before=start,requested_seconds=2*3600)
+        with self.store.db() as db:
+            db.execute("UPDATE unified_tasks SET state='active',activated=? WHERE id=?",(start,job))
+        self.clock.return_value=start+2*3600
+        tasks=self.q.due_night_tasks(self.clock.return_value)
+        self.q.finish_night_takeovers(tasks,set(),{},self.clock.return_value)
+        self.assertFalse(any(row['id']==job for row in self.q.view(self.user)['tasks']))
+        normal=self.add();self.assertEqual(self.row(normal)['state'],'queued')
 
     def test_extension_cannot_cross_midnight(self):
         job=self.add(requested_seconds=1200);r=self.row(job)

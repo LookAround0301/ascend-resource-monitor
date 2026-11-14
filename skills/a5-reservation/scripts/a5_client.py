@@ -151,7 +151,7 @@ def main():
     if args.action=='create':
         if args.cards<1 or args.minutes<1 or args.backfill_minutes<0:raise ValueError('卡数、时长和插空时长无效')
         night=bool(args.night_start)
-        if night and args.minutes>540:raise ValueError('夜间预约最长 9 小时，实际到 09:00 结束登记')
+        if night and args.minutes>540:raise ValueError('夜间预约最长 9 小时，超过 09:00 的部分自动截短')
         if night:
             start=datetime.fromisoformat(args.night_start)
             if start.tzinfo is None:start=start.replace(tzinfo=timezone(timedelta(hours=8)))

@@ -131,7 +131,6 @@ HOME_JS = r'''"use strict";
   }
   function timeLimits(){
    updateDates();const night=$('kind').value==='night',window=state&&state.reservation_window;
-   for(const part of ['hour','minute'])$('duration-'+part+'-label').classList.toggle('hidden',!!(state&&state.midnight_separation&&night));
    $('avoid-area').classList.toggle('hidden',!state||!state.strict_nights||night);
    $('urgent-option').classList.toggle('hidden',!state||!state.can_urgent||night);if(!state||!state.can_urgent||night)$('urgent').checked=false;
    for(const part of ['date','hour','minute']){const el=$('start-'+part);$('start-'+part+'-label').classList.toggle('hidden',!night);el.required=night;el.disabled=!night;}
@@ -150,7 +149,7 @@ HOME_JS = r'''"use strict";
     if(night){$('resource-hint').textContent=state.normal_priority?'机器和卡号固定；普通任务优先，夜间开始时间可能顺延。':'提交成功后机器和卡号固定；所选时段冲突时请调整预约。';}
     else $('reservation-window').textContent=state.normal_priority?'普通任务须在午夜 0 点前开始，超过凌晨 1 点的时长会自动截短。':'普通任务须在凌晨 1 点前开始，时长超过凌晨 2 点的部分会自动截短。';
    }
-   if(state&&state.midnight_separation)$('reservation-window').textContent=night?'夜间预约可提前提交，开始时间为 00:00–09:00 前，统一于 09:00 结束登记。':'普通任务 00:00–09:00 不开始；跨午夜的申请在 00:00 截短。';
+   if(state&&state.midnight_separation)$('reservation-window').textContent=night?'夜间预约可提前提交，开始时间为 00:00–09:00 前，最长 9 小时；超过 09:00 的部分自动截短。'+(selected&&start+seconds>selected.end?'本次预计截短至 09:00。':''):'普通任务 00:00–09:00 不开始；跨午夜的申请在 00:00 截短。';
   }
 
   function resource(allocation){return Object.entries(allocation||{}).map(([node,cards])=>node+'：'+cards.join('、')).join('；')||'待分配';}
@@ -191,7 +190,7 @@ HOME_JS = r'''"use strict";
    $('account-status').textContent=state.user?'已登录：'+(state.user.employee||'')+' '+state.user.name:'未登录';
    $('account-form').classList.toggle('hidden',registered());$('logout').classList.toggle('hidden',!registered());gate();notify();resourceFields();timeLimits();renderCards();
    if(state.strict_nights)$('queue-rules').textContent='普通任务单次申请最长 '+duration(state.normal_max_seconds||7200)+'。'+(state.normal_priority?'普通任务须在午夜 0 点前开始，最晚凌晨 1 点自动结束登记，无需手动操作；超时最多宽限 10 分钟。普通任务优先，未开始的夜间预约可能顺延，机器和卡位保持不变；已进入接管或运行的夜间任务不会被新普通任务中断。仅在新夜间预约开始接管时清理其预约卡位上的非预约容器；预约结束只释放登记，容器继续运行。':'普通任务须在凌晨 1 点前开始，时长超过凌晨 2 点的部分会自动截短。'+(state.overtime_control?'普通任务超时后有 10 分钟可延长，未延长则自动释放登记，容器和任务不会被停止。':'')+'夜间预约提交后机器、卡位和时段固定；仅在新预约开始接管时停止占用预约卡的非预约容器；预约结束只释放登记，容器继续运行。异常时资源接管待核实。');
-   if(state.midnight_separation)$('queue-rules').textContent='普通任务单次最长 '+duration(state.normal_max_seconds||7200)+'，跨午夜的时长截短至 00:00；00:00–09:00 不开始普通任务，排队预约保留。夜间预约可提前提交，开始时间在 00:00–09:00 前，统一于 09:00 结束登记；机器、卡位和时段固定。夜间接管时按既有规则处理占用预约卡的非预约容器；登记释放本身不停止实际任务。';
+   if(state.midnight_separation)$('queue-rules').textContent='普通任务单次最长 '+duration(state.normal_max_seconds||7200)+'，跨午夜的时长截短至 00:00；00:00–09:00 不开始普通任务，排队预约保留。夜间预约可提前提交，开始时间在 00:00–09:00 前，最长 9 小时；超过 09:00 的部分自动截短，机器、卡位和时段固定。夜间接管时按既有规则处理占用预约卡的非预约容器；登记释放本身不停止实际任务。';
    if(state.strict_nights)$('queue-rules').textContent+=' 勾选“愿意缩短本任务”后，当前序任务暂不能开始时，系统可在不低于最短使用时长的前提下，让本任务提前使用空档。请按时自行停止任务，不能延长影响前序预约。';
    if(state.missed_claim_limit)$('queue-rules').textContent+=' 到号后 10 分钟未登记开始会顺延；累计 '+state.missed_claim_limit+' 次未开始时自动取消预约。';
    if(state.strict_nights&&!state.midnight_separation&&state.night_carryover_cutoff_hour!=null){const cutoff=state.night_carryover_cutoff_hour,h=String(Math.floor(cutoff)).padStart(2,'0'),m=String(Math.round(cutoff*60)%60).padStart(2,'0');$('queue-rules').textContent+=' 夜间任务延续至次日时，最晚 '+h+':'+m+' 结束登记，容器继续运行。';}
