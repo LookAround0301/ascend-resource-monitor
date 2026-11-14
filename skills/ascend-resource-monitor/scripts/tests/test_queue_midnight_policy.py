@@ -58,6 +58,13 @@ class MidnightPolicyTests(unittest.TestCase):
         r=self.row(job);self.assertEqual(r['not_before']+r['requested_seconds'],self.ts('2026-11-15T09:00:00'))
         with self.assertRaises(ControlError):self.add(night=True,not_before=self.ts('2026-11-15T09:00:00'))
 
+    def test_night_maximum_nine_hours(self):
+        start=self.ts('2026-11-15T00:00:00')
+        with self.assertRaisesRegex(ControlError,'夜间任务最长 9 小时'):
+            self.add(night=True,not_before=start,requested_seconds=9*3600+60)
+        job=self.add(night=True,not_before=start,requested_seconds=9*3600)
+        self.assertEqual(self.row(job)['requested_seconds'],9*3600)
+
     def test_extension_cannot_cross_midnight(self):
         job=self.add(requested_seconds=1200);r=self.row(job)
         self.q.action(self.user,job,'claim',r['offer_id'])

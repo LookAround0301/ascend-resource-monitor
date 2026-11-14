@@ -68,7 +68,7 @@ class Client:
     def login(self):self.call('login',{'employee':self.config['employee'],'name':self.config['name']})
     def state(self):
         state=self.call('state')
-        keys=('id','state','employee','name','mine','collaborator','position','machine','total_cards','requested_seconds','effective_requested_seconds','estimated_start','not_before','allocations','claim_before','offer_id','activated','overdue','overdue_seconds','overtime_release_at')
+        keys=('id','state','employee','name','mine','collaborator','position','machine','total_cards','requested_seconds','effective_requested_seconds','estimated_start','not_before','allocations','claim_before','offer_id','activated','overdue','overdue_seconds','overtime_release_at','allowed_people')
         return {'server_time':state.get('server_time'),'nodes':state.get('nodes'),
                 'card_usage':state.get('card_usage'),'process_monitor_errors':state.get('process_monitor_errors'),
                 'tasks':[{k:r.get(k) for k in keys if k in r} for r in state.get('tasks',[]) if r.get('mine') or r.get('collaborator')]}
@@ -78,6 +78,7 @@ def main():
     sub=p.add_subparsers(dest='action',required=True)
     cfg=sub.add_parser('configure');cfg.add_argument('--employee',required=True);cfg.add_argument('--name',required=True);cfg.add_argument('--url',default='http://127.0.0.1:13000');cfg.add_argument('--ca-file')
     sub.add_parser('query')
+    shared=sub.add_parser('shared');shared.add_argument('kind',choices=('list','search','add','remove'));shared.add_argument('--job',required=True);shared.add_argument('--employee');shared.add_argument('--name');shared.add_argument('--query')
     create=sub.add_parser('create');create.add_argument('--machine',default='auto');create.add_argument('--cards',type=int,required=True);create.add_argument('--minutes',type=int,required=True);create.add_argument('--night-start');create.add_argument('--backfill-minutes',type=int,default=0)
     recover=sub.add_parser('recover');recover.add_argument('operation')
     retry=sub.add_parser('retry');retry.add_argument('operation')
@@ -93,6 +94,32 @@ def main():
         save_private(CONFIG,data);print(json.dumps({'configured':True,'url':data['url']},ensure_ascii=False));return
     config=settings();client=Client(config);client.login()
     if args.action=='query':print(json.dumps(client.state(),ensure_ascii=False));return
+    if args.action=='shared':
+        if not re.fullmatch('[0-9a-f]{32}',args.job):raise ValueError('预约编号无效')
+        if args.kind=='list':
+            if args.employee or args.name or args.query:raise ValueError('查询名单不接受其他参数')
+            result=client.call('unified-allowed-names',{'job':args.job})
+        elif args.kind=='search':
+            if not args.query or args.employee or args.name:raise ValueError('搜索须提供 --query')
+            result=client.call('unified-allowed-search',{'job':args.job,'query':args.query})
+        else:
+            if not args.employee or args.query:raise ValueError('添加或删除须提供 --employee 工号')
+            employee=args.employee.strip().lower()
+            if not re.fullmatch(r'[a-z][0-9]{8}',employee):raise ValueError('共同使用人工号无效')
+            data={'job':args.job,'employee':employee,'change':args.kind,'confirmed':True}
+            if args.kind=='add':
+                match=client.call('unified-allowed-lookup',{'job':args.job,'employee':employee})
+                if args.name and args.name.strip()!=match['name']:raise ValueError('提供的姓名与名单不一致，请核实工号和姓名')
+                data['confirmed_name']=match['name']
+            elif args.name:raise ValueError('删除只需指定工号，请先查询名单确认目标')
+            try:result=client.call('unified-allowed',data)
+            except (URLError,TimeoutError,OSError,ValueError) as e:
+                raise RuntimeError('操作结果未确认，请查询共同使用人名单核对后再操作') from e
+            except ApiError as e:
+                if e.status>=500:raise RuntimeError('操作结果未确认，请查询共同使用人名单核对后再操作') from e
+                raise
+            result={'job':args.job,'change':args.kind,'employee':employee,**({'name':match['name']} if args.kind=='add' else {}),**result}
+        print(json.dumps(result,ensure_ascii=False));return
     if args.action=='events':
         if not re.fullmatch('[0-9a-f]{32}',args.job) or args.after<0:raise ValueError('预约编号或事件游标无效')
         print(json.dumps(client.call('agent-events',{'job':args.job,'after':args.after,'wait_seconds':args.wait}),ensure_ascii=False));return
@@ -124,6 +151,7 @@ def main():
     if args.action=='create':
         if args.cards<1 or args.minutes<1 or args.backfill_minutes<0:raise ValueError('卡数、时长和插空时长无效')
         night=bool(args.night_start)
+        if night and args.minutes>540:raise ValueError('夜间预约最长 9 小时，实际到 09:00 结束登记')
         if night:
             start=datetime.fromisoformat(args.night_start)
             if start.tzinfo is None:start=start.replace(tzinfo=timezone(timedelta(hours=8)))

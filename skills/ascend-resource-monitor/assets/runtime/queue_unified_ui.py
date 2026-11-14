@@ -118,7 +118,7 @@ HOME_JS = r'''"use strict";
   const pad=n=>String(n).padStart(2,'0');
   function selectedStart(){return zonedTimestamp($('start-date').value,$('start-hour').value,$('start-minute').value);}
   function setOptions(select,items,preferred,placeholder){const signature=JSON.stringify([items,placeholder]);if(select.dataset.options===signature){if(!select.value&&!placeholder&&items.length)select.value=items.some(item=>item[0]===preferred)?preferred:items[0][0];return;}const old=select.value;select.replaceChildren();if(placeholder){const option=element('option',placeholder);option.value='';select.append(option);}for(const [value,label] of items){const option=element('option',label);option.value=value;select.append(option);}const values=items.map(item=>item[0]);select.value=values.includes(old)?old:values.includes(preferred)?preferred:placeholder?'':values[0]||'';select.dataset.options=signature;}
-  function updateDates(){if(!state||!state.reservation_window)return;const days=state.reservation_window.start_dates||[];setOptions($('start-date'),days.map((day,i)=>[day,(i?'明天':'今天')+'（'+day+'）']),days[0],null);}
+  function updateDates(){if(!state||!state.reservation_window)return;const w=state.reservation_window,days=w.start_dates||[],available=days.map((day,i)=>[day,(i?'明天':'今天')+'（'+day+'）']).filter(([day])=>!state.midnight_separation||Array.from({length:108},(_,n)=>zonedTimestamp(day,pad(Math.floor(n/12)),pad((n%12)*5))).some(value=>value>state.server_time&&(w.night_windows||[]).some(range=>value>=range.start&&value<range.end)));setOptions($('start-date'),available,available[0]?.[0],null);}
   let lastStartChoice=null,startExpired=false;
   function updateNightOptions(){
    const w=state&&state.reservation_window;if(!w)return;const day=$('start-date').value,valid={},previousHour=$('start-hour').value,previousMinute=$('start-minute').value;
@@ -135,12 +135,12 @@ HOME_JS = r'''"use strict";
    $('avoid-area').classList.toggle('hidden',!state||!state.strict_nights||night);
    $('urgent-option').classList.toggle('hidden',!state||!state.can_urgent||night);if(!state||!state.can_urgent||night)$('urgent').checked=false;
    for(const part of ['date','hour','minute']){const el=$('start-'+part);$('start-'+part+'-label').classList.toggle('hidden',!night);el.required=night;el.disabled=!night;}
-   const maxSeconds=night?13*3600:(state&&state.normal_max_seconds)||7200,maxHours=Math.floor(maxSeconds/3600);setOptions($('hours'),Array.from({length:maxHours+1},(_,h)=>[String(h),h+' 小时']),'0',null);
+   const maxSeconds=night?(state&&state.midnight_separation?9:13)*3600:(state&&state.normal_max_seconds)||7200,maxHours=Math.floor(maxSeconds/3600);setOptions($('hours'),Array.from({length:maxHours+1},(_,h)=>[String(h),h+' 小时']),'0',null);
    const hours=Number($('hours').value),minuteValues=Array.from({length:12},(_,i)=>i*5).filter(m=>(hours!==0||m>0)&&hours*3600+m*60<=maxSeconds);
    setOptions($('minutes'),minuteValues.map(m=>[String(m),m+' 分钟']),'30',null);
    if(night)updateNightOptions();const start=night?selectedStart():state&&state.server_time,seconds=hours*3600+Number($('minutes').value)*60;
    $('backfill-option').classList.toggle('hidden',!state||!state.strict_nights||night);$('backfill-min-label').classList.toggle('hidden',!state||!state.strict_nights||night||!$('backfill-enabled').checked);setOptions($('backfill-min'),Array.from({length:Math.max(0,Math.floor(seconds/300))},(_,i)=>[String((i+1)*300),((i+1)*5)+' 分钟']),'1200',null);
-   let error=!Number.isInteger(seconds)||seconds<300?'预计时长至少 5 分钟':seconds>maxSeconds?(night?'夜间任务最长 13 小时':'普通任务最长 '+duration(maxSeconds)):'';
+   let error=!Number.isInteger(seconds)||seconds<300?'预计时长至少 5 分钟':seconds>maxSeconds?(night?'夜间任务最长 '+duration(maxSeconds):'普通任务最长 '+duration(maxSeconds)):'';
    if(!error&&!night&&window&&Number.isFinite(start)&&start+seconds>window.end&&!(state&&state.midnight_separation))error='预计结束时间不能超过次日上午 9 点';
    $('minutes').setCustomValidity(error);
    const selected=night&&window&&Number.isFinite(start)?(window.night_windows||[]).find(w=>start>=w.start&&start<w.end):null;

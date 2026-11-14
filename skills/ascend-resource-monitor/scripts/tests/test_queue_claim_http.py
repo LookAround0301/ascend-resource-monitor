@@ -6,6 +6,8 @@ import time
 import unittest
 from unittest.mock import patch
 import asyncio
+import os
+import json
 from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[2]/'assets/runtime'))
@@ -203,6 +205,30 @@ class ClaimHTTPTests(unittest.IsolatedAsyncioTestCase):
         self.admin=False;self.token=owner_token
         await self.post('unified-allowed',{**payload,'change':'remove'})
         self.assertEqual((await self.state())['tasks'][0]['allowed_employees'],[])
+
+    async def test_skill_manages_shared_people_via_real_http(self):
+        job=await self.enqueue()
+        script=Path(__file__).resolve().parents[3]/'a5-reservation/scripts/a5_client.py'
+        env={**os.environ,'A5_RESERVATION_HOME':str(Path(self.temp.name)/'agent'),
+             'A5_EMPLOYEE':'u12345678','A5_NAME':'Fixture','PYTHONUTF8':'1',
+             'A5_QUEUE_URL':str(self.client.make_url('')).rstrip('/')}
+        async def run(*args,expected=0):
+            p=await asyncio.create_subprocess_exec(sys.executable,str(script),*args,env=env,
+                stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.PIPE)
+            out,err=await p.communicate();self.assertEqual(p.returncode,expected,err.decode())
+            return json.loads(out) if out else err.decode()
+        matches=await run('shared','search','--job',job,'--query','Other')
+        self.assertEqual(matches['people'],[{'employee':'u12345679','name':'Other'}])
+        add=await run('shared','add','--job',job,'--employee','U12345679','--name','Other')
+        self.assertEqual((add['employee'],add['name']),('u12345679','Other'))
+        listed=await run('shared','list','--job',job)
+        self.assertEqual(listed['names']['u12345679'],'Other')
+        state=await run('query');self.assertEqual(state['tasks'][0]['allowed_people'][0]['employee'],'u12345679')
+        await run('shared','remove','--job',job,'--employee','u12345679')
+        self.assertEqual((await run('shared','list','--job',job))['names'],{})
+        error=await run('shared','add','--job',job,'--employee','u12345679','--name','Wrong',expected=1)
+        self.assertIn('姓名与名单不一致',error)
+        self.assertEqual((await run('shared','list','--job',job))['names'],{})
 
     async def test_shared_user_can_claim_and_finish_via_api(self):
         job=await self.enqueue()

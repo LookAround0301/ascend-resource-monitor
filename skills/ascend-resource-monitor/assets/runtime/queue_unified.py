@@ -1071,9 +1071,10 @@ class UnifiedQueue:
         elif not 1 <= cards <= self.capacity or (dual and cards != self.capacity):
             # Legacy form uses a per-node count and supports full-node dual requests.
             raise ControlError(400, f'旧版请求请使用单机 1–{self.capacity} 卡或双机各 {self.capacity} 卡')
-        if type(seconds) is not int or seconds < 60 or seconds % 60 or (not night and seconds > self.normal_max_seconds) or (night and seconds > 13*3600):
+        night_max_seconds=9*3600 if self.midnight_separation else 13*3600
+        if type(seconds) is not int or seconds < 60 or seconds % 60 or (not night and seconds > self.normal_max_seconds) or (night and seconds > night_max_seconds):
             normal_limit=(str(self.normal_max_seconds//3600)+' 小时' if self.normal_max_seconds%3600==0 else str(self.normal_max_seconds//60)+' 分钟')
-            raise ControlError(400, '请按整分钟填写时长，至少 1 分钟；普通任务最长 '+normal_limit+'，夜间任务最长 13 小时')
+            raise ControlError(400, '请按整分钟填写时长，至少 1 分钟；普通任务最长 '+normal_limit+'，夜间任务最长 '+str(night_max_seconds//3600)+' 小时')
         backfill=self.validate_backfill(data.get('backfill_min_seconds',0),seconds)
         if backfill and (night or not self.strict_nights):raise ControlError(400,'只有普通任务支持短时插空')
         if type(start) not in (int, float) or not math.isfinite(start) or start < 0:
