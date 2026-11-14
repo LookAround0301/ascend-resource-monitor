@@ -29,6 +29,8 @@ class PrivacyTest(unittest.TestCase):
     def test_callback_identity_constraints(self):
         body = dict(sender='u00000001', receiver='u00000001', type='Text', content='/预约迁移试验 查询')
         self.assertEqual(parse_sender(body), 'u00000001')
+        for employee in ('p_fixture', 'awx1234567'):
+            self.assertEqual(parse_sender(dict(body, sender=employee, receiver=employee)), employee)
         for change in ({'receiver': 'a00000001'}, {'sender': '../bad'}, {'type': 'Image'}, {'content': 3}):
             self.assertIsNone(parse_sender(dict(body, **change)))
 

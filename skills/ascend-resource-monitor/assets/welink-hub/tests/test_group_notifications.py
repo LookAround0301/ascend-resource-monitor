@@ -78,6 +78,12 @@ class ObservationTests(unittest.TestCase):
         self.assertEqual(reserve(self.path,self.snapshot(1610),self.config,1610),[])
         self.assertEqual(len(reserve(self.path,self.snapshot(1625),self.config,1625)),1)
 
+    def test_extensions_before_channel_activation_are_not_sent(self):
+        snap=self.snapshot(1000);snap['violations']=[];snap['extensions']=[dict(id='extension:abc:2',at=990)]
+        self.assertEqual(reserve(self.path,snap,dict(self.config,enabled_at=995),1000),[])
+        snap['extensions'][0]['at']=996
+        self.assertEqual(len(reserve(self.path,snap,dict(self.config,enabled_at=995),1000)),1)
+
     def test_disabled_or_unverified_and_wrong_cluster_never_send(self):
         for config in [dict(self.config,enabled=False),dict(self.config,mention_verified=False),dict(self.config,cluster='a3')]:
             self.assertEqual(reserve(self.path,self.snapshot(1000),config,1000),[])

@@ -6,7 +6,7 @@ import re
 import sqlite3
 import time
 
-EMPLOYEE = re.compile(r'[a-z][0-9]{8}')
+EMPLOYEE = re.compile(r'(?:[a-z][0-9]{8}|[a-z]wx[0-9]{7}|p_[a-z][a-z0-9_]{0,31})')
 TZ = timezone(timedelta(hours=8))
 
 

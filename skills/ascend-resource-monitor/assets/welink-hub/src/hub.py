@@ -117,19 +117,21 @@ class Hub:
             await asyncio.sleep(5)
 
     async def group_notices(self):
-        config=self.config.get('group_notifications',{})
-        if not config.get('enabled') or not self.config.get('reminders_enabled',False):return
-        snapshot=self.snapshot(config.get('cluster','a5'))
-        if not snapshot:return
-        for item in reserve_groups(self.config['database'],snapshot,config):
-            content=extension_message(snapshot,item['extension']) if 'extension' in item else group_message(snapshot,item['violation'])
-            try:await self.send(item['group'],content)
-            except Exception as error:
-                LOG.warning('Group reminder delivery unconfirmed: %s',type(error).__name__)
-                continue
-            with closing(sqlite3.connect(self.config['database'])) as db,db:
-                db.execute("UPDATE deliveries SET status='accepted' WHERE event=?",(item['event'],))
-            LOG.info('Group %s accepted','extension announcement' if 'extension' in item else 'unauthorized-card reminder')
+        if not self.config.get('reminders_enabled',False):return
+        channels=[self.config.get('group_notifications',{}),*self.config.get('group_notification_channels',[])]
+        for config in channels:
+            if not config.get('enabled'):continue
+            snapshot=self.snapshot(config.get('cluster','a5'))
+            if not snapshot:continue
+            for item in reserve_groups(self.config['database'],snapshot,config):
+                content=extension_message(snapshot,item['extension']) if 'extension' in item else group_message(snapshot,item['violation'])
+                try:await self.send(item['group'],content)
+                except Exception as error:
+                    LOG.warning('Group reminder delivery unconfirmed: %s',type(error).__name__)
+                    continue
+                with closing(sqlite3.connect(self.config['database'])) as db,db:
+                    db.execute("UPDATE deliveries SET status='accepted' WHERE event=?",(item['event'],))
+                LOG.info('Group %s accepted for cluster %s','extension announcement' if 'extension' in item else 'unauthorized-card reminder',snapshot['cluster'])
 
     async def command_loop(self):
         while True:
@@ -149,7 +151,7 @@ class Hub:
                 if not self.config.get('notification_all_users',False):
                     recipients.intersection_update(self.config.get('notification_users',[]))
                 reserve_notices(self.config['database'],snapshot,recipients,
-                                self.config.get('notification_events_enabled_at',0),
+                                self.config.get('notification_source_enabled_at',{}).get(source['id'],self.config.get('notification_events_enabled_at',0)),
                                 legacy_employee=self.config.get('legacy_reminder_employee'))
                 continue
             for row in snapshot['tasks']:

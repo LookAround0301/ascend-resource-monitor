@@ -127,6 +127,19 @@ class CallbackTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.hub.sent[0][0],'1234567890123456789')
         self.assertIn('@User',self.hub.sent[0][1]);self.assertIn('0 号卡',self.hub.sent[0][1])
 
+    async def test_multiple_clusters_route_to_distinct_groups(self):
+        now=time.time()
+        self.hub.config.update(reminders_enabled=True,group_notifications=dict(enabled=True,mention_verified=True,cluster='test',group='1111111111111111111'),
+            group_notification_channels=[dict(enabled=True,mention_verified=True,cluster='a3',group='2222222222222222222')])
+        for cluster in ('test','a3'):
+            self.hub.cache[cluster]=dict(version=1,cluster=cluster,label=cluster,exported_at=now,accounts=[],tasks=[],
+                notifications_version=1,notifications_generated_at=now,fresh_nodes=['a'],violations=[dict(id='a'*24,node='a',employee='a00000001',name='User',cards=[0],sampled_at=now-15)])
+        await self.hub.group_notices()
+        for snap in self.hub.cache.values():snap['violations'][0]['sampled_at']=now
+        await self.hub.group_notices();await self.hub.group_notices()
+        self.assertEqual({who for who,_ in self.hub.sent},{'1111111111111111111','2222222222222222222'})
+        self.assertEqual(len(self.hub.sent),2)
+
     async def test_private_overtime_notice_never_becomes_group_reminder(self):
         now=time.time()
         self.hub.config.update(reminders_enabled=True,group_notifications=dict(enabled=True,mention_verified=True,

@@ -57,7 +57,7 @@ def reserve(path,snapshot,config,now=None):
             if row['scope'] not in present and row['node'] in fresh:
                 db.execute('UPDATE group_observations SET active=0 WHERE scope=?',(row['scope'],))
         for event in snapshot.get('extensions',[]):
-            if not -30<=now-event['at']<=86400:continue
+            if not -30<=now-event['at']<=86400 or event['at']<config.get('enabled_at',0):continue
             key='group-extension:'+channel+':'+event['id']
             if db.execute('INSERT OR IGNORE INTO deliveries VALUES (?,?,?)',(key,now,'attempted')).rowcount:
                 result.append(dict(event=key,group=str(config['group']),extension=event))
