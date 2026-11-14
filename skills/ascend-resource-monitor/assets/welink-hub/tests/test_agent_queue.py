@@ -13,7 +13,7 @@ sys.path.insert(0,str(Path(os.environ.get('QUEUE_TEST_RUNTIME',ROOT.parent/'runt
 from control_common import ControlError
 from queue_store import QueueStore
 from queue_unified import UnifiedQueue
-from queue_agent import command,receipt,action,initialize_events,list_events,record_due_events
+from queue_agent import command,receipt,action,initialize_events,list_events,record_due_events,bind_notice
 
 class AgentQueueTests(unittest.TestCase):
     def setUp(self):
@@ -47,6 +47,34 @@ class AgentQueueTests(unittest.TestCase):
         payload=self.payload('agent_execute')
         with ThreadPoolExecutor(max_workers=2) as pool:results=list(pool.map(lambda _:command(self.queue,self.store,payload),range(2)))
         self.assertEqual(results[0],results[1]);self.assertEqual(self.count(),1)
+
+    def test_creation_notice_is_atomic_and_once_per_operation(self):
+        command(self.queue,self.store,self.payload())
+        with self.store.db() as db:self.assertEqual(db.execute("SELECT COUNT(*) FROM unified_notice_events WHERE kind='agent-created'").fetchone()[0],0)
+        payload=self.payload('agent_execute');created=command(self.queue,self.store,payload)
+        self.assertEqual(command(self.queue,self.store,payload),created)
+        with self.store.db() as db:
+            notices=db.execute("SELECT employee,job,payload FROM unified_notice_events WHERE kind='agent-created'").fetchall()
+        self.assertEqual(len(notices),1)
+        self.assertEqual((notices[0]['employee'],notices[0]['job']),('a00000001',created['job']))
+        self.assertNotIn('plan',notices[0]['payload']);self.assertNotIn('session',notices[0]['payload'])
+
+    def test_binding_is_authorized_idempotent_and_notifies_owner(self):
+        created=command(self.queue,self.store,self.payload('agent_execute'));job=created['job']
+        self.store.login_without_password('b00000002','Collaborator')
+        with self.store.db() as db:
+            owner=dict(db.execute("SELECT id,employee,name FROM accounts WHERE employee='a00000001'").fetchone())
+            collaborator=dict(db.execute("SELECT id,employee,name FROM accounts WHERE employee='b00000002'").fetchone())
+        op=secrets.token_hex(16)
+        with self.assertRaises(ControlError):bind_notice(self.store,collaborator,job,op)
+        self.queue.allowed_user(owner,job,'b00000002','add')
+        self.assertTrue(bind_notice(self.store,collaborator,job,op)['recorded'])
+        self.assertTrue(bind_notice(self.store,collaborator,job,op)['recorded'])
+        with self.assertRaises(ControlError):bind_notice(self.store,owner,job,op)
+        with self.store.db() as db:
+            notices=db.execute("SELECT employee,payload FROM unified_notice_events WHERE kind='agent-bound'").fetchall()
+        self.assertEqual(len(notices),1);self.assertEqual(notices[0]['employee'],'a00000001')
+        self.assertIn('b00000002',notices[0]['payload'])
     def test_rejects_invalid_identity_unconfirmed_expired_and_urgent(self):
         invalid=[]
         p=self.payload();p['employee']='a00000002';invalid.append(p)

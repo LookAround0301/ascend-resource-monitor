@@ -43,6 +43,20 @@ class AgentHTTPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.post('agent-enqueue',body)).status,400)
         self.assertEqual((await self.post('login',{'employee':'a00000001','name':'Other'})).status,401)
 
+    async def test_binding_notice_requires_owner_or_collaborator_and_deduplicates(self):
+        job='a'*32;op=secrets.token_hex(16)
+        self.assertEqual((await self.post('agent-bound',{'job':job,'operation':op})).status,401)
+        await self.post('login',{'employee':'a00000001','name':'User One'})
+        created=await (await self.post('agent-enqueue',{'operation':secrets.token_hex(16),
+            'request':{'machine':'auto','cards':1,'requested_seconds':1800}})).json()
+        data={'job':created['job'],'operation':op}
+        self.assertEqual((await self.post('agent-bound',data)).status,200)
+        self.assertEqual((await self.post('agent-bound',data)).status,200)
+        await self.post('login',{'employee':'b00000002','name':'User Two'})
+        self.assertEqual((await self.post('agent-bound',{'job':created['job'],'operation':secrets.token_hex(16)})).status,403)
+        with self.store.db() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM unified_notice_events WHERE kind='agent-bound'").fetchone()[0],1)
+
     async def test_event_delivery_and_action_replay(self):
         self.assertEqual((await self.post('login',{'employee':'a00000001','name':'User One'})).status,200)
         body={'operation':secrets.token_hex(16),'request':{'machine':'auto','cards':1,'requested_seconds':1800}}
@@ -116,6 +130,8 @@ class AgentHTTPTests(unittest.IsolatedAsyncioTestCase):
                 if list((root/'client'/'push').glob('*/cursor.json')):break
                 await asyncio.sleep(.1)
             else:self.fail('cursor not persisted')
+            with self.store.db() as db:
+                self.assertEqual(db.execute("SELECT COUNT(*) FROM unified_notice_events WHERE kind='agent-bound'").fetchone()[0],1)
             process.terminate();await process.wait();process=None
             ready=(await (await self.post('agent-events',{'job':job,'after':0})).json())['events'][0]
             self.assertEqual((await self.post('agent-action',{'operation':secrets.token_hex(16),'job':job,
@@ -128,6 +144,8 @@ class AgentHTTPTests(unittest.IsolatedAsyncioTestCase):
                 if cursors and json.loads(cursors[0].read_text(encoding='utf-8'))['after']>=active_seq:break
                 await asyncio.sleep(.1)
             else:self.fail('active event not acknowledged')
+            with self.store.db() as db:
+                self.assertEqual(db.execute("SELECT COUNT(*) FROM unified_notice_events WHERE kind='agent-bound'").fetchone()[0],2)
             self.assertEqual((await self.post('agent-action',{'operation':secrets.token_hex(16),'job':job,
                 'action':'finish'})).status,200)
             await asyncio.wait_for(process.wait(),10);self.assertEqual(process.returncode,0);process=None
@@ -154,6 +172,8 @@ class AgentHTTPTests(unittest.IsolatedAsyncioTestCase):
             '--adapter',str(config),'--background',env=env,stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.PIPE)
         out,err=await process.communicate();self.assertEqual(process.returncode,0,err.decode())
         self.assertTrue(json.loads(out)['started']);self.assertTrue(json.loads(out)['connected'])
+        with self.store.db() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM unified_notice_events WHERE kind='agent-bound'").fetchone()[0],1)
         async def wait_state(state):
             for _ in range(100):
                 if received.exists() and any(json.loads(x)['state']==state for x in received.read_text(encoding='utf-8').splitlines()):return

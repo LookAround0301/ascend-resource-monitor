@@ -93,6 +93,7 @@ def main():
     p.add_argument('--launch-id',help=argparse.SUPPRESS)
     args=p.parse_args()
     if not re.fullmatch('[0-9a-f]{32}',args.job):raise ValueError('预约编号无效')
+    if args.launch_id and not re.fullmatch('[0-9a-f]{32}',args.launch_id):raise ValueError('绑定编号无效')
     if args.codex_desktop:
         thread=os.environ.get('CODEX_THREAD_ID','')
         if args.session and args.session!=thread:raise ValueError('只能绑定当前 Codex 会话')
@@ -143,10 +144,19 @@ def main():
         cursor=json.loads(state.read_text(encoding='utf-8'))['after'] if state.exists() else 0
         if type(cursor) is not int or cursor<0:raise ValueError('推送游标无效')
         client=Client(config);logged_in=False;delay=1
+        binding_id=args.launch_id or secrets.token_hex(16)
+        binding_recorded=False
         while True:
             try:
                 if not logged_in:client.login();logged_in=True
-                def connected():save_private(folder/'status.json',{'pid':os.getpid(),'launch_id':args.launch_id,'state':'connected','updated':time.time()})
+                def connected():
+                    nonlocal binding_recorded
+                    if not binding_recorded:
+                        result=client.call('agent-bound',{'job':args.job,'operation':binding_id})
+                        if not result.get('recorded') or result.get('job')!=args.job:
+                            raise RuntimeError('绑定通知未记录')
+                        binding_recorded=True
+                    save_private(folder/'status.json',{'pid':os.getpid(),'launch_id':args.launch_id,'state':'connected','updated':time.time()})
                 for item in stream(client,args.job,cursor,connected):
                     if type(item.get('seq')) is not int or item['seq']<=cursor:raise ValueError('事件顺序无效')
                     seq=send(adapter,args.session,args.job,item,args.plan)

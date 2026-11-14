@@ -439,10 +439,10 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                     unified.set_urgent(person,data.get('job'),data.get('enabled'))
                     event(person,'unified_urgent',job=data.get('job'),enabled=data.get('enabled'))
                     return web.json_response({'message':'紧急标记已更新，队列已重新排序'})
-                if operation in ('agent-enqueue','agent-result','agent-action','agent-events','agent-stream'):
+                if operation in ('agent-enqueue','agent-result','agent-action','agent-events','agent-stream','agent-bound'):
                     if settings.get('agent_reservations_enabled') is not True:raise ControlError(404,'Agent 预约接口未启用')
                     if not person.get('registered'):raise ControlError(401,'请先使用工号和姓名登录')
-                    from queue_agent import command as agent_command, receipt as agent_receipt, action as agent_action, list_events
+                    from queue_agent import command as agent_command, receipt as agent_receipt, action as agent_action, list_events, bind_notice
                     operation_id=data.get('operation')
                     if operation=='agent-stream':
                         if set(data)!={'after','job'}:raise ControlError(400,'无效事件订阅')
@@ -484,6 +484,9 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                             if events or time.monotonic()>=deadline:break
                             await asyncio.sleep(min(1,max(0,deadline-time.monotonic())))
                         result={'events':events}
+                    elif operation=='agent-bound':
+                        if set(data)!={'operation','job'}:raise ControlError(400,'无效 Agent 绑定请求')
+                        result=await asyncio.to_thread(bind_notice,store,person,data['job'],operation_id)
                     elif operation=='agent-result':
                         if set(data)!={'operation'}:raise ControlError(400,'无效请求')
                         result=await asyncio.to_thread(agent_receipt,store,person['employee'],operation_id)

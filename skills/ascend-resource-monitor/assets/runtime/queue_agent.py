@@ -48,7 +48,7 @@ def command(unified, store, payload):
             # The operator enables this endpoint only when server-side reminders
             # are configured. This is not a claim of browser notification setup.
             job=queue.enqueue(user,{**data,'notifications_ready':True,'cards_per_node':queue.capacity})
-            row=db.execute('SELECT requested_seconds FROM unified_tasks WHERE id=?',(job,)).fetchone()
+            row=db.execute('SELECT * FROM unified_tasks WHERE id=?',(job,)).fetchone()
             effective_seconds=row['requested_seconds']
         finally:
             if mode=='agent_preview':
@@ -58,7 +58,43 @@ def command(unified, store, payload):
         result=dict(job=job,action='create',message='预约已创建，任务编号 '+job+'。请查询网页或小鲁班获取当前排队状态。')
         db.execute('INSERT INTO agent_reservation_receipts VALUES (?,?,?,?,?)',
                    (operation,employee,fingerprint,json.dumps(result,ensure_ascii=False),now))
+        _insert_agent_notice(db,'agent-created:'+operation,'agent-created',row,user,employee,now)
         return result
+
+
+def _insert_agent_notice(db,event_id,kind,row,owner,actor,now):
+    """Write only task-scoped details; never persist the session or task plan."""
+    payload=dict(machine='dual' if row['dual'] else row['fixed_node'] or 'auto',
+                 cards=row['cards']*(2 if row['dual'] else 1),
+                 requested_seconds=row['requested_seconds'],not_before=row['not_before'],
+                 state=row['state'],actor=actor)
+    db.execute('INSERT INTO unified_notice_events VALUES (?,?,?,?,?,?,?,?)',
+        (event_id,kind,row['id'],owner['employee'],owner['name'],'[]',now,
+         json.dumps(payload,ensure_ascii=False)))
+
+
+def bind_notice(store,user,job,operation):
+    """Record a successful listener binding once, for the reservation owner."""
+    employee=user.get('employee','')
+    if (not isinstance(employee,str) or not EMPLOYEE.fullmatch(employee)
+            or not isinstance(operation,str) or not HEX32.fullmatch(operation)
+            or not isinstance(job,str) or not HEX32.fullmatch(job)):
+        raise ControlError(400,'无效 Agent 绑定请求')
+    event_id='agent-bound:'+operation
+    with store.db() as db:
+        old=db.execute('SELECT job,payload FROM unified_notice_events WHERE id=?',(event_id,)).fetchone()
+        if old:
+            if old['job']!=job or json.loads(old['payload']).get('actor')!=employee:
+                raise ControlError(409,'绑定编号已用于其他请求')
+            return {'job':job,'recorded':True}
+        row=db.execute('SELECT * FROM unified_tasks WHERE id=?',(job,)).fetchone()
+        if not row or row['state'] not in ('queued','ready','active'):
+            raise ControlError(404,'预约不存在或已经结束')
+        owner=db.execute('SELECT id,employee,name FROM accounts WHERE id=?',(row['account'],)).fetchone()
+        if not owner or (owner['employee']!=employee and employee not in json.loads(row['allowed_employees'])):
+            raise ControlError(403,'只能绑定自己的预约或授权共同使用的预约')
+        _insert_agent_notice(db,event_id,'agent-bound',row,owner,employee,time.time())
+        return {'job':job,'recorded':True}
 
 
 def receipt(store, employee, operation):

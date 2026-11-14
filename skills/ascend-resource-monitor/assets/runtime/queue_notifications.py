@@ -4,6 +4,7 @@ import json
 import math
 import re
 import secrets
+from datetime import datetime
 
 EMPLOYEE=re.compile(r'[a-z][0-9]{8}\Z')
 ALERT_TITLES={
@@ -85,6 +86,25 @@ def release_alert(release,unified):
                 message=prefix+'，登记已自动释放；'+suffix,occurred_at=release['released_at'])
 
 
+def agent_notice(record,unified):
+    data=json.loads(record['payload'])
+    machine={'auto':'任意单机','dual':'双机'}.get(data['machine'],data['machine'])
+    kind=record['kind']
+    title='Agent 已创建预约' if kind=='agent-created' else 'Agent 已绑定预约'
+    body=('你的 Agent 已创建预约' if kind=='agent-created' else '你的预约已绑定 Agent 会话')
+    if kind=='agent-bound' and data.get('actor')!=record['employee']:
+        body+='（操作者 '+data['actor']+'）'
+    body+='。预约编号 '+record['job'][:8]+'；'+machine+'，'+str(data['cards'])+' 张卡。'
+    if data.get('not_before'):
+        start=datetime.fromtimestamp(data['not_before'],unified.timezone).strftime('%m-%d %H:%M')
+        body+='夜间预约开始时间 '+start+'。'
+    else:
+        body+='普通预约申请时长 '+str(math.ceil(data['requested_seconds']/60))+' 分钟。'
+    body+='当前排队和分配状态请查看预约页面。'
+    return dict(recipient=record['employee'],key=record['id'],kind=kind,title=title,
+                body=body,job=record['job'],occurred_at=record['at'],valid_until=record['at']+3600)
+
+
 def build_feed(unified,store,monitor):
     context={}
     base=unified.view(None,notification_context=context)
@@ -160,6 +180,9 @@ def build_feed(unified,store,monitor):
                     event['recipient']=employee
                     unique[event['key']]=event
         for record in history:
+            if record['kind'] in ('agent-created','agent-bound') and employee==record['employee'] and now<record['at']+3600:
+                event=agent_notice(record,unified)
+                unique[event['key']]=event
             if record['kind']=='missed-cancel' and employee in [record['employee'],*json.loads(record['allowed_employees'])]:
                 event=dict(recipient=employee,key=record['id'],kind='missed-cancel',
                     title='预约已自动取消',body='资源分配后累计 '+str(json.loads(record['payload']).get('limit',3))+' 次超过 10 分钟未登记开始，该预约已取消；如仍需使用，请重新预约。',

@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import secrets
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -14,6 +15,7 @@ from queue_store import QueueStore
 from queue_unified import UnifiedQueue
 from queue_monitor import QueueMonitor
 from queue_notifications import build_feed
+from queue_agent import command,bind_notice
 
 
 class FeedTests(unittest.TestCase):
@@ -41,6 +43,23 @@ class FeedTests(unittest.TestCase):
                 (job,self.accounts[employee],'',state,self.now-7200,self.now-age if state=='active' else None,
                  seconds,cards,node,json.dumps({node:list(range(cards))}) if state=='active' else '{}',
                  db.execute('SELECT count(*) FROM unified_tasks').fetchone()[0]+1,json.dumps(allowed)))
+
+    def test_agent_creation_and_binding_are_private_and_expire(self):
+        req=dict(machine='A5-118',cards=1,night=False,not_before=0,requested_seconds=1800,avoid_slots=[])
+        created=command(self.queue,self.store,dict(mode='agent_execute',employee='a00000001',request=req,
+            operation=secrets.token_hex(16),expires=self.now+300))
+        with self.store.db() as db:
+            owner=dict(db.execute("SELECT id,employee,name FROM accounts WHERE employee='a00000001'").fetchone())
+        bind_notice(self.store,owner,created['job'],secrets.token_hex(16))
+        feed=build_feed(self.queue,self.store,None)
+        notices=[e for e in feed['events'] if e['kind'] in ('agent-created','agent-bound')]
+        self.assertEqual({e['kind'] for e in notices},{'agent-created','agent-bound'})
+        self.assertTrue(all(e['recipient']=='a00000001' for e in notices))
+        self.assertTrue(all(e['valid_until']==self.now+3600 for e in notices))
+        self.assertTrue(all('A5-118' in e['body'] for e in notices))
+        self.assertNotIn('session',json.dumps(notices));self.assertNotIn('plan',json.dumps(notices))
+        self.time_mock.return_value=self.now+3601
+        self.assertFalse(any(e['kind'] in ('agent-created','agent-bound') for e in build_feed(self.queue,self.store,None)['events']))
 
     def test_real_ready_allocation_owner_and_unregistered_couser_only(self):
         self.task('ready','a00000001',state='queued',allowed=['d00000004'])
