@@ -1,7 +1,7 @@
 """Queue controls mounted in the Grafana homepage, inside an isolated shadow DOM."""
 import json
 
-QUEUE_UI_VERSION = 'a5-missed-3-2026-11-11'
+QUEUE_UI_VERSION = 'a5-midnight-separation-2026-11-14'
 
 HOME_FRAGMENT = '''<style>
 :host{display:block;height:100%;overflow:auto;color:#d8d9da;font:14px system-ui,sans-serif}*{box-sizing:border-box}.row{display:flex;gap:10px;align-items:end;flex-wrap:wrap}section{padding:10px 4px;border-bottom:1px solid #34383f}h3{font-size:15px;margin:0 0 10px}label{display:grid;gap:5px}input,select{background:#111217;color:#eee;border:1px solid #555b66;border-radius:4px;padding:7px;font:inherit;min-width:110px}input[type=password]{max-width:200px}button{font:inherit;border:0;border-radius:4px;padding:8px 12px;background:#316bd6;color:#fff;cursor:pointer}.secondary{background:#343f51}button:disabled{opacity:.45;cursor:not-allowed}.hidden{display:none!important}p{margin:8px 0;line-height:1.5;color:#adb9cb}.good{color:#7ed9a9}.error{color:#ff7886}.warning{color:#ffb457}.scroll{overflow:auto}table{width:100%;border-collapse:collapse}th,td{text-align:left;border-bottom:1px solid #34383f;padding:9px 7px;vertical-align:top;white-space:nowrap}th{color:#adb9cb;font-weight:500}small{color:#a4b1c4}.allowed-users{white-space:normal;max-width:320px;overflow-wrap:anywhere;line-height:1.5;margin:6px 0;color:#c6d2e0}td button{padding:6px 9px;margin:0 5px 4px 0}#message:empty{display:none}
@@ -131,6 +131,7 @@ HOME_JS = r'''"use strict";
   }
   function timeLimits(){
    updateDates();const night=$('kind').value==='night',window=state&&state.reservation_window;
+   for(const part of ['hour','minute'])$('duration-'+part+'-label').classList.toggle('hidden',!!(state&&state.midnight_separation&&night));
    $('avoid-area').classList.toggle('hidden',!state||!state.strict_nights||night);
    $('urgent-option').classList.toggle('hidden',!state||!state.can_urgent||night);if(!state||!state.can_urgent||night)$('urgent').checked=false;
    for(const part of ['date','hour','minute']){const el=$('start-'+part);$('start-'+part+'-label').classList.toggle('hidden',!night);el.required=night;el.disabled=!night;}
@@ -140,15 +141,16 @@ HOME_JS = r'''"use strict";
    if(night)updateNightOptions();const start=night?selectedStart():state&&state.server_time,seconds=hours*3600+Number($('minutes').value)*60;
    $('backfill-option').classList.toggle('hidden',!state||!state.strict_nights||night);$('backfill-min-label').classList.toggle('hidden',!state||!state.strict_nights||night||!$('backfill-enabled').checked);setOptions($('backfill-min'),Array.from({length:Math.max(0,Math.floor(seconds/300))},(_,i)=>[String((i+1)*300),((i+1)*5)+' 分钟']),'1200',null);
    let error=!Number.isInteger(seconds)||seconds<300?'预计时长至少 5 分钟':seconds>maxSeconds?(night?'夜间任务最长 13 小时':'普通任务最长 '+duration(maxSeconds)):'';
-   if(!error&&!night&&window&&Number.isFinite(start)&&start+seconds>window.end)error='预计结束时间不能超过次日上午 9 点';
+   if(!error&&!night&&window&&Number.isFinite(start)&&start+seconds>window.end&&!(state&&state.midnight_separation))error='预计结束时间不能超过次日上午 9 点';
    $('minutes').setCustomValidity(error);
    const selected=night&&window&&Number.isFinite(start)?(window.night_windows||[]).find(w=>start>=w.start&&start<w.end):null;
-   $('start-date').setCustomValidity(night&&Number.isFinite(start)&&!selected?'夜间任务开始时间须在晚上 20:00 至次日 09:00 前':'');
+   $('start-date').setCustomValidity(night&&Number.isFinite(start)&&!selected?(state&&state.midnight_separation?'夜间任务开始时间须在 00:00 至 09:30 前':'夜间任务开始时间须在晚上 20:00 至次日 09:00 前'):'');
    if(window){$('reservation-window').textContent=night?(startExpired?'所选开始时间已过，请重新选择。':$('start-hour').options.length===1?'当前日期没有可选的开始时间，请选择其他日期。':'')+'夜间任务开始时间为 20:00 至次日 09:00 前，最长 13 小时；分钟按 5 分钟选择；后来的预约需避开已有排程。'+(selected&&start+seconds>selected.end?(state.night_carryover_cutoff_hour?(start+seconds>selected.end+(state.night_carryover_cutoff_hour-9)*3600?'超过次日北京时间 09:30 的部分将自动截短。':'可延续到次日，最晚北京时间 09:30 结束登记。'):'预计结束时间超出次日 9 点，仍可预约。'):''):'普通任务预计结束时间不晚于 '+date(window.end)+'。';}
    if(state&&state.strict_nights){
     if(night){$('resource-hint').textContent=state.normal_priority?'机器和卡号固定；普通任务优先，夜间开始时间可能顺延。':'提交成功后机器和卡号固定；所选时段冲突时请调整预约。';}
     else $('reservation-window').textContent=state.normal_priority?'普通任务须在午夜 0 点前开始，超过凌晨 1 点的时长会自动截短。':'普通任务须在凌晨 1 点前开始，时长超过凌晨 2 点的部分会自动截短。';
    }
+   if(state&&state.midnight_separation)$('reservation-window').textContent=night?'夜间预约可提前提交，开始时间为 00:00–09:30 前，统一于 09:30 结束登记。':'普通任务 00:00–09:30 不开始；跨午夜的申请在 00:00 截短。';
   }
 
   function resource(allocation){return Object.entries(allocation||{}).map(([node,cards])=>node+'：'+cards.join('、')).join('；')||'待分配';}
@@ -189,9 +191,10 @@ HOME_JS = r'''"use strict";
    $('account-status').textContent=state.user?'已登录：'+(state.user.employee||'')+' '+state.user.name:'未登录';
    $('account-form').classList.toggle('hidden',registered());$('logout').classList.toggle('hidden',!registered());gate();notify();resourceFields();timeLimits();renderCards();
    if(state.strict_nights)$('queue-rules').textContent='普通任务单次申请最长 '+duration(state.normal_max_seconds||7200)+'。'+(state.normal_priority?'普通任务须在午夜 0 点前开始，最晚凌晨 1 点自动结束登记，无需手动操作；超时最多宽限 10 分钟。普通任务优先，未开始的夜间预约可能顺延，机器和卡位保持不变；已进入接管或运行的夜间任务不会被新普通任务中断。仅在新夜间预约开始接管时清理其预约卡位上的非预约容器；预约结束只释放登记，容器继续运行。':'普通任务须在凌晨 1 点前开始，时长超过凌晨 2 点的部分会自动截短。'+(state.overtime_control?'普通任务超时后有 10 分钟可延长，未延长则自动释放登记，容器和任务不会被停止。':'')+'夜间预约提交后机器、卡位和时段固定；仅在新预约开始接管时停止占用预约卡的非预约容器；预约结束只释放登记，容器继续运行。异常时资源接管待核实。');
+   if(state.midnight_separation)$('queue-rules').textContent='普通任务单次最长 '+duration(state.normal_max_seconds||7200)+'，跨午夜的时长截短至 00:00；00:00–09:30 不开始普通任务，排队预约保留。夜间预约可提前提交，开始时间在 00:00–09:30 前，统一于 09:30 结束登记；机器、卡位和时段固定。夜间接管时按既有规则处理占用预约卡的非预约容器；登记释放本身不停止实际任务。';
    if(state.strict_nights)$('queue-rules').textContent+=' 勾选“愿意缩短本任务”后，当前序任务暂不能开始时，系统可在不低于最短使用时长的前提下，让本任务提前使用空档。请按时自行停止任务，不能延长影响前序预约。';
    if(state.missed_claim_limit)$('queue-rules').textContent+=' 到号后 10 分钟未登记开始会顺延；累计 '+state.missed_claim_limit+' 次未开始时自动取消预约。';
-   if(state.strict_nights&&state.night_carryover_cutoff_hour!=null){const cutoff=state.night_carryover_cutoff_hour,h=String(Math.floor(cutoff)).padStart(2,'0'),m=String(Math.round(cutoff*60)%60).padStart(2,'0');$('queue-rules').textContent+=' 夜间任务延续至次日时，最晚 '+h+':'+m+' 结束登记，容器继续运行。';}
+   if(state.strict_nights&&!state.midnight_separation&&state.night_carryover_cutoff_hour!=null){const cutoff=state.night_carryover_cutoff_hour,h=String(Math.floor(cutoff)).padStart(2,'0'),m=String(Math.round(cutoff*60)%60).padStart(2,'0');$('queue-rules').textContent+=' 夜间任务延续至次日时，最晚 '+h+':'+m+' 结束登记，容器继续运行。';}
    const alerts=$('queue-alerts');alerts.replaceChildren();for(const alert of state.alerts||[]){if(alert.kind==='unregistered')continue;const p=element('p',alert.message);p.className=alert.kind==='reset'?'good':alert.kind==='overdue-nonblocking'?'warning':'error';alerts.append(p);}for(const text of state.process_monitor_errors||[])alerts.append(element('p',text));alerts.classList.toggle('hidden',!alerts.children.length);
    const body=$('tasks'),active=root.activeElement,focusJob=active&&active.dataset.allowedFor,selection=focusJob?[active.selectionStart,active.selectionEnd]:null;
    const extendingJob=active&&active.dataset.extendFor,editingRow=extendingJob&&state.tasks.find(row=>row.id===extendingJob);

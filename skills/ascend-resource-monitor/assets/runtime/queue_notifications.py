@@ -78,7 +78,7 @@ def task_events(row,now,state):
 
 def release_alert(release,unified):
     prefix=('夜间预约已到上午 '+f'{int(unified.night_carryover_cutoff_hour):02d}:{int(unified.night_carryover_cutoff_hour*60)%60:02d} 截止时间' if release['reason']=='night-cutoff'
-            else '已到凌晨 1 点截止时间' if release['reason']=='cutoff' else '预约超时超过 10 分钟')
+            else ('已到午夜 0 点截止时间' if getattr(unified,'midnight_separation',False) else '已到凌晨 1 点截止时间') if release['reason']=='cutoff' else '预约超时超过 10 分钟')
     suffix=('登记释放本身不会停止容器；如果预约卡进入夜间接管，将按夜间规则清理。'
             if unified.normal_priority else '容器和实际任务不会自动停止，请自行检查并停止任务。')
     return dict(id='overtime-release:'+release['job'],kind='overtime-release',

@@ -131,7 +131,7 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
             return names_cache['names']
 
     strict_nights=settings.get('strict_nights') is True
-    unified=UnifiedQueue(store, config['nodes'], settings.get('reservation_buffer_seconds',600), settings.get('timezone','UTC'), settings.get('daily_reset',False), settings.get('cards_per_node',8),strict_nights,settings.get('overtime_control') is True,settings.get('normal_priority') is True,settings.get('normal_max_seconds',7200),settings.get('night_carryover_cutoff_hour'),settings.get('missed_claim_limit',0)) if settings.get('unified_queue') is True else None
+    unified=UnifiedQueue(store, config['nodes'], settings.get('reservation_buffer_seconds',600), settings.get('timezone','UTC'), settings.get('daily_reset',False), settings.get('cards_per_node',8),strict_nights,settings.get('overtime_control') is True,settings.get('normal_priority') is True,settings.get('normal_max_seconds',7200),settings.get('night_carryover_cutoff_hour'),settings.get('missed_claim_limit',0),settings.get('midnight_separation') is True) if settings.get('unified_queue') is True else None
     if unified and settings.get('agent_reservations_enabled') is True:
         from queue_agent import initialize_events
         initialize_events(store)
@@ -315,6 +315,9 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                         state['strict_nights']=strict_nights
                         state['overtime_control']=unified.overtime_control
                         state['normal_priority']=unified.normal_priority
+                        state['midnight_separation']=unified.midnight_separation
+                        if unified.midnight_separation and request.headers.get('X-A5-Queue-UI-Version')!=QUEUE_UI_VERSION:
+                            state.setdefault('process_monitor_errors',[]).append('页面已更新，请刷新页面：普通预约跨午夜截短，00:00–09:30 暂停开始；夜间预约 00:00 后开始并于 09:30 结束登记。')
                         if unified.normal_priority and request.headers.get('X-A5-Queue-UI-Version')!=QUEUE_UI_VERSION:
                             cutoff=unified.night_carryover_cutoff_hour
                             cutoff_text=(f'夜间任务最晚 {int(cutoff):02d}:{int(cutoff*60)%60:02d} 释放登记，容器继续运行。' if cutoff is not None else '')

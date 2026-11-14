@@ -74,7 +74,8 @@ def plan(nodes, busy, jobs, now, buffer_seconds=600):
         return sorted(choices, key=lambda pair: pair[0])
 
     def options(job, start, seconds):
-        end = start + seconds + buffer_seconds
+        reaches_midnight=job.get('midnight_separation') and start+seconds>=job.get('clip_finish_before',math.inf)
+        end = start + seconds + (0 if reaches_midnight else buffer_seconds)
         available = {node: free(node, start, end, job.get('night', False)) for node in nodes}
         count = job['cards']
         if job.get('dual'):
@@ -120,7 +121,7 @@ def plan(nodes, busy, jobs, now, buffer_seconds=600):
             truncation_sources={}
             if job.get('clip_finish_before'):
                 for node,cards,begin in fixed_nights:
-                    duration=math.floor(begin-start-buffer_seconds)
+                    duration=math.floor(begin-start-(0 if job.get('midnight_separation') and begin==job.get('clip_finish_before') else buffer_seconds))
                     if begin>start and 60<=duration<seconds:
                         durations.add(duration)
                         truncation_sources.setdefault(duration,[]).append((node,cards))
