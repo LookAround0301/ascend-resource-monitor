@@ -104,7 +104,9 @@ def add_queue_panels(dashboard,nodes,prefix='ascend'):
     titles={node:node+' 排队情况' for node in nodes}
     existing={p['title']:p for p in result['panels'] if p.get('title') in titles.values()}
     missing=[node for node in nodes if titles[node] not in existing]
-    anchor=next((p['gridPos']['y']+p['gridPos']['h'] for p in result['panels'] if p.get('title') in {'容器管控 · 持续拦截与白名单','容器管控 · 持续拦截'}),4)
+    anchor=min((p['gridPos']['y'] for p in result['panels'] if p.get('title') in {
+        'NPU 进程归属与工作目录','按工号与目录汇总 · 仅 NPU 进程',
+        '容器管控 · 持续拦截与白名单','容器管控 · 持续拦截'}),default=4)
     for panel in result['panels']:
         if panel['gridPos']['y']>=anchor:panel['gridPos']['y']+=len(missing)*7
     next_id=max((p['id'] for p in result['panels']),default=0)+1
@@ -133,6 +135,23 @@ def add_queue_panels(dashboard,nodes,prefix='ascend'):
         if previous:result['panels'][result['panels'].index(previous)]=panel
         else:result['panels'].append(panel);next_id+=1
     return result
+
+
+def place_guard_after_summary(dashboard, panel):
+    summary = next((item for item in dashboard['panels']
+                    if item.get('title') == '按工号与目录汇总 · 仅 NPU 进程'), None)
+    if summary is None:
+        return
+    position = panel['gridPos']
+    old_bottom = position['y'] + position['h']
+    for other in dashboard['panels']:
+        if other is not panel and other.get('gridPos', {}).get('y', -1) >= old_bottom:
+            other['gridPos']['y'] -= position['h']
+    anchor = summary['gridPos']['y'] + summary['gridPos']['h']
+    for other in dashboard['panels']:
+        if other is not panel and other.get('gridPos', {}).get('y', -1) >= anchor:
+            other['gridPos']['y'] += position['h']
+    position['y'] = anchor
 
 
 def add_guard_panel(dashboard, prefix='ascend'):
@@ -169,6 +188,7 @@ def add_guard_panel(dashboard, prefix='ascend'):
                             for mapping in prop['value']:
                                 if mapping.get('type') == 'value':
                                     mapping['options']['未知工号进程拦截'] = {'text': '未知工号进程拦截', 'color': 'orange'}
+            place_guard_after_summary(result, panel)
             return result
     panel_id = max(p['id'] for p in result['panels']) + 1
     for panel in result['panels']:
@@ -194,6 +214,7 @@ def add_guard_panel(dashboard, prefix='ascend'):
                 {'id': 'custom.cellOptions', 'value': {'type': 'color-text'}},
                 {'id': 'custom.width', 'value': 190},
                 {'id': 'mappings', 'value': [{'type': 'value', 'options': {'持续拦截': {'text': '持续拦截', 'color': 'red'}, '未知工号进程拦截': {'text': '未知工号进程拦截', 'color': 'orange'}, '白名单': {'text': '白名单', 'color': 'green'}}}]}]}]}})
+    place_guard_after_summary(result, result['panels'][-1])
     result['version'] = result.get('version', 1) + 1
     return result
 

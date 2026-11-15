@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'assets/runtime'))
 from container_guard import ContainerGuard, load_candidates, load_unknown_candidates
 from control_common import ControlError, StopEngine
 from process_exporter import guard_display_start, guard_metrics, metric_lines
-from patch_dashboard import add_guard_panel
+from patch_dashboard import add_guard_panel, add_queue_home_panel, add_queue_panels
 
 CID = 'a' * 64
 START = '2026-11-03T00:00:00Z'
@@ -246,6 +246,40 @@ class GuardTests(unittest.TestCase):
         self.assertEqual(matched['panels'][1]['gridPos']['y'], 14)
         self.assertEqual(matched['panels'][2]['gridPos']['h'], 10)
         self.assertEqual(add_guard_panel(matched), matched)
+
+    def test_guard_moves_after_summary_and_keeps_queue_at_top(self):
+        original = {'panels': [
+            {'id': 1, 'title': '容器管控 · 持续拦截', 'gridPos': {'x': 0, 'y': 4, 'w': 24, 'h': 12}},
+            {'id': 2, 'title': 'node-a 排队情况', 'gridPos': {'x': 0, 'y': 16, 'w': 24, 'h': 7}},
+            {'id': 3, 'title': 'node-b 排队情况', 'gridPos': {'x': 0, 'y': 23, 'w': 24, 'h': 7}},
+            {'id': 4, 'title': 'NPU 进程归属与工作目录', 'gridPos': {'x': 0, 'y': 30, 'w': 24, 'h': 12}},
+            {'id': 5, 'title': '按工号与目录汇总 · 仅 NPU 进程', 'gridPos': {'x': 0, 'y': 42, 'w': 24, 'h': 8}},
+            {'id': 6, 'title': 'NPU 利用率', 'gridPos': {'x': 0, 'y': 50, 'w': 12, 'h': 9}},
+        ]}
+        updated = add_guard_panel(original)
+        self.assertEqual([p['gridPos']['y'] for p in updated['panels']], [38, 4, 11, 18, 30, 50])
+        self.assertEqual(add_guard_panel(updated), updated)
+        self.assertEqual(original['panels'][0]['gridPos']['y'], 4)
+        homepage = add_queue_home_panel(updated, ['node-a', 'node-b'])
+        panels = {p['title']: p for p in homepage['panels']}
+        summary = panels['按工号与目录汇总 · 仅 NPU 进程']['gridPos']
+        self.assertEqual(panels['容器管控 · 持续拦截']['gridPos']['y'], summary['y'] + summary['h'])
+        self.assertEqual(panels['排队与资源分配']['gridPos']['y'], 4)
+
+    def test_new_guard_and_queue_keep_summary_order(self):
+        original = {'panels': [
+            {'id': 1, 'title': 'NPU 进程归属与工作目录', 'gridPos': {'x': 0, 'y': 4, 'w': 24, 'h': 12}},
+            {'id': 2, 'title': '按工号与目录汇总 · 仅 NPU 进程', 'gridPos': {'x': 0, 'y': 16, 'w': 24, 'h': 8}},
+            {'id': 3, 'title': 'NPU 利用率', 'gridPos': {'x': 0, 'y': 24, 'w': 12, 'h': 9}},
+        ]}
+        updated = add_guard_panel(original)
+        self.assertEqual(updated['panels'][-1]['gridPos']['y'], 24)
+        queued = add_queue_panels(updated, ['node-a', 'node-b'])
+        panels = {p['title']: p for p in queued['panels']}
+        self.assertEqual(panels['node-a 排队情况']['gridPos']['y'], 4)
+        self.assertEqual(panels['node-b 排队情况']['gridPos']['y'], 11)
+        self.assertEqual(panels['容器管控 · 持续拦截']['gridPos']['y'], 38)
+        self.assertEqual(add_guard_panel(queued)['panels'], queued['panels'])
 
     def test_daily_display_rolls_at_nine_beijing_without_clearing_marks(self):
         before = datetime(2026, 11, 15, 0, 59, 59, tzinfo=timezone.utc).timestamp()
