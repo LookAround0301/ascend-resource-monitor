@@ -1,5 +1,6 @@
 """Opt-in, persistent container enforcement for NPU jobs with unmapped IDs."""
 import copy
+from datetime import datetime
 import json
 import os
 from pathlib import Path
@@ -9,9 +10,10 @@ import select
 import threading
 import time
 import urllib.request
+from zoneinfo import ZoneInfo
 
 from control_common import CONTAINER_ID, ControlError
-from process_exporter import employee_name_for, guard_policy, parse_stat, CONTAINER
+from process_exporter import employee_name_for, guard_display_start, guard_policy, parse_stat, CONTAINER
 
 EMPLOYEE = re.compile(r'[a-z][0-9]{8}\Z')
 LABEL = re.compile(r'(\w+)=("(?:[^"\\]|\\.)*")')
@@ -109,6 +111,7 @@ class ContainerGuard:
             raise ValueError('Invalid container guard state')
         if 'enabled' in self.state and type(self.state['enabled']) is not bool:
             raise ValueError('Invalid container guard enabled state')
+        guard_display_start(self.state)
         for cid, entry in self.state['entries'].items():
             if not CONTAINER_ID.fullmatch(cid) or not isinstance(entry, dict) or type(entry.get('whitelisted')) is not bool:
                 raise ValueError('Invalid container guard entry')
@@ -280,6 +283,7 @@ class ContainerGuard:
                  'actor': {'id': 'container-guard', 'login': 'container-guard'}, 'reason': 'persistent-block'}
         self.engine.write_audit({**event, 'result': 'requested'})
         entry.update(attempted_start=started, last_result='停止结果待核实', attempted_at=time.time())
+        self.record_display(entry, 'container', '停止结果待核实', new_attempt=True)
         self.save()  # durable intent before Docker, also across daemon restarts
         try:
             self.engine.docker.stop(cid)
@@ -289,10 +293,29 @@ class ContainerGuard:
                 if e.status != 404: raise
                 stopped = True
             entry['last_result'] = '已自动停止' if stopped else '停止结果待核实'
+            self.record_display(entry, 'container', entry['last_result'], completed=stopped)
             self.engine.write_audit({**event, 'result': 'stopped' if stopped else 'state-changed'})
         except Exception:
             self.engine.write_audit({**event, 'result': 'uncertain'})
         self.save()
+
+    def record_display(self, entry, kind, result, new_attempt=False, completed=False, pid=None, signal_name=None, now=None):
+        now = time.time() if now is None else now
+        period_start = guard_display_start(self.state, now)
+        if period_start is None:
+            return
+        record = entry.get('daily_interception', {})
+        if record.get('period_start') != period_start:
+            record = {'period_start': period_start, 'attempts': 0, 'process_signals': 0, 'container_stops': 0}
+            entry['daily_interception'] = record
+        record['attempts'] += int(new_attempt)
+        count_name = 'process_signals' if kind == 'process' else 'container_stops'
+        record[count_name] += int(completed)
+        timestamp = datetime.fromtimestamp(now, ZoneInfo(self.state['display_reset']['timezone'])).strftime('%m-%d %H:%M:%S %Z')
+        detail = f'PID {pid} · {signal_name} {result}' if kind == 'process' else result
+        counter = '发送' if kind == 'process' else '停止'
+        record.update(last_at=now, kind=kind,
+                      result=f"{timestamp} · {detail} · 本期{counter} {record[count_name]} 次")
 
     def scan(self):
         with self.engine.lock:
@@ -375,6 +398,8 @@ class ContainerGuard:
             record['signals_sent'] += 1
         record.update(last_at=now, pid=row['pid'], process_key=row['process_key'],
                       container_started_at=row['started_at'], signal=signal_name, result=result)
+        self.record_display(entry, 'process', result, new_attempt=new_attempt, completed=result == '已发送',
+                            pid=row['pid'], signal_name=signal_name, now=now)
         entry['container'] = info.get('Name', '').lstrip('/')
         if not entry.get('marked_at'):
             timestamp = time.strftime('%m-%d %H:%M:%S UTC', time.gmtime(now))

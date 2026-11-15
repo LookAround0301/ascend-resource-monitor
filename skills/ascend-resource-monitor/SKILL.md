@@ -41,7 +41,7 @@ The unified queue supports administrator-only waiting-priority changes, includin
 
 If the user explicitly requests automatic stopping of NPU containers with an employee ID but no mapped name, follow [references/container-guard.md](references/container-guard.md). Clarify ambiguous selection wording before enabling it. This opt-in policy is separate from manual Stop: persist marked container IDs across restarts, permit only administrator-confirmed whitelist changes, and keep unknown/unavailable attribution data from becoming a stop decision.
 
-When the separately configured unknown-owner NPU process interceptor is enabled, record its container-scoped history in the same guard table as `未知工号进程拦截`. Keep this process-action history separate from persistent whole-container stop marks. Read the guard reference for result fields, persistence and exemption behavior.
+When the separately configured unknown-owner NPU process interceptor is enabled, record its container-scoped history in the same guard table as `未知工号进程拦截`. Keep this process-action history separate from persistent whole-container stop marks. The table uses internal scrolling. Read the guard reference for result fields, persistence, exemption behavior and optional daily display resets.
 
 For an explicitly requested shared company/VPN browser entry, read [references/web-entry.md](references/web-entry.md). Add a restricted HTTPS listener without exposing the underlying services, retain Viewer access and administrator-only Stop, and verify browser proxy/certificate behavior from a real client. The default SSH-tunnel listener stays loopback-only.
 

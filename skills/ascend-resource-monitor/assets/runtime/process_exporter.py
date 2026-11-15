@@ -2,7 +2,7 @@
 """Bounded, read-only inventory of processes reported by Ascend NPU Exporter."""
 import argparse
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -15,6 +15,7 @@ import subprocess
 import threading
 import time
 import urllib.request
+from zoneinfo import ZoneInfo
 from job_origin import OriginClassifier, SUMMARY_LABELS, agent_hint, environment_origin, summarize_origin, temporary_script
 from job_evidence import EvidenceProbe, merge_evidence
 
@@ -47,21 +48,39 @@ def guard_policy(entry):
     return '未标记'
 
 
+def guard_display_start(state, now=None):
+    settings = state.get('display_reset')
+    if settings is None:
+        return None
+    hour = settings['hour']
+    if type(hour) is not int or not 0 <= hour <= 23:
+        raise ValueError('Invalid guard display reset hour')
+    current = datetime.fromtimestamp(time.time() if now is None else now, ZoneInfo(settings['timezone']))
+    start = current.replace(hour=hour, minute=0, second=0, microsecond=0)
+    if current < start:
+        start -= timedelta(days=1)
+    return start.timestamp()
+
+
 def guard_metrics(path):
     if not path: return []
     try:
         state = json.loads(Path(path).read_text(encoding='utf-8'))
         if state.get('version') != 1: raise ValueError('Invalid guard state')
+        display_start = guard_display_start(state)
         result = ['# TYPE ascend_container_guard_info gauge']
         for cid, entry in state['entries'].items():
             if not re.fullmatch('[0-9a-f]{64}', cid): continue
+            display = entry.get('daily_interception', {})
+            if display_start is not None and display.get('period_start') != display_start:
+                continue
             policy = guard_policy(entry)
             employee_ids = ','.join(entry.get('employee_ids', []))
             if policy == '未知工号进程拦截' and not employee_ids:
                 employee_ids = '未知'
             labels = {'container_id': cid, 'container': entry['container'], 'guard_state': policy,
                       'employee_ids': employee_ids,
-                      'guard_result': entry.get('last_result', '')}
+                      'guard_result': display.get('result', '') if display_start is not None else entry.get('last_result', '')}
             result.append('ascend_container_guard_info{' + ','.join(k+'='+json.dumps(str(v)[:512], ensure_ascii=False) for k,v in labels.items()) + '} 1')
         return result + ['ascend_container_guard_state_read_success 1']
     except (OSError, ValueError, KeyError, TypeError):

@@ -1,4 +1,5 @@
 import copy
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import sys
@@ -11,7 +12,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'assets/runtime'))
 from container_guard import ContainerGuard, load_candidates, load_unknown_candidates
 from control_common import ControlError, StopEngine
-from process_exporter import guard_metrics, metric_lines
+from process_exporter import guard_display_start, guard_metrics, metric_lines
 from patch_dashboard import add_guard_panel
 
 CID = 'a' * 64
@@ -206,6 +207,8 @@ class GuardTests(unittest.TestCase):
         patched = add_guard_panel(old)
         self.assertIn('guard_state=~"持续拦截|未知工号进程拦截"',patched['panels'][-1]['targets'][0]['expr'])
         self.assertEqual(len(patched['panels']), 2)
+        self.assertFalse(patched['panels'][-1]['options']['enablePagination'])
+        self.assertEqual(patched['panels'][-1]['gridPos']['h'], 14)
         self.assertEqual(add_guard_panel(patched)['panels'], patched['panels'])
         self.assertEqual(old['panels'][0]['gridPos']['y'], 4)
         legacy = json.loads(json.dumps(patched))
@@ -214,6 +217,77 @@ class GuardTests(unittest.TestCase):
         updated = add_guard_panel(legacy, 'a5')
         self.assertEqual(len(updated['panels']),2)
         self.assertEqual(updated['panels'][-1]['targets'][0]['expr'],'a5_container_guard_info{node=~"$node",guard_state=~"持续拦截|未知工号进程拦截"}')
+
+    def test_guard_scroll_layout_upgrades_existing_panel_once(self):
+        original = {'panels': [
+            {'id': 1, 'title': '容器管控 · 持续拦截',
+             'gridPos': {'x': 0, 'y': 4, 'w': 24, 'h': 6},
+             'options': {'enablePagination': True, 'cellHeight': 'sm'}},
+            {'id': 2, 'title': '排队与资源分配',
+             'gridPos': {'x': 0, 'y': 10, 'w': 24, 'h': 20}},
+        ]}
+        updated = add_guard_panel(original)
+        self.assertFalse(updated['panels'][0]['options']['enablePagination'])
+        self.assertEqual(updated['panels'][0]['options']['cellHeight'], 'sm')
+        self.assertEqual(updated['panels'][0]['gridPos']['h'], 14)
+        self.assertEqual(updated['panels'][1]['gridPos']['y'], 18)
+        self.assertEqual(add_guard_panel(updated), updated)
+        self.assertEqual(original['panels'][1]['gridPos']['y'], 10)
+        updated['panels'][0]['gridPos']['h'] = 18
+        updated['panels'][1]['gridPos']['y'] = 22
+        self.assertEqual(add_guard_panel(updated), updated)
+
+    def test_daily_display_rolls_at_nine_beijing_without_clearing_marks(self):
+        before = datetime(2026, 11, 15, 0, 59, 59, tzinfo=timezone.utc).timestamp()
+        after = before + 1
+        self.guard.state['display_reset'] = {'timezone': 'Asia/Shanghai', 'hour': 9}
+        self.guard.scan()
+        entry = self.guard.entries()[CID]
+        with patch('container_guard.time.time', return_value=before):
+            self.guard.record_display(entry, 'container', '已自动停止', completed=True)
+            self.guard.save()
+            self.assertIn('本期停止 1 次', '\n'.join(guard_metrics(self.path)))
+        with patch('process_exporter.time.time', return_value=after):
+            self.assertNotIn('container_id=', '\n'.join(guard_metrics(self.path)))
+        self.assertTrue(entry['marked_at'])
+        self.assertFalse(entry['whitelisted'])
+        self.assertEqual(guard_display_start(self.guard.state, after), after)
+        self.assertEqual(guard_display_start(self.guard.state, before), after - 86400)
+        self.guard = ContainerGuard(self.engine, lambda: [], lambda row: True)
+        self.docker.info['State'] = {'Running': True, 'StartedAt': 'new-start'}
+        with patch('container_guard.time.time', return_value=after):
+            self.guard.scan()
+        self.assertEqual(len(self.docker.calls), 2)
+        with patch('process_exporter.time.time', return_value=after):
+            self.assertIn('本期停止 1 次', '\n'.join(guard_metrics(self.path)))
+
+    def test_daily_unknown_count_resets_and_persists_across_restart(self):
+        start = datetime(2026, 11, 15, 1, tzinfo=timezone.utc).timestamp()
+        self.guard.state['display_reset'] = {'timezone': 'Asia/Shanghai', 'hour': 9}
+        row = dict(container_id=CID, started_at=START, pid=23, process_key='boot:23:1')
+        for now in (start + 1, start + 2, start + 86400):
+            with patch('container_guard.time.time', return_value=now):
+                self.guard.record_unknown_interception(row, self.docker.info, 'SIGTERM', '已发送', new_attempt=True)
+        reloaded = ContainerGuard(self.engine, lambda: [], lambda row: True)
+        entry = reloaded.entries()[CID]
+        self.assertEqual(entry['unknown_interception']['signals_sent'], 3)
+        self.assertEqual(entry['daily_interception']['process_signals'], 1)
+        self.assertIn('本期发送 1 次', entry['daily_interception']['result'])
+        self.assertIsNone(entry['marked_at'])
+        with patch('process_exporter.time.time', return_value=start + 86400):
+            self.assertIn('未知工号进程拦截', '\n'.join(guard_metrics(self.path)))
+        with patch('process_exporter.time.time', return_value=start + 172800):
+            self.assertNotIn('container_id=', '\n'.join(guard_metrics(self.path)))
+
+    def test_daily_display_preserves_whitelist_exemption_and_validates_config(self):
+        self.guard.state['display_reset'] = {'timezone': 'Asia/Shanghai', 'hour': 9}
+        self.guard.scan()
+        self.allow(True)
+        self.assertIn('guard_state="白名单"', '\n'.join(guard_metrics(self.path)))
+        for invalid in ({'timezone': 'Asia/Shanghai', 'hour': 24}, {'hour': 9}):
+            self.guard.state['display_reset'] = invalid
+            self.guard.save()
+            self.assertEqual(guard_metrics(self.path), ['ascend_container_guard_state_read_success 0'])
 
     def test_reader_uses_real_roster_and_requires_complete_fresh_source(self):
         owners = Path(self.temp.name) / 'owners.json'

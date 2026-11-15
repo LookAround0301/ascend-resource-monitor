@@ -143,11 +143,19 @@ def add_guard_panel(dashboard, prefix='ascend'):
          'targetBlank': True, 'includeVars': False, 'keepTime': False, 'icon': 'external link'}]
     title = '容器管控 · 持续拦截'
     expression = prefix+'_container_guard_info{node=~"$node",guard_state=~"持续拦截|未知工号进程拦截"}'
-    description = '显示持续拦截的容器及未知工号进程拦截记录。未知工号记录包含最近 PID、信号、时间和累计发送次数，保留历史但不据此停止整个容器。加入人员或容器白名单后不再显示。'
+    description = '显示持续拦截的容器及未知工号进程拦截记录。未知工号记录包含最近 PID、信号、时间和发送次数。启用每日展示周期后，按配置的时区与整点重新累计；持续管控标记保留。加入人员或容器白名单后不再显示。'
     for panel in result['panels']:
         if panel.get('title') == '容器管控 · 持续拦截与白名单': panel['title'] = title
         if panel.get('title') == title:
             panel['description'] = description
+            panel.setdefault('options', {}).update(enablePagination=False)
+            position = panel['gridPos']
+            extra_height = max(0, 14 - position['h'])
+            bottom = position['y'] + position['h']
+            for other in result['panels']:
+                if other is not panel and other.get('gridPos', {}).get('y', -1) >= bottom:
+                    other['gridPos']['y'] += extra_height
+            position['h'] += extra_height
             for target in panel.get('targets', []):
                 if '_container_guard_info' in target.get('expr', ''): target['expr'] = expression
             for override in panel.get('fieldConfig', {}).get('overrides', []):
@@ -162,10 +170,10 @@ def add_guard_panel(dashboard, prefix='ascend'):
             return result
     panel_id = max(p['id'] for p in result['panels']) + 1
     for panel in result['panels']:
-        if panel['gridPos']['y'] >= 4: panel['gridPos']['y'] += 6
+        if panel['gridPos']['y'] >= 4: panel['gridPos']['y'] += 14
     order = ['node', 'employee_ids', 'container', 'guard_state', 'guard_result', 'container_id']
     result['panels'].append({'id': panel_id, 'title': title, 'type': 'table',
-        'gridPos': {'x': 0, 'y': 4, 'w': 24, 'h': 6},
+        'gridPos': {'x': 0, 'y': 4, 'w': 24, 'h': 14},
         'description': description,
         'datasource': {'type': 'prometheus', 'uid': 'a5-prometheus'},
         'targets': [{'refId': 'Guard', 'expr': expression, 'format': 'table', 'instant': True, 'range': False}],
@@ -174,7 +182,7 @@ def add_guard_panel(dashboard, prefix='ascend'):
             'indexByName': {name: i for i, name in enumerate(order)},
             'renameByName': {'node': '主机', 'employee_ids': '工号', 'container': '容器', 'guard_state': '管控标记',
                              'guard_result': '最近结果', 'container_id': '白名单管理'}}}],
-        'options': {'showHeader': True, 'cellHeight': 'sm', 'enablePagination': True},
+        'options': {'showHeader': True, 'cellHeight': 'sm', 'enablePagination': False},
         'fieldConfig': {'defaults': {'custom': {'filterable': True}}, 'overrides': [
             {'matcher': {'id': 'byName', 'options': '白名单管理'}, 'properties': [
                 {'id': 'custom.cellOptions', 'value': {'type': 'data-links'}}, {'id': 'custom.width', 'value': 135},
