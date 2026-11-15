@@ -142,14 +142,23 @@ def add_guard_panel(dashboard, prefix='ascend'):
         {'type': 'link', 'title': '人员白名单', 'url': '/a5-control/guard',
          'targetBlank': True, 'includeVars': False, 'keepTime': False, 'icon': 'external link'}]
     title = '容器管控 · 持续拦截'
-    expression = prefix+'_container_guard_info{node=~"$node",guard_state="持续拦截"}'
-    description = '仅显示当前持续拦截的容器，包括已自动停止的容器。加入人员或容器白名单后不再显示；后台保留原管控标记。'
+    expression = prefix+'_container_guard_info{node=~"$node",guard_state=~"持续拦截|未知工号进程拦截"}'
+    description = '显示持续拦截的容器及未知工号进程拦截记录。未知工号记录包含最近 PID、信号、时间和累计发送次数，保留历史但不据此停止整个容器。加入人员或容器白名单后不再显示。'
     for panel in result['panels']:
         if panel.get('title') == '容器管控 · 持续拦截与白名单': panel['title'] = title
         if panel.get('title') == title:
             panel['description'] = description
             for target in panel.get('targets', []):
                 if '_container_guard_info' in target.get('expr', ''): target['expr'] = expression
+            for override in panel.get('fieldConfig', {}).get('overrides', []):
+                if override.get('matcher', {}).get('options') == '管控标记':
+                    if not any(prop.get('id') == 'custom.width' for prop in override['properties']):
+                        override['properties'].append({'id': 'custom.width', 'value': 190})
+                    for prop in override.get('properties', []):
+                        if prop.get('id') == 'mappings':
+                            for mapping in prop['value']:
+                                if mapping.get('type') == 'value':
+                                    mapping['options']['未知工号进程拦截'] = {'text': '未知工号进程拦截', 'color': 'orange'}
             return result
     panel_id = max(p['id'] for p in result['panels']) + 1
     for panel in result['panels']:
@@ -173,7 +182,8 @@ def add_guard_panel(dashboard, prefix='ascend'):
                     'url': '/a5-control/guard?node=${__data.fields["主机"]}&container_id=${__value.raw}'}]}]},
             {'matcher': {'id': 'byName', 'options': '管控标记'}, 'properties': [
                 {'id': 'custom.cellOptions', 'value': {'type': 'color-text'}},
-                {'id': 'mappings', 'value': [{'type': 'value', 'options': {'持续拦截': {'text': '持续拦截', 'color': 'red'}, '白名单': {'text': '白名单', 'color': 'green'}}}]}]}]}})
+                {'id': 'custom.width', 'value': 190},
+                {'id': 'mappings', 'value': [{'type': 'value', 'options': {'持续拦截': {'text': '持续拦截', 'color': 'red'}, '未知工号进程拦截': {'text': '未知工号进程拦截', 'color': 'orange'}, '白名单': {'text': '白名单', 'color': 'green'}}}]}]}]}})
     result['version'] = result.get('version', 1) + 1
     return result
 

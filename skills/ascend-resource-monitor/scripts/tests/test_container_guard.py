@@ -204,7 +204,7 @@ class GuardTests(unittest.TestCase):
         self.assertIn('guard_state="白名单"', '\n'.join(guard_metrics(self.path)))
         old = {'uid': 'test', 'panels': [{'id': 20, 'gridPos': {'y': 4}, 'title': 'original'}]}
         patched = add_guard_panel(old)
-        self.assertIn('guard_state="持续拦截"',patched['panels'][-1]['targets'][0]['expr'])
+        self.assertIn('guard_state=~"持续拦截|未知工号进程拦截"',patched['panels'][-1]['targets'][0]['expr'])
         self.assertEqual(len(patched['panels']), 2)
         self.assertEqual(add_guard_panel(patched)['panels'], patched['panels'])
         self.assertEqual(old['panels'][0]['gridPos']['y'], 4)
@@ -213,7 +213,7 @@ class GuardTests(unittest.TestCase):
         legacy['panels'][-1]['targets'][0]['expr'] = 'a5_container_guard_info{node=~"$node"}'
         updated = add_guard_panel(legacy, 'a5')
         self.assertEqual(len(updated['panels']),2)
-        self.assertEqual(updated['panels'][-1]['targets'][0]['expr'],'a5_container_guard_info{node=~"$node",guard_state="持续拦截"}')
+        self.assertEqual(updated['panels'][-1]['targets'][0]['expr'],'a5_container_guard_info{node=~"$node",guard_state=~"持续拦截|未知工号进程拦截"}')
 
     def test_reader_uses_real_roster_and_requires_complete_fresh_source(self):
         owners = Path(self.temp.name) / 'owners.json'
@@ -275,6 +275,13 @@ class GuardTests(unittest.TestCase):
             self.guard.enforce_unknown()
             self.assertEqual(send.call_args.args[1].name,'SIGTERM')
             self.assertFalse(self.docker.calls)
+            entry = json.loads(self.path.read_text())['entries'][CID]
+            self.assertIsNone(entry['marked_at'])
+            self.assertEqual(entry['unknown_interception']['pid'], 23)
+            self.assertEqual(entry['unknown_interception']['signals_sent'], 1)
+            self.assertEqual(self.guard.policy(CID), '未知工号进程拦截')
+            self.assertIn('guard_state="未知工号进程拦截"', '\n'.join(guard_metrics(self.path)))
+            self.assertIn('employee_ids="未知"', '\n'.join(guard_metrics(self.path)))
             self.guard.enforce_unknown();self.assertEqual(send.call_count,1)
             clock.return_value=106;self.guard.enforce_unknown()
             self.assertEqual(send.call_args.args[1].name,'SIGKILL')
@@ -285,6 +292,48 @@ class GuardTests(unittest.TestCase):
             self.guard.enforce_unknown();self.assertEqual(send.call_count,2)
             self.guard.entries().clear();self.config['protected_containers']=['test-container']
             self.guard.enforce_unknown();self.assertEqual(send.call_count,2)
+
+    def test_unknown_record_survives_restart_without_becoming_container_block(self):
+        self.guard.record_unknown_interception(
+            dict(container_id=CID, started_at=START, pid=23, process_key='boot:23:1'),
+            self.docker.info, 'SIGTERM', '已发送', new_attempt=True,
+        )
+        reloaded = ContainerGuard(self.engine, lambda: [], lambda row: True)
+        self.docker.info['State']['StartedAt'] = 'new-start'
+        self.engine.get_npu = lambda: set()
+        reloaded.scan()
+        self.assertFalse(self.docker.calls)
+        self.assertEqual(reloaded.policy(CID), '未知工号进程拦截')
+        self.assertEqual(reloaded.entries()[CID]['unknown_interception']['signals_sent'], 1)
+        reloaded.whitelist({'node':'test','container_id':CID,'allowed':True,'confirmed':True},ACTOR)
+        self.assertEqual(reloaded.policy(CID), '白名单')
+        reloaded.whitelist({'node':'test','container_id':CID,'allowed':False,'confirmed':True},ACTOR)
+        self.assertEqual(reloaded.policy(CID), '未知工号进程拦截')
+        reloaded.scan()
+        self.assertFalse(self.docker.calls)
+
+    def test_unknown_history_is_preserved_when_existing_roster_rule_marks_container(self):
+        self.guard.record_unknown_interception(
+            dict(container_id=CID, started_at=START, pid=23, process_key='boot:23:1'),
+            self.docker.info, 'SIGTERM', '已发送', new_attempt=True,
+        )
+        self.guard.scan()
+        self.assertEqual(self.guard.policy(CID), '持续拦截')
+        self.assertEqual(self.docker.calls, [CID])
+        self.assertEqual(self.guard.entries()[CID]['unknown_interception']['signals_sent'], 1)
+
+    def test_failed_state_save_prevents_unknown_process_signal(self):
+        row = dict(container_id=CID, started_at=START, pid=23, process_key='boot:23:1')
+        self.guard.unknown_candidates = lambda: [row]
+        with patch('container_guard.os.pidfd_open', return_value=77, create=True), \
+             patch('container_guard.os.close'), patch('container_guard.select.poll', create=True) as poll, \
+             patch('container_guard.select.POLLIN', 1, create=True), \
+             patch('container_guard.signal.pidfd_send_signal', create=True) as send, \
+             patch.object(self.guard, 'save', side_effect=OSError('fixture write failed')):
+            poll.return_value.poll.return_value = []
+            with self.assertRaises(OSError):
+                self.guard.enforce_unknown()
+            send.assert_not_called()
 
     def test_unknown_policy_requires_both_explicit_configuration_and_guard_switch(self):
         self.rows.clear()

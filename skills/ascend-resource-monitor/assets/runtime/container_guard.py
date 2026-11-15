@@ -11,7 +11,7 @@ import time
 import urllib.request
 
 from control_common import CONTAINER_ID, ControlError
-from process_exporter import employee_name_for, parse_stat, CONTAINER
+from process_exporter import employee_name_for, guard_policy, parse_stat, CONTAINER
 
 EMPLOYEE = re.compile(r'[a-z][0-9]{8}\Z')
 LABEL = re.compile(r'(\w+)=("(?:[^"\\]|\\.)*")')
@@ -154,7 +154,7 @@ class ContainerGuard:
     def policy(self, cid):
         entry = self.entries().get(cid)
         if not entry: return '未标记'
-        return '白名单' if entry['whitelisted'] or entry.get('personnel_whitelisted') else ('持续拦截' if entry.get('marked_at') else '未标记')
+        return guard_policy(entry)
 
     def personnel_exempt(self, cid, entry):
         allowed = False
@@ -252,8 +252,9 @@ class ContainerGuard:
             self.engine.write_audit({'action': 'container.guard.mark', 'node': self.engine.config['node'],
                                      'container_id': cid, 'employee_ids': ids, 'npu_pids': matching,
                                      'reason': 'employee-id-without-roster-name', 'result': 'requested'})
-            self.entries()[cid] = {'container': info.get('Name', '').lstrip('/'), 'employee_ids': ids,
-                                   'marked_at': time.time(), 'whitelisted': False, 'last_result': '已标记'}
+            entry = self.entries().setdefault(cid, {})
+            entry.update(container=info.get('Name', '').lstrip('/'), employee_ids=ids,
+                         marked_at=time.time(), whitelisted=False, last_result='已标记')
             self.save()
 
     def enforce(self, cid, entry):
@@ -341,12 +342,45 @@ class ContainerGuard:
                          'container_id':cid, 'pid':pid, 'process_key':key,
                          'reason':'no-employee-evidence', 'signal':sig.name}
                 self.engine.write_audit({**event, 'result':'requested'})
-                try: signal.pidfd_send_signal(fd, sig)
-                except ProcessLookupError: continue
+                if cid:
+                    self.record_unknown_interception(row, info, sig.name, '待核实', new_attempt=True)
+                try:
+                    signal.pidfd_send_signal(fd, sig)
+                except ProcessLookupError:
+                    if cid:
+                        self.record_unknown_interception(row, info, sig.name, '进程已退出')
+                    continue
+                except Exception:
+                    if cid:
+                        self.record_unknown_interception(row, info, sig.name, '发送失败或结果未确认')
+                    raise
                 self.unknown_terminated[key] = time.monotonic()
+                if cid:
+                    self.record_unknown_interception(row, info, sig.name, '已发送')
                 self.engine.write_audit({**event, 'result':'signal-sent'})
             finally: os.close(fd)
         self.unknown_terminated = {k:v for k,v in self.unknown_terminated.items() if k in seen}
+
+    def record_unknown_interception(self, row, info, signal_name, result, new_attempt=False):
+        """Persist a bounded process-action summary without marking a container stop."""
+        now = time.time()
+        entry = self.entries().setdefault(row['container_id'], {
+            'container': info.get('Name', '').lstrip('/'),
+            'employee_ids': [], 'marked_at': None, 'whitelisted': False,
+        })
+        record = entry.setdefault('unknown_interception', {'first_at': now, 'attempts': 0, 'signals_sent': 0})
+        if new_attempt:
+            record['attempts'] += 1
+        if result == '已发送':
+            record['signals_sent'] += 1
+        record.update(last_at=now, pid=row['pid'], process_key=row['process_key'],
+                      container_started_at=row['started_at'], signal=signal_name, result=result)
+        entry['container'] = info.get('Name', '').lstrip('/')
+        if not entry.get('marked_at'):
+            timestamp = time.strftime('%m-%d %H:%M:%S UTC', time.gmtime(now))
+            entry['last_result'] = (f"{timestamp} · PID {row['pid']} · {signal_name} {result}"
+                                    f" · 累计发送 {record['signals_sent']} 次")
+        self.save()
 
     def run(self):
         while not self.stopped.is_set():
