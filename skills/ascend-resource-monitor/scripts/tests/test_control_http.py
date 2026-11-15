@@ -42,6 +42,12 @@ class ProxyTests(unittest.IsolatedAsyncioTestCase):
             return {'node':node,'enabled':True,'entries':[]} if path=='/guard' else {'message':'saved'}
         config={'grafana_url':str(self.grafana.make_url('')).rstrip('/'),'org_id':1,
                 'audit_log':str(Path(self.temp.name)/'audit.jsonl'),'nodes':{'node-a':{'url':'https://unused'}}}
+        if getattr(self, 'unified_queue', False):
+            config['nodes']['node-b'] = {'url': 'https://unused-second'}
+            config['task_queue'] = {
+                'database': str(Path(self.temp.name) / 'queue.db'),
+                'unified_queue': True,
+            }
         self.client=TestClient(TestServer(create_app(config,agent_override=agent,describe_override=describe,guard_override=guard)));await self.client.start_server()
 
     async def asyncTearDown(self):
@@ -131,6 +137,38 @@ class ProxyTests(unittest.IsolatedAsyncioTestCase):
         r=await self.client.post('/a5-control/whitelist',json=body,headers=self.headers('Admin'))
         self.assertEqual(r.status,200);self.assertEqual(len(self.guard_calls),1)
         self.assertEqual(self.guard_calls[0][3]['login'],'test-Admin')
+
+
+class UnifiedQueueAdminControlTests(unittest.IsolatedAsyncioTestCase):
+    unified_queue = True
+    asyncSetUp = ProxyTests.asyncSetUp
+    asyncTearDown = ProxyTests.asyncTearDown
+    data = ProxyTests.data
+    headers = ProxyTests.headers
+
+    async def test_admin_get_opens_confirmation_and_post_stops_only_after_confirming(self):
+        params = {'node': 'node-a', 'target': self.data()['target']}
+        response = await self.client.get(
+            '/a5-control/confirm', params=params,
+            headers=self.headers('Admin'), allow_redirects=False,
+        )
+        self.assertEqual(response.status, 200, await response.text())
+        body = await response.text()
+        self.assertIn('id="stop-form"', body)
+        self.assertIn('test-workload', body)
+        self.assertFalse(self.calls)
+        script = await self.client.get('/a5-control/confirm.js')
+        self.assertEqual(script.status, 200)
+        self.assertIn('/a5-control/stop', await script.text())
+        response = await self.client.post(
+            '/a5-control/stop', json=self.data(), headers=self.headers('Admin'),
+        )
+        self.assertEqual(response.status, 200, await response.text())
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.calls[0][0]['container_id'], 'a' * 64)
+
+    test_confirmation_page_is_admin_only_and_get_never_stops = ProxyTests.test_confirmation_page_is_admin_only_and_get_never_stops
+    test_admin_cannot_bypass_confirmation_origin_or_target_scope = ProxyTests.test_admin_cannot_bypass_confirmation_origin_or_target_scope
 
 
 if __name__=='__main__':unittest.main()

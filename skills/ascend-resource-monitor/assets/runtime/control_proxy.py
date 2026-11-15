@@ -123,7 +123,7 @@ def create_app(config, agent_override=None, describe_override=None, guard_overri
         except ControlError as e: return web.json_response({'admin':False,'message':e.message},status=e.status)
 
     async def confirm(request):
-        if config.get('task_queue'):
+        if config.get('task_queue') and not config['task_queue'].get('unified_queue'):
             raise web.HTTPFound('/a5-queue/control?'+request.query_string)
         back='/d/'+config.get('dashboard_uid','a5-dual-node')
         login='/login?'+urllib.parse.urlencode({'redirectTo':request.path_qs})
