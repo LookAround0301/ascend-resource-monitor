@@ -208,7 +208,7 @@ class GuardTests(unittest.TestCase):
         self.assertIn('guard_state=~"持续拦截|未知工号进程拦截"',patched['panels'][-1]['targets'][0]['expr'])
         self.assertEqual(len(patched['panels']), 2)
         self.assertFalse(patched['panels'][-1]['options']['enablePagination'])
-        self.assertEqual(patched['panels'][-1]['gridPos']['h'], 14)
+        self.assertEqual(patched['panels'][-1]['gridPos']['h'], 12)
         self.assertEqual(add_guard_panel(patched)['panels'], patched['panels'])
         self.assertEqual(old['panels'][0]['gridPos']['y'], 4)
         legacy = json.loads(json.dumps(patched))
@@ -229,13 +229,23 @@ class GuardTests(unittest.TestCase):
         updated = add_guard_panel(original)
         self.assertFalse(updated['panels'][0]['options']['enablePagination'])
         self.assertEqual(updated['panels'][0]['options']['cellHeight'], 'sm')
-        self.assertEqual(updated['panels'][0]['gridPos']['h'], 14)
-        self.assertEqual(updated['panels'][1]['gridPos']['y'], 18)
+        self.assertEqual(updated['panels'][0]['gridPos']['h'], 12)
+        self.assertEqual(updated['panels'][1]['gridPos']['y'], 16)
         self.assertEqual(add_guard_panel(updated), updated)
         self.assertEqual(original['panels'][1]['gridPos']['y'], 10)
         updated['panels'][0]['gridPos']['h'] = 18
         updated['panels'][1]['gridPos']['y'] = 22
-        self.assertEqual(add_guard_panel(updated), updated)
+        reduced = add_guard_panel(updated)
+        self.assertEqual(reduced['panels'][0]['gridPos']['h'], 12)
+        self.assertEqual(reduced['panels'][1]['gridPos']['y'], 16)
+        reference = {'id': 3, 'title': 'NPU 进程归属与工作目录',
+                     'gridPos': {'x': 0, 'y': 42, 'w': 24, 'h': 10}}
+        reduced['panels'].append(reference)
+        matched = add_guard_panel(reduced)
+        self.assertEqual(matched['panels'][0]['gridPos']['h'], 10)
+        self.assertEqual(matched['panels'][1]['gridPos']['y'], 14)
+        self.assertEqual(matched['panels'][2]['gridPos']['h'], 10)
+        self.assertEqual(add_guard_panel(matched), matched)
 
     def test_daily_display_rolls_at_nine_beijing_without_clearing_marks(self):
         before = datetime(2026, 11, 15, 0, 59, 59, tzinfo=timezone.utc).timestamp()
