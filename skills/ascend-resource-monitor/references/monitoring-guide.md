@@ -37,7 +37,7 @@ The table below describes the default A5 eight-card profile. With explicit `task
 | Card placement | Use available queue capacity; requests for 1–4 cards per node stay in one four-card group |
 | Duration | Defaults to 0 hours and 30 minutes; hour and minute selectors use five-minute steps. Normal tasks are limited to 2 hours and new night tasks to 13 hours; existing reservations retain their duration |
 | Reservation horizon | Normal tasks finish by next-day 09:00; night tasks start from 20:00 until before next-day 09:00, enter active registration automatically at allocation and may finish later with a warning |
-| Scheduling priority | Plan in queue order; backfill must preserve earlier reservations and the release buffer. Unknown release times protect resources an earlier eligible reservation may need. Normal tasks that cannot start before 02:00 remain on standby; active and offered allocations are not preempted |
+| Scheduling priority | Plan in queue order; backfill must preserve earlier reservations. An opted-in short backfill can finish at an earlier reservation's predicted start without a release buffer; other scheduling retains its existing buffer. Unknown release times protect resources an earlier eligible reservation may need. Normal tasks that cannot start before 02:00 remain on standby; active and offered allocations are not preempted |
 | Claiming | Click Start use directly within at most ten minutes of allocation; an earlier scheduling deadline still applies |
 | Reminders | At allocation and each minute during an ordinary claim window; keep the page open, signed in and notifications enabled |
 | Unclaimed offer | Release that allocation and move back one waiting position, preserving the original application time |

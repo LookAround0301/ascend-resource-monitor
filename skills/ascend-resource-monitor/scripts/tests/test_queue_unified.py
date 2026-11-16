@@ -108,6 +108,30 @@ class UnifiedWindowTests(unittest.TestCase):
         self.assertEqual(too_long[0]['start'], 3600)
         self.assertGreaterEqual(too_long[1]['start'], 3600 + 3600 + 600)
 
+    def test_opted_in_short_backfill_reaches_previous_start_without_buffer(self):
+        for capacity in (8,16):
+            with self.subTest(capacity=capacity):
+                nodes={'a':list(range(capacity)),'b':list(range(capacity))}
+                now=1000.25;start=4000.8
+                first={'id':'first','cards':capacity,'seconds':3600,'not_before':start,'allowed_nodes':['a']}
+                later={'id':'later','cards':capacity,'seconds':3600,'backfill_min_seconds':1200,'allowed_nodes':['a']}
+                before,inserted=plan(nodes,[],[first,later],now,600)
+                self.assertEqual(before['start'],start)
+                self.assertEqual(inserted['start'],now)
+                self.assertEqual(inserted['backfill_end_before'],start)
+                self.assertLessEqual(now+inserted['seconds'],start)
+                self.assertGreater(now+inserted['seconds'],start-1)
+
+    def test_opted_in_full_duration_fits_when_only_buffer_would_overlap(self):
+        nodes={'a':list(range(8)),'b':list(range(8))}
+        first={'id':'first','cards':8,'seconds':3600,'not_before':3600,'allowed_nodes':['a']}
+        later={'id':'later','cards':8,'seconds':3300,'backfill_min_seconds':1200,'allowed_nodes':['a']}
+        first_plan,later_plan=plan(nodes,[],[first,later],0,600)
+        self.assertEqual(first_plan['start'],3600)
+        self.assertEqual(later_plan['start'],0)
+        self.assertEqual(later_plan['seconds'],3300)
+        self.assertEqual(later_plan['backfill_end_before'],3600)
+
     def test_unknown_release_does_not_let_later_request_take_required_cards(self):
         nodes={'a':list(range(8)),'b':list(range(8))}
         busy=[{'node':'a','cards':[0], 'start':0,'end':None}]

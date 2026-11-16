@@ -73,14 +73,14 @@ def plan(nodes, busy, jobs, now, buffer_seconds=600):
             choices.append(((-intact_groups, tuple(map(str, choice))), choice))
         return sorted(choices, key=lambda pair: pair[0])
 
-    def options(job, start, seconds):
+    def options(job, start, seconds, no_buffer=False):
         boundary=job.get('clip_finish_before',math.inf)
         # Durations are whole seconds but the clock may have a fractional part.
         # A clipped job can therefore end less than one second before the
         # boundary; do not add a buffer that would overlap the night booking.
         reaches_midnight=(job.get('midnight_separation') and math.isfinite(boundary)
                           and seconds>=math.floor(boundary-start))
-        end = start + seconds + (0 if reaches_midnight else buffer_seconds)
+        end = start + seconds + (0 if reaches_midnight or no_buffer else buffer_seconds)
         available = {node: free(node, start, end, job.get('night', False)) for node in nodes}
         count = job['cards']
         if job.get('dual'):
@@ -133,7 +133,7 @@ def plan(nodes, busy, jobs, now, buffer_seconds=600):
             minimum=job.get('backfill_min_seconds',0)
             if minimum and not job.get('night'):
                 for prior in prior_reservations:
-                    duration=math.floor(prior['start']-start-buffer_seconds)
+                    duration=math.floor(prior['start']-start)
                     if minimum<=duration<seconds:
                         durations.add(duration)
                         truncation_sources.setdefault(duration,[]).extend((node,frozenset(cards)) for node,cards in prior['allocations'].items())
@@ -145,8 +145,21 @@ def plan(nodes, busy, jobs, now, buffer_seconds=600):
                     available=[allocation for allocation in available
                                if any(cards.intersection(allocation.get(node,()))
                                       for node,cards in truncation_sources[candidate_seconds])]
+                no_buffer=False
+                if not available and minimum and not job.get('night'):
+                    available=options(job,start,candidate_seconds,no_buffer=True)
+                    if candidate_seconds<seconds:
+                        available=[allocation for allocation in available
+                                   if any(cards.intersection(allocation.get(node,()))
+                                          for node,cards in truncation_sources[candidate_seconds])]
+                    available=[allocation for allocation in available
+                               if any(start+candidate_seconds<=prior['start']<start+candidate_seconds+buffer_seconds
+                                      and any(set(cards).intersection(prior['allocations'].get(node,()))
+                                              for node,cards in allocation.items())
+                                      for prior in prior_reservations)]
+                    no_buffer=bool(available)
                 if available:
-                    chosen=(start,available[0],candidate_seconds)
+                    chosen=(start,available[0],candidate_seconds,no_buffer)
                     break
             if chosen:break
         if chosen is None:
@@ -169,17 +182,17 @@ def plan(nodes, busy, jobs, now, buffer_seconds=600):
             # Without a bound for this job, accepting later work can starve it.
             planned.extend({'id': later['id'], 'start': None, 'allocations': {}} for later in jobs[len(planned):])
             break
-        start, allocations,seconds = chosen
-        finish = start + seconds + buffer_seconds
+        start, allocations,seconds,no_buffer = chosen
+        finish = start + seconds + (0 if no_buffer else buffer_seconds)
         for node, cards in allocations.items():
             direct_end = start + seconds
             intervals.append((node, frozenset(cards), start, finish, direct_end))
         result={'id': job['id'], 'start': start, 'allocations': allocations, 'seconds':seconds}
-        if job.get('backfill_min_seconds') and seconds<job['seconds']:
+        if no_buffer:
             relevant=[p['start'] for p in prior_reservations if p['start']>start and
                       any(set(cards).intersection(p['allocations'].get(node,())) for node,cards in allocations.items())]
-            if relevant and start+seconds+buffer_seconds<=min(relevant):
-                result['backfill_end_before']=min(relevant)-buffer_seconds
+            if relevant:
+                result['backfill_end_before']=min(relevant)
         planned.append(result)
         prior_reservations.append({'start':start,'allocations':allocations})
     return planned
