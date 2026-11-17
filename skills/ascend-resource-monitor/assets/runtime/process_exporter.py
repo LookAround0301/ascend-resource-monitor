@@ -43,6 +43,8 @@ def guard_policy(entry):
         return '白名单'
     if entry.get('marked_at'):
         return '持续拦截'
+    if entry.get('unknown_container_interception'):
+        return '未知工号容器拦截'
     if entry.get('unknown_interception'):
         return '未知工号进程拦截'
     return '未标记'
@@ -76,7 +78,7 @@ def guard_metrics(path):
                 continue
             policy = guard_policy(entry)
             employee_ids = ','.join(entry.get('employee_ids', []))
-            if policy == '未知工号进程拦截' and not employee_ids:
+            if policy in ('未知工号进程拦截', '未知工号容器拦截') and not employee_ids:
                 employee_ids = '未知'
             labels = {'container_id': cid, 'container': entry['container'], 'guard_state': policy,
                       'employee_ids': employee_ids,

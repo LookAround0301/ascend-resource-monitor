@@ -104,6 +104,8 @@ class ContainerGuard:
     def __init__(self, engine, candidates=None, identity_check=None):
         self.engine = engine
         self.config = engine.config['guard']
+        if self.config.get('unknown_npu_action', 'process') not in ('process', 'container'):
+            raise ValueError('Invalid unknown NPU action')
         self.path = Path(self.config['state_file'])
         # Provision this explicitly. Losing the state must never clear blocks.
         self.state = json.loads(self.path.read_text(encoding='utf-8'))
@@ -181,6 +183,8 @@ class ContainerGuard:
     def snapshot(self):
         with self.engine.lock:
             return {'node': self.engine.config['node'], 'enabled': self.enabled(),
+                    'unknown_npu_processes':self.config.get('unknown_npu_processes') is True,
+                    'unknown_npu_action':self.config.get('unknown_npu_action','process'),
                     'last_scan': self.last_scan, 'error': self.error,
                     'entries': [{'container_id': cid, **copy.deepcopy(entry), 'policy': self.policy(cid)}
                                 for cid, entry in self.entries().items()]}
@@ -334,6 +338,8 @@ class ContainerGuard:
             self.last_scan = time.time()
 
     def enforce_unknown(self):
+        if self.config.get('unknown_npu_action', 'process') == 'container':
+            return self.enforce_unknown_containers()
         if not hasattr(os, 'pidfd_open') or not hasattr(signal, 'pidfd_send_signal'):
             raise RuntimeError('Safe PID handles unavailable')
         rows = self.unknown_candidates()
@@ -383,6 +389,100 @@ class ContainerGuard:
                 self.engine.write_audit({**event, 'result':'signal-sent'})
             finally: os.close(fd)
         self.unknown_terminated = {k:v for k,v in self.unknown_terminated.items() if k in seen}
+
+    def enforce_unknown_containers(self):
+        """Stop a verified unknown NPU owner's container once per observed instance."""
+        if self.config.get('unknown_npu_action') != 'container':
+            raise ValueError('Unknown container stops require explicit configuration')
+        # A stopped container disappears from the NPU inventory. Reconcile
+        # durable uncertain intents independently, without another stop request.
+        for cid, entry in list(self.entries().items()):
+            prior = entry.get('unknown_container_interception', {})
+            if not prior or prior.get('result') == '已自动停止': continue
+            try:
+                current = self.engine.docker.inspect(cid)
+                state = current.get('State', {})
+                started = state.get('StartedAt')
+                stopped = current.get('Id') == cid and (state.get('Running') is False
+                    or (isinstance(started,str) and bool(started) and started != prior['container_started_at']))
+            except ControlError as error:
+                if error.status != 404: raise
+                stopped = True
+            if stopped: self.finish_unknown_container(entry, cid, prior, True)
+        groups = {}
+        for row in self.unknown_candidates():
+            if row.get('container_id'):
+                groups.setdefault(row['container_id'], []).append(row)
+        for cid, members in groups.items():
+            entry = self.entries().get(cid, {})
+            if entry.get('whitelisted') or entry.get('personnel_whitelisted'): continue
+            prior = entry.get('unknown_container_interception', {})
+            try: info = self.engine.docker.inspect(cid)
+            except ControlError as error:
+                if error.status != 404: raise
+                if prior and prior.get('result') != '已自动停止':
+                    self.finish_unknown_container(entry, cid, prior, True)
+                continue
+            if info.get('Id') != cid or self.protected(info): continue
+            state = info.get('State', {})
+            started = state.get('StartedAt')
+            if prior and prior.get('container_started_at') == started:
+                if state.get('Running') is False and prior.get('result') != '已自动停止':
+                    self.finish_unknown_container(entry, cid, prior, True)
+                continue  # Persisted uncertain attempts are reconciled, never blindly retried.
+            if not state.get('Running') or not started: continue
+            pids = self.engine.docker.pids(cid) & self.engine.get_npu()
+            matching = [row for row in members if row.get('process_key') and row['pid'] in pids
+                        and row['started_at'] == started and self.identity_check(row)]
+            if not matching: continue
+            fresh = {(row['container_id'], row['started_at'], row['pid'], row['process_key'])
+                     for row in self.unknown_candidates()}
+            pids = self.engine.docker.pids(cid) & self.engine.get_npu()
+            matching = [row for row in matching if row['pid'] in pids and self.identity_check(row)
+                        and (cid, started, row['pid'], row['process_key']) in fresh]
+            current = self.engine.docker.inspect(cid)
+            if (not matching or current.get('Id') != cid or self.protected(current)
+                    or not current.get('State', {}).get('Running')
+                    or current['State'].get('StartedAt') != started): continue
+            event = {'action':'container.guard.stop', 'node':self.engine.config['node'],
+                     'container_id':cid, 'container':current.get('Name','').lstrip('/'),
+                     'started_at':started, 'actor':{'id':'container-guard','login':'container-guard'},
+                     'reason':'no-employee-evidence', 'npu_pids':sorted({r['pid'] for r in matching})}
+            self.engine.write_audit({**event, 'result':'requested'})
+            entry = self.entries().setdefault(cid, {'container':event['container'], 'employee_ids':[],
+                                                    'marked_at':None, 'whitelisted':False})
+            record = {'container_started_at':started, 'attempted_at':time.time(),
+                      'attempts':prior.get('attempts',0)+1, 'stops':prior.get('stops',0),
+                      'pids':event['npu_pids'], 'result':'停止结果待核实'}
+            entry['unknown_container_interception'] = record
+            entry['container'] = event['container']
+            entry['last_result'] = '无工号 NPU · 容器停止结果待核实'
+            if hasattr(self, 'record_display'):
+                self.record_display(entry, 'container', entry['last_result'], new_attempt=True)
+            self.save()  # An uncertain state write must prevent the Docker action.
+            try:
+                self.engine.docker.stop(cid)
+                try: stopped = self.engine.docker.inspect(cid).get('State',{}).get('Running') is False
+                except ControlError as error:
+                    if error.status != 404: raise
+                    stopped = True
+            except Exception:
+                self.engine.write_audit({**event, 'result':'uncertain'})
+                self.save()
+                continue
+            self.finish_unknown_container(entry, cid, record, stopped)
+
+    def finish_unknown_container(self, entry, cid, record, stopped):
+        record['result'] = '已自动停止' if stopped else '停止结果待核实'
+        record['last_at'] = time.time()
+        if stopped: record['stops'] += 1
+        entry['last_result'] = '无工号 NPU · 容器'+record['result']
+        if hasattr(self, 'record_display'):
+            self.record_display(entry, 'container', entry['last_result'], completed=stopped)
+        self.engine.write_audit({'action':'container.guard.stop', 'node':self.engine.config['node'],
+            'container_id':cid, 'container':entry['container'], 'started_at':record['container_started_at'],
+            'reason':'no-employee-evidence', 'result':'stopped' if stopped else 'state-changed'})
+        self.save()
 
     def record_unknown_interception(self, row, info, signal_name, result, new_attempt=False):
         """Persist a bounded process-action summary without marking a container stop."""
