@@ -129,6 +129,19 @@ class StoreTests(unittest.TestCase):
         self.reserve(self.snapshot(kind='ready',job='job',offer_id='offer'))
         self.assertEqual(queued(self.path,1000),[])
 
+    def test_ready_minute_phase_keys_share_configured_repeat_floor(self):
+        def reserve_phase(phase):
+            now=1000+phase*60
+            snapshot=self.snapshot(now,key='task:job:ready:offer:'+str(phase),job='job',offer_id='offer',
+                                   kind='ready' if not phase else 'ready-reminder')
+            reserve_notices(self.path,snapshot,{'a00000001'},900,now,repeat_floor_seconds=300)
+        reserve_phase(0);self.attempt_all(1000)
+        for phase in (1,2,3,4):
+            reserve_phase(phase);self.assertEqual(queued(self.path,1000+phase*60),[])
+        reserve_phase(5)
+        self.assertEqual(len(queued(self.path,1300)),1)
+        self.attempt_all(1300)
+
 
 if __name__=='__main__':
     unittest.main()

@@ -13,8 +13,10 @@ from aiohttp import ClientSession, ClientTimeout, web
 from hub_core import allow_query, fresh, init_db, parse_sender, relevant, report, reserve_delivery, resources
 from publisher import synchronize
 from notification_store import init_notices, reserve_notices, queued, begin_attempt, accepted, rejected
+from notification_store import defer_attempt
+from delivery_budget import DeliveryBudget,DeliveryDeferred
 from mobile_commands import MobileCommands,HELP
-from group_notifications import initialize as initialize_groups,reserve as reserve_groups,message as group_message,extension_message
+from group_notifications import initialize as initialize_groups,reserve as reserve_groups,message as group_message,extension_message,defer as defer_group
 
 LOG = logging.getLogger('welink-hub')
 
@@ -61,15 +63,28 @@ class Hub:
         init_db(config['database'])
         init_notices(config['database'])
         initialize_groups(config['database'])
+        self.send_lock=asyncio.Lock()
+        self.send_budget=DeliveryBudget(config['database'],config.get('send_daily_budget',0))
         self.mobile=MobileCommands(self) if config.get('mobile_commands',{}).get('enabled') else None
 
     async def send(self, employee, content):
+        async with self.send_lock:
+            if not self.send_budget.reserve():raise DeliveryDeferred('Sender cooldown or quota')
+            return await self._send(employee,content)
+
+    async def _send(self, employee, content):
         token = Path(self.config['token_file']).read_text(encoding='utf-8').strip()
         if not token.startswith(self.config['owner'] + '_'):
             raise ValueError('Credential owner mismatch')
         async with self.http.post(self.config['send_url'], json={
                 'content': content, 'receiver': employee, 'auth': token},
                 allow_redirects=False) as response:
+            if response.status==429:
+                try:delay=max(900,min(86400,float(response.headers.get('Retry-After',900))))
+                except (TypeError,ValueError):delay=900
+                self.send_budget.throttled(delay)
+                LOG.warning('Platform HTTP429; sender cooldown %.0f seconds; delivery definitely rejected',delay)
+                raise DeliveryDeferred('Platform throttled')
             body = await response.json(content_type=None)
             if response.status != 200 or not isinstance(body, dict) or body.get('status') != 'ok':
                 raise DeliveryRejected(response.status,body)
@@ -117,6 +132,7 @@ class Hub:
             await asyncio.sleep(5)
 
     async def group_notices(self):
+        if self.send_budget.delay():return
         if not self.config.get('reminders_enabled',False):return
         channels=[self.config.get('group_notifications',{}),*self.config.get('group_notification_channels',[])]
         for config in channels:
@@ -126,6 +142,9 @@ class Hub:
             for item in reserve_groups(self.config['database'],snapshot,config):
                 content=extension_message(snapshot,item['extension']) if 'extension' in item else group_message(snapshot,item['violation'])
                 try:await self.send(item['group'],content)
+                except DeliveryDeferred:
+                    defer_group(self.config['database'],item)
+                    continue
                 except Exception as error:
                     LOG.warning('Group reminder delivery unconfirmed: %s',type(error).__name__)
                     continue
@@ -152,7 +171,8 @@ class Hub:
                     recipients.intersection_update(self.config.get('notification_users',[]))
                 reserve_notices(self.config['database'],snapshot,recipients,
                                 self.config.get('notification_source_enabled_at',{}).get(source['id'],self.config.get('notification_events_enabled_at',0)),
-                                legacy_employee=self.config.get('legacy_reminder_employee'))
+                                legacy_employee=self.config.get('legacy_reminder_employee'),
+                                repeat_floor_seconds=self.config.get('notification_repeat_floor_seconds',0))
                 continue
             for row in snapshot['tasks']:
                 if row.get('state') != 'ready' or not row.get('offer_id'):
@@ -174,6 +194,7 @@ class Hub:
                     with closing(sqlite3.connect(self.config['database'])) as db, db:
                         db.execute("UPDATE deliveries SET status='accepted' WHERE event=?", (key,))
                     LOG.info('Ready notification accepted for cluster %s', source['id'])
+        if self.send_budget.delay():return
         semaphore=asyncio.Semaphore(4)
         async def deliver(item):
             async with semaphore:
@@ -190,6 +211,9 @@ class Hub:
                 message='【%s %s】\n%s'%(snapshot['label'],event['title'],event['body'])
                 try:
                     await self.send(item['recipient'],message)
+                except DeliveryDeferred:
+                    defer_attempt(self.config['database'],item['event'])
+                    return
                 except DeliveryRejected as error:
                     rejected(self.config['database'],item['event'])
                     LOG.warning('Notification rejected cluster=%s kind=%s reason=%s',item['cluster'],event['kind'],error.detail)
@@ -258,7 +282,9 @@ class Hub:
 
     async def healthz(self, _request):
         states = {s['id']: 'ok' if self.snapshot(s['id']) else 'unavailable' for s in self.config['sources']}
-        return web.json_response({'status': 'ok' if all(v == 'ok' for v in states.values()) else 'degraded',
+        cooldown=self.send_budget.delay()
+        return web.json_response({'status': 'ok' if all(v == 'ok' for v in states.values()) and not cooldown else 'degraded',
+                                  'notification_delivery':{'status':'cooldown' if cooldown else 'available','retry_after_seconds':round(cooldown)},
                                   'sources': states, 'read_only': self.mobile is None,
                                   'mobile_actions':['release','defer'] if self.mobile else []})
 

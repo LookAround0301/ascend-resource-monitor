@@ -9,6 +9,7 @@ import unittest
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
 from aiohttp.test_utils import TestClient, TestServer
 from hub import Hub,DeliveryRejected
+from delivery_budget import DeliveryDeferred
 
 
 class FakeHub(Hub):
@@ -106,6 +107,19 @@ class CallbackTest(unittest.IsolatedAsyncioTestCase):
             key='unregistered:1',kind='unregistered',title='test',body='test',valid_until=now+60)])
         await self.hub.notices()
         self.assertEqual(self.hub.sent,[])
+
+    async def test_definite_throttle_keeps_current_notice_for_later_delivery(self):
+        now=time.time();self.hub.config.update(notification_sources=['test'],notification_all_users=True)
+        self.hub.cache['test'].update(notifications_version=1,notifications_generated_at=now,
+            notification_recipients=['u00000001'],notifications=[dict(recipient='u00000001',
+            key='ready:test',kind='ready',title='Ready',body='Test',job='test',valid_until=now+60)])
+        original=self.hub.send
+        async def throttled(*args):raise DeliveryDeferred('Definite rejection')
+        self.hub.send=throttled
+        await self.hub.notices();self.assertEqual(self.hub.sent,[])
+        self.hub.send=original
+        await self.hub.notices();await self.hub.notices()
+        self.assertEqual(len(self.hub.sent),1)
 
     async def test_rejection_diagnostics_do_not_expose_recipient_or_token(self):
         error=DeliveryRejected(200,dict(status='error',message='receiver unsubscribe',

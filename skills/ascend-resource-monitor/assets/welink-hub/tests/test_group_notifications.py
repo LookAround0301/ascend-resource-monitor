@@ -12,7 +12,7 @@ sys.path.insert(0,str(ROOT.parent/'runtime'));sys.path.insert(0,str(ROOT/'src'))
 from queue_monitor import QueueMonitor
 from queue_group_alerts import violations
 from hub_core import init_db
-from group_notifications import initialize,reserve
+from group_notifications import initialize,reserve,defer
 
 
 class CandidateTests(unittest.TestCase):
@@ -123,6 +123,18 @@ class ObservationTests(unittest.TestCase):
         self.assertEqual(len(reserve(self.path,snapshot,self.config,1000)),1)
         initialize(self.path)
         self.assertEqual(reserve(self.path,snapshot,self.config,1015),[])
+
+    def test_definitely_deferred_extension_retries_but_uncertain_send_does_not(self):
+        snapshot=self.snapshot(1000);snapshot['violations']=[]
+        snapshot['extensions']=[dict(id='extension:abc:2',at=1000)]
+        first=reserve(self.path,snapshot,self.config,1000)
+        self.assertEqual(len(first),1)
+        self.assertEqual(reserve(self.path,snapshot,self.config,1010),[])
+        defer(self.path,first[0])
+        retried=reserve(self.path,snapshot,self.config,1015)
+        self.assertEqual(len(retried),1)
+        self.assertEqual(retried[0]['event'],first[0]['event'])
+        self.assertEqual(reserve(self.path,snapshot,self.config,1020),[])
 
 
 if __name__=='__main__':unittest.main()

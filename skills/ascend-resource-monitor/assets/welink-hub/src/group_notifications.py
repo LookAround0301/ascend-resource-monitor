@@ -49,7 +49,7 @@ def reserve(path,snapshot,config,now=None):
                 last=now
                 key='group:'+scope+':'+str(int(now*1000))
                 db.execute('INSERT INTO deliveries VALUES (?,?,?)',(key,now,'attempted'))
-                result.append(dict(event=key,group=str(config['group']),violation=event))
+                result.append(dict(event=key,group=str(config['group']),violation=event,scope=scope,reserved_at=now))
             db.execute('INSERT OR REPLACE INTO group_observations (scope,event,first_sample,last_sample,samples,active,last_attempt,channel,node) VALUES (?,?,?,?,?,?,?,?,?)',
                        (scope,event['id'],first,sample,count,1,last,channel,event['node']))
         fresh=set(snapshot.get('fresh_nodes',snapshot.get('nodes',[])))
@@ -59,9 +59,18 @@ def reserve(path,snapshot,config,now=None):
         for event in snapshot.get('extensions',[]):
             if not -30<=now-event['at']<=86400 or event['at']<config.get('enabled_at',0):continue
             key='group-extension:'+channel+':'+event['id']
-            if db.execute('INSERT OR IGNORE INTO deliveries VALUES (?,?,?)',(key,now,'attempted')).rowcount:
+            inserted=db.execute('INSERT OR IGNORE INTO deliveries VALUES (?,?,?)',(key,now,'attempted')).rowcount
+            retry=db.execute("UPDATE deliveries SET status='attempted',created=? WHERE event=? AND status='deferred'",(now,key)).rowcount
+            if inserted or retry:
                 result.append(dict(event=key,group=str(config['group']),extension=event))
     return result
+
+
+def defer(path,item):
+    with closing(sqlite3.connect(path,timeout=5)) as db,db:
+        db.execute("UPDATE deliveries SET status='deferred' WHERE event=? AND status='attempted'",(item['event'],))
+        if item.get('scope'):
+            db.execute('UPDATE group_observations SET last_attempt=0 WHERE scope=? AND last_attempt=?',(item['scope'],item['reserved_at']))
 
 
 def message(snapshot,event):

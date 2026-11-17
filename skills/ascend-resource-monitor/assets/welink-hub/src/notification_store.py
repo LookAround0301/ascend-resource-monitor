@@ -19,7 +19,7 @@ def init_notices(path):
             expires REAL,status TEXT,created REAL)''')
 
 
-def reserve_notices(path,snapshot,recipients,enabled_at,now=None,legacy_employee=None):
+def reserve_notices(path,snapshot,recipients,enabled_at,now=None,legacy_employee=None,repeat_floor_seconds=0):
     now=time.time() if now is None else now
     cluster=snapshot['cluster']
     if (snapshot.get('notifications_version')!=1 or not
@@ -30,6 +30,8 @@ def reserve_notices(path,snapshot,recipients,enabled_at,now=None,legacy_employee
         if event['recipient'] not in recipients or event['valid_until']<=now:
             continue
         scope=event.get('scope') or event['key']
+        if repeat_floor_seconds and event['kind'] in ('ready','ready-reminder') and event.get('offer_id'):
+            scope='ready-offer:'+event['job']+':'+event['offer_id']
         live[(event['recipient'],scope)]=event
     with closing(sqlite3.connect(path,timeout=5)) as db,db:
         db.row_factory=sqlite3.Row
@@ -45,6 +47,8 @@ def reserve_notices(path,snapshot,recipients,enabled_at,now=None,legacy_employee
             sequence=old['sequence'] if old and old['live'] else 0
             kind=old['last_kind'] if old and old['live'] else ''
             repeated=max(0,float(event.get('repeat_seconds') or 0))
+            if repeat_floor_seconds and event['kind']=='ready-reminder':repeated=max(repeated,repeat_floor_seconds)
+            if repeated:repeated=max(repeated,repeat_floor_seconds)
             escalated=bool(kind=='overdue-nonblocking' and event['kind'] in BLOCKING)
             historical=(bool(first and event.get('historical')) or
                         bool(event.get('occurred_at') and event['occurred_at']<enabled_at))
@@ -63,7 +67,9 @@ def reserve_notices(path,snapshot,recipients,enabled_at,now=None,legacy_employee
                 sequence+=1
                 delivery='notice:%s:%s:%s:%s:%s'%(cluster,recipient,scope,episode,sequence)
                 payload=dict(event)
+                payload['scope']=scope
                 payload['_episode']=episode
+                payload['_sequence']=sequence
                 if escalated:
                     payload['title']=('超时任务共同阻塞' if event['kind']=='overdue-joint' else
                                       '超时任务阻塞后续预约' if event['kind']=='overdue-dependent' else '超时任务已转为瓶颈')
@@ -87,7 +93,7 @@ def queued(path,now=None):
     with closing(sqlite3.connect(path,timeout=5)) as db,db:
         db.execute("UPDATE notice_outbox SET status='expired' WHERE status='queued' AND expires<=?",(now,))
         return [dict(event=r[0],cluster=r[1],recipient=r[2],payload=json.loads(r[3])) for r in db.execute(
-            "SELECT event,cluster,recipient,payload FROM notice_outbox WHERE status='queued' AND expires>? ORDER BY created,event LIMIT 200",(now,))]
+            "SELECT event,cluster,recipient,payload FROM notice_outbox WHERE status='queued' AND expires>? ORDER BY CASE json_extract(payload,'$.kind') WHEN 'ready' THEN 0 WHEN 'started' THEN 0 WHEN 'missed-cancel' THEN 0 WHEN 'overtime-release' THEN 0 ELSE 1 END,created,event LIMIT 200",(now,))]
 
 
 def begin_attempt(path,event,now=None):
@@ -98,9 +104,10 @@ def begin_attempt(path,event,now=None):
         if not row:
             return False
         payload=json.loads(row[2])
-        state=db.execute('SELECT live,episode FROM notice_state WHERE cluster=? AND recipient=? AND scope=?',
+        state=db.execute('SELECT live,episode,last_kind,sequence FROM notice_state WHERE cluster=? AND recipient=? AND scope=?',
                          (row[0],row[1],payload.get('scope') or payload['key'])).fetchone()
-        if not state or not state[0] or state[1]!=payload['_episode']:
+        if (not state or not state[0] or state[1]!=payload['_episode'] or state[2]!=payload['kind']
+                or ('_sequence' in payload and state[3]!=payload['_sequence'])):
             db.execute("UPDATE notice_outbox SET status='cancelled' WHERE event=?",(event,))
             return False
         # Commit before the HTTP call; unknown outcomes are not blindly retried.
@@ -115,3 +122,8 @@ def accepted(path,event):
 def rejected(path,event):
     with closing(sqlite3.connect(path,timeout=5)) as db,db:
         db.execute("UPDATE notice_outbox SET status='rejected' WHERE event=? AND status='attempted'",(event,))
+
+
+def defer_attempt(path,event):
+    with closing(sqlite3.connect(path,timeout=5)) as db,db:
+        db.execute("UPDATE notice_outbox SET status='queued' WHERE event=? AND status='attempted'",(event,))
