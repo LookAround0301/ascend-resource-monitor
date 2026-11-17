@@ -507,15 +507,14 @@ class UnifiedQueue:
                        if row['state'] == 'active' and row['activated'] and row['requested_seconds'] else
                        row['claim_before'] + row['requested_seconds'] + self.buffer
                        if row['state'] == 'ready' and row['claim_before'] else None)
-                if row.get('backfill_end_before'):
-                    if row['state']=='ready':end=row['backfill_end_before']
-                    elif row['activated'] and row['requested_seconds']:end=row['activated']+row['requested_seconds']
+                if row['state']=='ready' and row.get('backfill_end_before'):
+                    end=row['backfill_end_before']+self.buffer
                 if row['state'] == 'active' and row['activated'] and row['requested_seconds'] and now >= row['activated'] + row['requested_seconds']:
                     if self.overtime_control and not row['not_before'] and now<row['activated']+row['requested_seconds']+600:
                         end=row['activated']+row['requested_seconds']+600
                         direct_end=end
                     else:end=direct_end=None
-                else:direct_end = end if end is None or row.get('backfill_end_before') else end-self.buffer
+                else:direct_end = end if end is None else end-self.buffer
                 for node, cards in json.loads(row['allocations']).items():
                     busy.append({'node': node, 'cards': cards, 'start': row['activated'] or row['created'], 'end': end, 'direct_end': direct_end})
             else:

@@ -64,25 +64,19 @@ class NormalPriorityTests(unittest.TestCase):
         rows={r['id']:r for r in self.queue.view(self.user)['tasks']}
         self.assertEqual(rows[later]['state'],'ready')
         self.assertTrue(rows[later]['backfill_planned'])
-        self.assertEqual(rows[later]['backfill_end_before'],self.stamp('2026-11-07T12:00:00'))
-        self.assertEqual(rows[later]['effective_requested_seconds'],3000)
+        self.assertEqual(rows[later]['backfill_end_before'],self.stamp('2026-11-07T11:50:00'))
+        self.assertEqual(rows[later]['effective_requested_seconds'],2400)
         self.assertEqual(rows[first]['estimated_start'],self.stamp('2026-11-07T12:00:00'))
         self.clock.return_value+=300
         offer=next(r for r in self.queue.view(self.user)['tasks'] if r['id']==later)
-        self.assertEqual(offer['effective_requested_seconds'],2700)
+        self.assertEqual(offer['effective_requested_seconds'],2100)
         self.queue.action(self.user,later,'claim',offer['offer_id'])
         row=next(r for r in self.queue.view(self.user)['tasks'] if r['id']==later)
-        self.assertEqual(row['requested_seconds'],2700)
-        self.assertEqual(row['activated']+row['requested_seconds'],self.stamp('2026-11-07T12:00:00'))
-        rows={r['id']:r for r in self.queue.view(self.user)['tasks']}
-        self.assertEqual(rows[first]['estimated_start'],self.stamp('2026-11-07T12:00:00'))
-        self.clock.return_value=self.stamp('2026-11-07T12:00:00')
+        self.assertEqual(row['requested_seconds'],2100)
+        self.clock.return_value=self.stamp('2026-11-07T11:50:00')
         with self.assertRaises(ControlError):self.queue.action(self.user,later,'extend',extension_minutes=10)
+        self.clock.return_value=self.stamp('2026-11-07T12:00:00')
         self.queue.tick()
-        rows={r['id']:r for r in self.queue.view(self.user)['tasks']}
-        self.assertEqual(rows[later]['state'],'active')
-        self.assertEqual(rows[first]['state'],'queued')
-        self.queue.action(self.user,later,'finish')
         rows={r['id']:r for r in self.queue.view(self.user)['tasks']}
         self.assertNotIn(later,rows)
         self.assertEqual(rows[first]['state'],'ready')
@@ -90,7 +84,7 @@ class NormalPriorityTests(unittest.TestCase):
     def test_minimum_duration_and_opt_out(self):
         self.clock.return_value=self.stamp('2026-11-07T11:10:00')
         self.add(machine='dual',cards=16,avoid_slots=[22,23])
-        later=self.add(backfill_min_seconds=3300)
+        later=self.add(backfill_min_seconds=2700)
         self.assertEqual(next(r for r in self.queue.view(self.user)['tasks'] if r['id']==later)['state'],'queued')
         self.queue.update_backfill(self.user,later,1200)
         self.assertEqual(next(r for r in self.queue.view(self.user)['tasks'] if r['id']==later)['state'],'ready')
@@ -107,14 +101,14 @@ class NormalPriorityTests(unittest.TestCase):
         self.assertEqual(rows[first]['estimated_start'],self.stamp('2026-11-07T12:00:00'))
         for job in (a,b):
             self.assertEqual(rows[job]['state'],'ready')
-            self.assertEqual(rows[job]['effective_requested_seconds'],3000)
+            self.assertEqual(rows[job]['effective_requested_seconds'],2400)
 
     def test_late_confirmation_never_accepts_less_than_minimum(self):
         self.clock.return_value=self.stamp('2026-11-07T11:10:00')
         self.add(machine='dual',cards=16,avoid_slots=[22,23])
         later=self.add(backfill_min_seconds=1800)
         offer=next(r for r in self.queue.view(self.user)['tasks'] if r['id']==later)
-        self.clock.return_value=self.stamp('2026-11-07T11:30:02')
+        self.clock.return_value=self.stamp('2026-11-07T11:20:02')
         with self.assertRaises(ControlError):self.queue.action(self.user,later,'claim',offer['offer_id'])
         self.assertEqual(next(r for r in self.queue.view(self.user)['tasks'] if r['id']==later)['state'],'queued')
 
