@@ -362,23 +362,52 @@ class UnifiedQueue:
         missed-=removed
         if not missed:
             return
-        # Move missed offers back within their own task type. Keep the slots
-        # of other task types in place so expiry cannot reshuffle their priority.
+        # Yield to the first later request that depends on the missed offer's
+        # cards. An unrelated next row must not cause an immediate re-offer.
+        # Keep other task types and already-issued offers in place.
+        rows=[dict(row) for row in db.execute("SELECT * FROM unified_tasks WHERE state IN ('queued','ready','active') ORDER BY queue_order,rowid")]
+        reduced=[row for row in rows if row['id'] not in missed]
+        busy,waiting=self._planning_inputs(reduced,now=now)
+        baseline={p['id']:p for p in plan(self.nodes,busy,waiting,now,self.buffer)}
+        # Unknown active releases can mask a shared resource dependency. Use
+        # their eventual release only to identify whom to yield to; the real
+        # scheduler continues to hold those allocations until released.
+        unknown={row['id'] for row in reduced if row['state']=='active'
+                 and any(item['end'] is None for item in self._planning_inputs([row],now=now)[0])}
+        future_busy,future_waiting=self._planning_inputs([row for row in reduced if row['id'] not in unknown],now=now)
+        future={p['id']:p for p in plan(self.nodes,future_busy,future_waiting,now,self.buffer)} if unknown else baseline
+        current={row['id']:row for row in rows}
         groups = {(night,urgent): [] for night in (False,True) for urgent in (False,True)}
         for row in pending:
             groups[(bool(row['not_before']),bool(row['urgent']))].append(row)
         for key, group in groups.items():
-            order, i = [], 0
-            while i < len(group):
-                if group[i]['id'] not in missed:
-                    order.append(group[i]); i += 1; continue
-                start = i
-                while i < len(group) and group[i]['id'] in missed:
-                    i += 1
-                if i < len(group):
-                    order.append(group[i]); order.extend(group[start:i]); i += 1
-                else:
-                    order.extend(group[start:i])
+            after={};moved=set()
+            for i,row in enumerate(group):
+                if row['id'] not in missed:continue
+                allocations=json.loads(row['allocations'])
+                held=[{'node':node,'cards':cards,'start':now,'end':None,'direct_end':None}
+                      for node,cards in allocations.items() if cards]
+                blocked={p['id']:p for p in plan(self.nodes,busy+held,waiting,now,self.buffer)}
+                future_blocked=({p['id']:p for p in plan(self.nodes,future_busy+held,future_waiting,now,self.buffer)}
+                                if unknown else blocked)
+                for candidate in group[i+1:]:
+                    job=candidate['id']
+                    if job in missed or current[job]['state']!='queued':continue
+                    prediction=baseline.get(job,{})
+                    held_prediction=blocked.get(job,{})
+                    if prediction.get('start') is None:
+                        prediction=future.get(job,{})
+                        held_prediction=future_blocked.get(job,{})
+                    start=prediction.get('start')
+                    if start is None or not any(set(cards).intersection(allocations.get(node,[]))
+                                                for node,cards in prediction.get('allocations',{}).items()):continue
+                    held_start=held_prediction.get('start')
+                    if held_start is None or held_start>start:
+                        after.setdefault(job,[]).append(row);moved.add(row['id']);break
+            order=[]
+            for row in group:
+                if row['id'] in moved:continue
+                order.append(row);order.extend(after.get(row['id'],[]))
             groups[key] = iter(order)
         for position, slot in enumerate(pending, 1):
             row = next(groups[(bool(slot['not_before']),bool(slot['urgent']))])

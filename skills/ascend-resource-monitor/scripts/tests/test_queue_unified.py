@@ -233,7 +233,7 @@ class UnifiedWindowTests(unittest.TestCase):
         self.assertEqual(set(row['allocations']), {'b'})
         self.assertEqual(len(row['allocations']['b']), 3)
 
-    def test_ten_minute_timeout_moves_only_one_position(self):
+    def test_ten_minute_timeout_yields_to_first_blocked_request(self):
         with patch('queue_unified.time.time', return_value=self.now):
             jobs = [self.add(machine='a', cards=8) for _ in range(3)]
             rows = self.queue.view(self.user)['tasks']
@@ -270,14 +270,53 @@ class UnifiedWindowTests(unittest.TestCase):
             reopened.action(self.user,job,'claim',new['offer_id'])
             self.assertEqual(reopened.view(self.user)['tasks'][0]['state'],'active')
 
-    def test_simultaneous_timeouts_each_move_back_one_place(self):
+    def test_simultaneous_timeouts_yield_to_each_affected_request(self):
         with patch('queue_unified.time.time', return_value=self.now):
             a=self.add(machine='a',cards=8);b=self.add(machine='b',cards=8)
             c=self.add(machine='a',cards=8);d=self.add(machine='b',cards=8)
         with patch('queue_unified.time.time', return_value=self.now+600):
             rows=self.queue.view(self.user)['tasks']
-            self.assertEqual([r['id'] for r in rows],[c,a,b,d])
-            self.assertEqual([r['missed_claims'] for r in rows],[0,1,1,0])
+            self.assertEqual([r['id'] for r in rows],[c,a,d,b])
+            self.assertEqual([r['missed_claims'] for r in rows],[0,1,0,1])
+
+    def test_timeout_skips_unrelated_next_offer_to_first_resource_waiter(self):
+        with patch('queue_unified.time.time',return_value=self.now):
+            a=self.add(machine='a',cards=8)
+        with patch('queue_unified.time.time',return_value=self.now+30):
+            b=self.add(machine='b',cards=8)
+            c=self.add(machine='a',cards=8)
+            old={r['id']:r for r in self.queue.view(self.user)['tasks']}
+        with patch('queue_unified.time.time',return_value=self.now+600):
+            rows=self.queue.view(self.user)['tasks']
+            self.assertEqual([r['id'] for r in rows],[b,c,a])
+            self.assertEqual([r['state'] for r in rows],['ready','ready','queued'])
+            self.assertEqual(rows[0]['offer_id'],old[b]['offer_id'])
+            self.assertEqual(rows[2]['missed_claims'],1)
+
+    def test_short_timeout_can_still_backfill_after_yielding_to_dual_waiter(self):
+        with patch('queue_unified.time.time',return_value=self.now):
+            active=self.add(machine='b',cards=8,requested_seconds=3600)
+            self.queue.action(self.user,active,'claim')
+            missed=self.add(machine='a',cards=8,requested_seconds=60)
+            waiter=self.add(machine='dual',cards=16,requested_seconds=3600)
+        with patch('queue_unified.time.time',return_value=self.now+600):
+            rows={r['id']:r for r in self.queue.view(self.user)['tasks']}
+            self.assertLess(rows[waiter]['queue_order'],rows[missed]['queue_order'])
+            self.assertEqual(rows[waiter]['state'],'queued')
+            self.assertEqual(rows[missed]['state'],'ready')
+            self.assertEqual(rows[missed]['missed_claims'],1)
+
+    def test_unknown_other_release_does_not_mask_joint_resource_waiter(self):
+        with patch('queue_unified.time.time',return_value=self.now):
+            active=self.add(machine='b',cards=8,requested_seconds=60)
+            self.queue.action(self.user,active,'claim')
+            missed=self.add(machine='a',cards=8,requested_seconds=60)
+            waiter=self.add(machine='dual',cards=16,requested_seconds=3600)
+        with patch('queue_unified.time.time',return_value=self.now+600):
+            rows={r['id']:r for r in self.queue.view(self.user)['tasks']}
+            self.assertLess(rows[waiter]['queue_order'],rows[missed]['queue_order'])
+            self.assertEqual(rows[active]['state'],'active')
+            self.assertEqual(rows[missed]['missed_claims'],1)
 
     def test_claimed_work_is_not_postponed_after_ten_minutes(self):
         with patch('queue_unified.time.time', return_value=self.now):

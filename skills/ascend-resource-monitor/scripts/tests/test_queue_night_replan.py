@@ -133,6 +133,19 @@ class NormalPriorityTests(unittest.TestCase):
         other=self.store.user(self.store.register('u23456789','Other','fixture-password'))
         with self.assertRaises(ControlError):self.queue.update_backfill(other,later,0)
 
+    def test_missed_backfill_does_not_move_when_affected_waiter_is_earlier(self):
+        self.clock.return_value=self.stamp('2026-11-07T11:10:00')
+        first=self.add(machine='dual',cards=16,avoid_slots=[22,23])
+        later=self.add(backfill_min_seconds=1200)
+        before={r['id']:r for r in self.queue.view(self.user)['tasks']}
+        self.assertEqual(before[later]['state'],'ready')
+        self.clock.return_value+=600
+        rows=self.queue.view(self.user)['tasks']
+        self.assertEqual([r['id'] for r in rows],[first,later])
+        self.assertEqual(rows[1]['state'],'ready')
+        self.assertEqual(rows[1]['missed_claims'],1)
+        self.assertNotEqual(rows[1]['offer_id'],before[later]['offer_id'])
+
     def with_carryover_cutoff(self, hour=10):
         self.queue=UnifiedQueue(self.store,['a','b'],timezone='Asia/Shanghai',strict_nights=True,
                                 overtime_control=True,normal_priority=True,night_carryover_cutoff_hour=hour)

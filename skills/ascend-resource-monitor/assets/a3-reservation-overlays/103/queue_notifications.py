@@ -37,8 +37,8 @@ def task_events(row,now,state):
     # Separate keys let the relay retain both rather than lose one between polls.
     if row.get('missed_claims'):
         suffix=('；累计 '+str(state['missed_claim_limit'])+' 次未开始将自动取消' if state.get('missed_claim_limit') else '')
-        add('deferred:'+str(row['missed_claims']),'deferred','预约已顺延一位',
-            '超过 10 分钟未开始，这次分配已释放，预约向后顺延一位'+suffix+'。请查看新的排队状态。',historical=True)
+        add('deferred:'+str(row['missed_claims']),'deferred','预约已重新排程',
+            '超过 10 分钟未开始，这次分配已释放，预约按资源阻挡关系重新排程'+suffix+'。请查看新的排队状态。',historical=True)
     if row['state']=='ready' and row.get('can_claim'):
         remaining=max(0,row['claim_before']-now)
         if remaining<=0:
@@ -52,7 +52,7 @@ def task_events(row,now,state):
         if state.get('missed_claim_limit'):
             body+='累计 '+str(state['missed_claim_limit'])+' 次分配后 10 分钟未开始将自动取消预约。'
         elif not row.get('backfill_planned'):
-            body+='超时未开始预约将向后顺延一位。'
+            body+='超时未开始预约会让位给其阻挡的首个后续任务。'
         if state.get('overtime_control'):
             body+='登记释放不会停止实际进程，请先查看卡使用情况。'
         add('ready:'+offer+':'+phase,'ready' if phase=='0' else 'ready-reminder',
