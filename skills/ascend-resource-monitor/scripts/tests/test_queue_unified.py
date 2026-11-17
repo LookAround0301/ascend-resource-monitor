@@ -108,6 +108,50 @@ class UnifiedWindowTests(unittest.TestCase):
         self.assertEqual(too_long[0]['start'], 3600)
         self.assertGreaterEqual(too_long[1]['start'], 3600 + 3600 + 600)
 
+    def test_short_backfill_uses_avoid_window_end_without_buffer(self):
+        for capacity in (8, 16):
+            nodes={'a':list(range(capacity)),'b':list(range(capacity))}
+            first={'id':'first','cards':capacity,'dual':True,'seconds':3600,'avoid_windows':[(0,3600)]}
+            later={'id':'later','cards':capacity,'allowed_nodes':['a'],'seconds':4000,'backfill_min_seconds':600}
+            rows=plan(nodes,[],[first,later],0.25,600)
+            self.assertEqual(rows[0]['start'],3600)
+            self.assertEqual(rows[1]['start'],0.25)
+            self.assertEqual(rows[1]['seconds'],3599)
+            self.assertEqual(rows[1]['backfill_end_before'],3600)
+            self.assertTrue(rows[1]['backfill_no_buffer'])
+
+    def test_backfill_keeps_buffer_if_avoidance_did_not_cause_start(self):
+        nodes={'a':list(range(8)),'b':list(range(8))}
+        first={'id':'first','cards':8,'dual':True,'seconds':3600,'avoid_windows':[(0,3600)]}
+        later={'id':'later','cards':8,'allowed_nodes':['b'],'seconds':4000,'backfill_min_seconds':600}
+        busy=[{'node':'a','cards':list(range(8)),'start':0,'end':3600}]
+        rows=plan(nodes,busy,[first,later],0,600)
+        self.assertEqual(rows[0]['start'],3600)
+        self.assertEqual(rows[1]['seconds'],3000)
+        self.assertEqual(rows[1]['backfill_end_before'],3000)
+        self.assertNotIn('backfill_no_buffer',rows[1])
+
+    def test_avoidance_still_determines_start_if_cards_free_during_window(self):
+        nodes={'a':list(range(8)),'b':list(range(8))}
+        first={'id':'first','cards':8,'dual':True,'seconds':3600,'avoid_windows':[(0,3600)]}
+        later={'id':'later','cards':8,'allowed_nodes':['b'],'seconds':4000,'backfill_min_seconds':600}
+        busy=[{'node':'a','cards':list(range(8)),'start':0,'end':3000}]
+        rows=plan(nodes,busy,[first,later],0,600)
+        self.assertEqual(rows[0]['start'],3600)
+        self.assertEqual(rows[1]['seconds'],3600)
+        self.assertEqual(rows[1]['backfill_end_before'],3600)
+        self.assertTrue(rows[1]['backfill_no_buffer'])
+
+    def test_backfill_retains_buffer_for_any_other_overlapping_reservation(self):
+        nodes={'a':list(range(8)),'b':list(range(8))}
+        jobs=[{'id':'avoid','cards':8,'seconds':3600,'allowed_nodes':['a'],'avoid_windows':[(0,3600)]},
+              {'id':'fixed','cards':8,'seconds':3600,'allowed_nodes':['b'],'not_before':3600},
+              {'id':'later','cards':8,'dual':True,'seconds':4000,'backfill_min_seconds':600}]
+        rows=plan(nodes,[],jobs,0,600)
+        self.assertEqual(rows[2]['seconds'],3000)
+        self.assertEqual(rows[2]['backfill_end_before'],3000)
+        self.assertNotIn('backfill_no_buffer',rows[2])
+
     def test_unknown_release_does_not_let_later_request_take_required_cards(self):
         nodes={'a':list(range(8)),'b':list(range(8))}
         busy=[{'node':'a','cards':[0], 'start':0,'end':None}]

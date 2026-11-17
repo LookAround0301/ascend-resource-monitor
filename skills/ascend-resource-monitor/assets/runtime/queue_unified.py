@@ -67,6 +67,7 @@ class UnifiedQueue:
                                      ('avoid_slots', "TEXT NOT NULL DEFAULT '[]'"),
                                      ('backfill_min_seconds', 'INTEGER NOT NULL DEFAULT 0'),
                                      ('backfill_end_before', 'REAL NOT NULL DEFAULT 0'),
+                                     ('backfill_no_buffer', 'INTEGER NOT NULL DEFAULT 0'),
                                      ('urgent', 'INTEGER NOT NULL DEFAULT 0'),
                                      ('extension_minutes', 'INTEGER NOT NULL DEFAULT 0'),
                                      ('extension_at', 'REAL NOT NULL DEFAULT 0'),
@@ -355,7 +356,7 @@ class UnifiedQueue:
                 db.execute('DELETE FROM reservations WHERE id=?',(row['id'],))
                 db.execute('DELETE FROM unified_tasks WHERE id=?',(row['id'],))
                 continue
-            db.execute("UPDATE unified_tasks SET state='queued',allocations='{}',claim_before=0,ready_since=0,offer_id='',offer_end_before=0,backfill_end_before=0,missed_claims=missed_claims+? WHERE id=?",
+            db.execute("UPDATE unified_tasks SET state='queued',allocations='{}',claim_before=0,ready_since=0,offer_id='',offer_end_before=0,backfill_end_before=0,backfill_no_buffer=0,missed_claims=missed_claims+? WHERE id=?",
                        (int(row['id'] in missed), row['id']))
         pending=[row for row in pending if row['id'] not in removed]
         missed-=removed
@@ -503,15 +504,18 @@ class UnifiedQueue:
                        row['claim_before'] + row['requested_seconds'] + self.buffer
                        if row['state'] == 'ready' and row['claim_before'] else None)
                 if row['state']=='ready' and row.get('backfill_end_before'):
-                    end=row['backfill_end_before']+self.buffer
+                    end=row['backfill_end_before']+(0 if row.get('backfill_no_buffer') else self.buffer)
+                if row['state']=='active' and row.get('backfill_no_buffer') and row['activated'] and row['requested_seconds']:
+                    end=row['activated']+row['requested_seconds']
                 if row['state'] == 'active' and row['activated'] and row['requested_seconds'] and now >= row['activated'] + row['requested_seconds']:
                     if self.overtime_control and not row['not_before'] and now<row['activated']+row['requested_seconds']+600:
                         end=row['activated']+row['requested_seconds']+600
                         direct_end=end
                     else:end=direct_end=None
-                else:direct_end = end if end is None else end-self.buffer
+                else:direct_end = end if end is None or row.get('backfill_no_buffer') else end-self.buffer
                 for node, cards in json.loads(row['allocations']).items():
-                    busy.append({'node': node, 'cards': cards, 'start': row['activated'] or row['created'], 'end': end, 'direct_end': direct_end})
+                    busy.append({'node': node, 'cards': cards, 'start': row['activated'] or row['created'], 'end': end, 'direct_end': direct_end,
+                                 'avoid_backfill_until':row.get('backfill_end_before') if row.get('backfill_no_buffer') else None})
             else:
                 item = {'id': row['id'], 'cards': row['cards'], 'dual': bool(row['dual']),
                         'seconds': row['requested_seconds'] or 3600, 'not_before': row['not_before'],
@@ -669,7 +673,7 @@ class UnifiedQueue:
                 minimum=row['backfill_min_seconds'] if row['backfill_end_before'] else 60
                 deadline=min([row['claim_before'],self.normal_one_am(now if self.midnight_separation else row['created']),end-minimum+0.001,*future_avoid])
                 if deadline<=now:
-                    db.execute("UPDATE unified_tasks SET state='queued',allocations='{}',claim_before=0,ready_since=0,offer_id='',offer_end_before=0,backfill_end_before=0 WHERE id=?",(row['id'],))
+                    db.execute("UPDATE unified_tasks SET state='queued',allocations='{}',claim_before=0,ready_since=0,offer_id='',offer_end_before=0,backfill_end_before=0,backfill_no_buffer=0 WHERE id=?",(row['id'],))
                 else:
                     db.execute('UPDATE unified_tasks SET claim_before=?,offer_end_before=? WHERE id=?',(deadline,end,row['id']))
         rows = [dict(row) for row in db.execute("SELECT * FROM unified_tasks WHERE state IN ('ready','active','queued') ORDER BY queue_order,rowid")]
@@ -767,8 +771,8 @@ class UnifiedQueue:
                             if not prediction.get('backfill_end_before'):
                                 deadlines.append(earlier['start'] - prediction.get('seconds',row['requested_seconds'] or 3600) - self.buffer)
                 claim_before=min(deadlines)
-                db.execute("UPDATE unified_tasks SET state='ready',allocations=?,claim_before=?,ready_since=?,offer_id=?,offer_end_before=?,backfill_end_before=? WHERE id=? AND state='queued'",
-                           (json.dumps(prediction['allocations']), claim_before, now, secrets.token_hex(16),offer_end,prediction.get('backfill_end_before',0),row['id']))
+                db.execute("UPDATE unified_tasks SET state='ready',allocations=?,claim_before=?,ready_since=?,offer_id=?,offer_end_before=?,backfill_end_before=?,backfill_no_buffer=? WHERE id=? AND state='queued'",
+                           (json.dumps(prediction['allocations']), claim_before, now, secrets.token_hex(16),offer_end,prediction.get('backfill_end_before',0),int(bool(prediction.get('backfill_no_buffer'))),row['id']))
             if prediction:
                 previous.append(prediction)
         if expired:
@@ -1183,7 +1187,7 @@ class UnifiedQueue:
             value=self.validate_backfill(value,row['requested_seconds'])
             now=time.time()
             if row['state']=='ready' and row['backfill_end_before'] and (not value or row['backfill_end_before']-now<value):
-                db.execute("UPDATE unified_tasks SET backfill_min_seconds=?,state='queued',allocations='{}',claim_before=0,ready_since=0,offer_id='',offer_end_before=0,backfill_end_before=0 WHERE id=?",(value,job))
+                db.execute("UPDATE unified_tasks SET backfill_min_seconds=?,state='queued',allocations='{}',claim_before=0,ready_since=0,offer_id='',offer_end_before=0,backfill_end_before=0,backfill_no_buffer=0 WHERE id=?",(value,job))
             else:
                 db.execute('UPDATE unified_tasks SET backfill_min_seconds=? WHERE id=?',(value,job))
             self._schedule(db,now)
@@ -1279,7 +1283,7 @@ class UnifiedQueue:
                 if not 0<=other<len(waiting):
                     raise ControlError(409,'已到等待队列边界')
                 if row['state'] == 'ready':
-                    db.execute("UPDATE unified_tasks SET state='queued',allocations='{}',claim_before=0,ready_since=0,offer_id='' WHERE id=?", (job,))
+                    db.execute("UPDATE unified_tasks SET state='queued',allocations='{}',claim_before=0,ready_since=0,offer_id='',backfill_no_buffer=0 WHERE id=?", (job,))
                 db.execute('UPDATE unified_tasks SET queue_order=? WHERE id=?',(waiting[other]['queue_order'],job))
                 db.execute('UPDATE unified_tasks SET queue_order=? WHERE id=?',(waiting[index]['queue_order'],waiting[other]['id']))
                 self._schedule(db,now)

@@ -39,13 +39,15 @@ def plan(nodes, busy, jobs, now, buffer_seconds=600):
             raise ValueError('invalid busy cards')
         if end <= item['start']:
             raise ValueError('invalid busy interval')
-        intervals.append((node, frozenset(cards), item['start'], end, direct_end))
+        intervals.append((node, frozenset(cards), item['start'], end, direct_end, False, item.get('avoid_backfill_until')))
         if item.get('fixed_night'):
             fixed_nights.append((node, frozenset(cards), item['start']))
 
-    def free(node, start, end, night):
+    def free(node, start, end, night, ignore_backfill_boundary=None):
         used = set()
-        for occupied_node, cards, begin, buffered, direct in intervals:
+        for occupied_node, cards, begin, buffered, direct, _, backfill_boundary in intervals:
+            if ignore_backfill_boundary is not None and backfill_boundary == ignore_backfill_boundary:
+                continue
             finish = direct if night else buffered
             if occupied_node == node and begin < end and start < finish:
                 used.update(cards)
@@ -73,15 +75,15 @@ def plan(nodes, busy, jobs, now, buffer_seconds=600):
             choices.append(((-intact_groups, tuple(map(str, choice))), choice))
         return sorted(choices, key=lambda pair: pair[0])
 
-    def options(job, start, seconds):
+    def options(job, start, seconds, no_buffer=False, ignore_backfill_boundary=None):
         boundary=job.get('clip_finish_before',math.inf)
         # Durations are whole seconds but the clock may have a fractional part.
         # A clipped job can therefore end less than one second before the
         # boundary; do not add a buffer that would overlap the night booking.
         reaches_midnight=(job.get('midnight_separation') and math.isfinite(boundary)
                           and seconds>=math.floor(boundary-start))
-        end = start + seconds + (0 if reaches_midnight else buffer_seconds)
-        available = {node: free(node, start, end, job.get('night', False)) for node in nodes}
+        end = start + seconds + (0 if reaches_midnight or no_buffer else buffer_seconds)
+        available = {node: free(node, start, end, job.get('night', False), ignore_backfill_boundary) for node in nodes}
         count = job['cards']
         if job.get('dual'):
             choices = {node: card_choices(node, count, cards) for node, cards in available.items()}
@@ -105,14 +107,15 @@ def plan(nodes, busy, jobs, now, buffer_seconds=600):
             raise ValueError('invalid job size or duration')
         earliest = max(now, job.get('not_before', now))
         candidates = {earliest}
-        candidates.update((direct if job.get('night') else end) for _, _, _, end, direct in intervals
+        candidates.update((direct if job.get('night') else end) for _, _, _, end, direct, _, _ in intervals
                           if math.isfinite(direct if job.get('night') else end) and (direct if job.get('night') else end) >= earliest)
         avoid=job.get('avoid_windows',())
         def next_permitted(value):
             for begin,end in sorted(avoid):
                 if begin<=value<end:value=end
             return value
-        candidates={next_permitted(value) for value in candidates}
+        raw_candidates=candidates
+        candidates={next_permitted(value) for value in raw_candidates}
         chosen = None
         for start in sorted(candidates):
             if job.get('start_before') and start >= job['start_before']:
@@ -133,7 +136,7 @@ def plan(nodes, busy, jobs, now, buffer_seconds=600):
             minimum=job.get('backfill_min_seconds',0)
             if minimum and not job.get('night'):
                 for prior in prior_reservations:
-                    duration=math.floor(prior['start']-start-buffer_seconds)
+                    duration=math.floor(prior['start']-start-(0 if prior['avoid_forced'] else buffer_seconds))
                     if minimum<=duration<seconds:
                         durations.add(duration)
                         truncation_sources.setdefault(duration,[]).extend((node,frozenset(cards)) for node,cards in prior['allocations'].items())
@@ -145,8 +148,23 @@ def plan(nodes, busy, jobs, now, buffer_seconds=600):
                     available=[allocation for allocation in available
                                if any(cards.intersection(allocation.get(node,()))
                                       for node,cards in truncation_sources[candidate_seconds])]
+                no_buffer=False
+                if not available and minimum and not job.get('night'):
+                    available=options(job,start,candidate_seconds,no_buffer=True)
+                    if candidate_seconds<seconds:
+                        available=[allocation for allocation in available
+                                   if any(cards.intersection(allocation.get(node,()))
+                                          for node,cards in truncation_sources[candidate_seconds])]
+                    end=start+candidate_seconds
+                    def permissible_tail(allocation):
+                        conflicts=[avoid_forced for node,cards,begin,_,_,avoid_forced,_ in intervals
+                                   if end<=begin<end+buffer_seconds
+                                   and cards.intersection(allocation.get(node,()))]
+                        return bool(conflicts) and all(conflicts)
+                    available=[allocation for allocation in available if permissible_tail(allocation)]
+                    no_buffer=bool(available)
                 if available:
-                    chosen=(start,available[0],candidate_seconds)
+                    chosen=(start,available[0],candidate_seconds,no_buffer)
                     break
             if chosen:break
         if chosen is None:
@@ -159,27 +177,37 @@ def plan(nodes, busy, jobs, now, buffer_seconds=600):
                              (job['finish_before'] - job['seconds']) if job.get('finish_before') else math.inf)
                 allowed = set(nodes) if job.get('dual') else set(job.get('allowed_nodes', nodes))
                 unknown = any(node in allowed and not math.isfinite(direct if job.get('night') else end)
-                              for node, _, _, end, direct in intervals)
+                              for node, _, _, end, direct, _, _ in intervals)
                 if latest > earliest and unknown:
                     protect_until = latest + job['seconds'] + buffer_seconds
                     for node in nodes:
                         if node in allowed:
-                            intervals.append((node, frozenset(nodes[node]), earliest, protect_until, protect_until))
+                            intervals.append((node, frozenset(nodes[node]), earliest, protect_until, protect_until, False, None))
                 continue
             # Without a bound for this job, accepting later work can starve it.
             planned.extend({'id': later['id'], 'start': None, 'allocations': {}} for later in jobs[len(planned):])
             break
-        start, allocations,seconds = chosen
-        finish = start + seconds + buffer_seconds
+        start, allocations,seconds,no_buffer = chosen
+        # A coincidental avoid-window end is insufficient: the selected cards
+        # must have been available for the same job at an earlier candidate.
+        avoid_forced=any(t<start and next_permitted(t)==start
+                         and allocations in options(job,t,seconds,ignore_backfill_boundary=start)
+                         for t in raw_candidates)
+        finish = start + seconds + (0 if no_buffer else buffer_seconds)
+        relevant=[p['start'] for p in prior_reservations if p['start']>start and
+                  any(set(cards).intersection(p['allocations'].get(node,())) for node,cards in allocations.items())]
+        backfill_boundary=min(relevant) if no_buffer and relevant else None
         for node, cards in allocations.items():
             direct_end = start + seconds
-            intervals.append((node, frozenset(cards), start, finish, direct_end))
+            intervals.append((node, frozenset(cards), start, finish, direct_end, avoid_forced, backfill_boundary))
         result={'id': job['id'], 'start': start, 'allocations': allocations, 'seconds':seconds}
-        if job.get('backfill_min_seconds') and seconds<job['seconds']:
-            relevant=[p['start'] for p in prior_reservations if p['start']>start and
-                      any(set(cards).intersection(p['allocations'].get(node,())) for node,cards in allocations.items())]
+        if no_buffer:
+            if relevant:
+                result['backfill_end_before']=min(relevant)
+                result['backfill_no_buffer']=True
+        elif job.get('backfill_min_seconds') and seconds<job['seconds']:
             if relevant and start+seconds+buffer_seconds<=min(relevant):
                 result['backfill_end_before']=min(relevant)-buffer_seconds
         planned.append(result)
-        prior_reservations.append({'start':start,'allocations':allocations})
+        prior_reservations.append({'start':start,'allocations':allocations,'avoid_forced':avoid_forced})
     return planned
