@@ -307,6 +307,7 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                     return web.json_response({'people':unified.urgent_users()},headers={'Cache-Control':'no-store','Vary':'Cookie, Authorization'})
                 if operation=='state':
                     state=unified.view(person) if unified else {**store.view(person),'nodes':list(config['nodes']),'server_time':time.time(),'auto_match_employee':auto is not None}
+                    state['agent_reservations_enabled']=bool(unified and settings.get('agent_reservations_enabled') is True)
                     if monitor:state=monitor.decorate(state,unified.continuing(),unified.released_usage())
                     if coordinator:state['process_monitor_errors'].extend(coordinator.status)
                     if monitor and monitor.night_log_error:state['process_monitor_errors'].append(monitor.night_log_error)

@@ -18,6 +18,7 @@ class A3AgentHTTPTests(unittest.IsolatedAsyncioTestCase):
         async def forbidden(*args,**kwargs):raise AssertionError('No host control')
         cfg={'nodes':{'node-101':{},'node-103':{}},'audit_log':str(Path(self.temp.name)/'audit'),
              'task_queue':{'database':str(Path(self.temp.name)/'queue.db'),'unified_queue':True,'cards_per_node':16,'agent_reservations_enabled':True}}
+        self.config=cfg
         self.app=web.Application();self.store=install_queue(self.app,cfg,identity,forbidden,forbidden)
         self.server=TestServer(self.app);await self.server.start_server()
         self.session=ClientSession(cookie_jar=CookieJar(unsafe=True))
@@ -26,6 +27,20 @@ class A3AgentHTTPTests(unittest.IsolatedAsyncioTestCase):
     async def post(self,op,data):
         return await self.session.post(self.server.make_url('/a5-queue/api/'+op),json=data,
              headers={'Origin':str(self.server.make_url('')).rstrip('/'),'X-A5-Queue':'queue-v1'})
+    async def test_state_advertises_enabled_agent_operations_without_login(self):
+        response=await self.session.get(self.server.make_url('/a5-queue/api/state'))
+        self.assertEqual(response.status,200)
+        self.assertIs((await response.json())['agent_reservations_enabled'],True)
+
+    async def test_disabled_agent_flag_matches_route_rejection(self):
+        self.config['task_queue']['agent_reservations_enabled']=False
+        response=await self.session.get(self.server.make_url('/a5-queue/api/state'))
+        self.assertIs((await response.json())['agent_reservations_enabled'],False)
+        await self.post('login',{'employee':'a00000001','name':'User One'})
+        response=await self.post('agent-enqueue',{'operation':secrets.token_hex(16),
+            'request':{'machine':'auto','cards':1,'requested_seconds':1800}})
+        self.assertEqual(response.status,404)
+        self.assertIn('未启用',(await response.json())['message'])
     async def test_creation_retry_and_receipt_are_scoped_to_logged_in_user(self):
         op=secrets.token_hex(16);body={'operation':op,'request':{'machine':'auto','cards':1,'requested_seconds':1800}}
         r=await self.post('agent-enqueue',body);self.assertEqual(r.status,401)
@@ -208,7 +223,9 @@ class A3AgentHTTPTests(unittest.IsolatedAsyncioTestCase):
         retried=json.loads((await run('retry',operation)).splitlines()[0])
         self.assertEqual(retried['job'],first['job'])
         self.assertEqual(json.loads((await run('recover',operation)).splitlines()[0])['job'],first['job'])
-        self.assertEqual(len(json.loads(await run('query'))['tasks']),1)
+        current=json.loads(await run('query'))
+        self.assertEqual(len(current['tasks']),1)
+        self.assertIs(current['agent_reservations_enabled'],True)
         events=json.loads(await run('events','--job',first['job']))['events']
         self.assertEqual(events[0]['state'],'ready')
         claimed=json.loads(await run('action','claim','--job',first['job'],'--offer-id',events[0]['offer_id']))
