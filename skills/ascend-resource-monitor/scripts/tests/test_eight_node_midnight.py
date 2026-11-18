@@ -34,11 +34,44 @@ class EightNodeMidnightTests(unittest.TestCase):
         return datetime.fromisoformat(value).replace(tzinfo=ZoneInfo('Asia/Shanghai')).timestamp()
 
     def add(self, **kwargs):
-        return self.q.enqueue(self.user, dict(machine='multi:8', cards=64,
-            requested_seconds=28800, notifications_ready=True, avoid_slots=[], **kwargs))
+        values = dict(machine='multi:8', cards=64,
+            requested_seconds=28800, notifications_ready=True, avoid_slots=[])
+        values.update(kwargs)
+        return self.q.enqueue(self.user, values)
 
     def rows(self):
         return {r['id']: r for r in self.q.view(self.user)['tasks']}
+
+    def test_three_waiters_get_estimates_before_fixed_midnight_night(self):
+        self.clock.return_value = self.ts('2026-11-18T19:37:42')+0.33133
+        active = self.add(requested_seconds=7200)
+        self.q.action(self.user, active, 'claim', self.rows()[active]['offer_id'])
+        midnight = self.ts('2026-11-19T00:00:00')
+        night = self.add(night=True, not_before=midnight)
+        self.clock.return_value = self.ts('2026-11-18T20:44:00')
+        first = self.add(machine='multi:4', cards=32, requested_seconds=3600)
+        second = self.add(machine='selected', selected_nodes=self.nodes[4:],
+                          cards=32, requested_seconds=14400)
+        third = self.add(machine='multi:4', cards=32, requested_seconds=3600)
+        rows = self.rows()
+        self.assertEqual(rows[first]['estimated_start'], self.ts('2026-11-18T21:47:42')+0.33133)
+        self.assertEqual(rows[second]['estimated_start'], rows[first]['estimated_start'])
+        self.assertEqual(rows[third]['estimated_start'], self.ts('2026-11-18T22:57:42')+0.33133)
+        self.assertEqual(rows[third]['effective_requested_seconds'], 3600)
+        self.assertEqual(rows[night]['not_before'], midnight)
+        self.assertEqual(set(rows[night]['allocations']), set(self.nodes))
+
+    def test_short_normal_can_be_claimed_and_released_before_midnight_night(self):
+        midnight = self.ts('2026-11-19T00:00:00')
+        night = self.add(night=True, not_before=midnight)
+        self.clock.return_value = self.ts('2026-11-18T23:50:00')+0.75
+        normal = self.add(requested_seconds=300)
+        self.assertEqual(self.rows()[normal]['state'], 'ready')
+        self.q.action(self.user, normal, 'claim', self.rows()[normal]['offer_id'])
+        self.assertEqual(self.rows()[normal]['requested_seconds'], 300)
+        self.clock.return_value = midnight
+        self.assertNotIn(normal, self.rows())
+        self.assertEqual(self.rows()[night]['not_before'], midnight)
 
     def test_eight_node_normal_released_at_midnight_and_waits_until_nine(self):
         job = self.add()

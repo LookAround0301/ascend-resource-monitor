@@ -75,14 +75,17 @@ def plan(nodes, busy, jobs, now, buffer_seconds=600):
             choices.append(((-intact_groups, tuple(map(str, choice))), choice))
         return sorted(choices, key=lambda pair: pair[0])
 
+    def buffered_end(job, start, seconds, no_buffer=False):
+        end = start + seconds + (0 if no_buffer else buffer_seconds)
+        # The midnight handoff ends ordinary use AND its buffer. This applies
+        # even when only the buffer crosses midnight, or whole-second duration
+        # clipping leaves a fractional second before the boundary.
+        if job.get('midnight_separation'):
+            end = min(end, job.get('clip_finish_before', math.inf))
+        return end
+
     def options(job, start, seconds, no_buffer=False, ignore_backfill_boundary=None):
-        boundary=job.get('clip_finish_before',math.inf)
-        # Durations are whole seconds but the clock may have a fractional part.
-        # A clipped job can therefore end less than one second before the
-        # boundary; do not add a buffer that would overlap the night booking.
-        reaches_midnight=(job.get('midnight_separation') and math.isfinite(boundary)
-                          and seconds>=math.floor(boundary-start))
-        end = start + seconds + (0 if reaches_midnight or no_buffer else buffer_seconds)
+        end = buffered_end(job, start, seconds, no_buffer)
         available = {node: free(node, start, end, job.get('night', False), ignore_backfill_boundary) for node in nodes}
         count = job['cards']
         node_count = job.get('node_count', 2 if job.get('dual') else 1)
@@ -205,7 +208,7 @@ def plan(nodes, busy, jobs, now, buffer_seconds=600):
         avoid_forced=any(t<start and next_permitted(t)==start
                          and allocations in options(job,t,seconds,ignore_backfill_boundary=start)
                          for t in raw_candidates)
-        finish = start + seconds + (0 if no_buffer else buffer_seconds)
+        finish = buffered_end(job, start, seconds, no_buffer)
         relevant=[p['start'] for p in prior_reservations if p['start']>start and
                   any(set(cards).intersection(p['allocations'].get(node,())) for node,cards in allocations.items())]
         backfill_boundary=min(relevant) if no_buffer and relevant else None
