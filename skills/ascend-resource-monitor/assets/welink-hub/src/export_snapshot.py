@@ -12,7 +12,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 EMPLOYEE = re.compile(r'[a-z][0-9]{8}')
 FIELDS = ('id', 'employee', 'name', 'state', 'created', 'activated',
           'requested_seconds', 'effective_requested_seconds', 'cards', 'dual',
-          'fixed_node', 'total_cards', 'position', 'not_before', 'estimated_start',
+          'fixed_node', 'node_count', 'selected_nodes', 'total_cards', 'position', 'not_before', 'estimated_start',
           'allocations', 'planned_allocations', 'offer_id', 'claim_before',
           'finish_before', 'offer_end_before', 'night_requested_start',
           'night_schedule_blocked', 'overdue_seconds', 'extension_minutes')

@@ -65,6 +65,22 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.calls);self.assertTrue(self.coordinator.status)
         self.assertEqual(next(r for r in self.queue.view(self.user)['tasks'] if r['id']==night)['state'],'queued')
 
+    async def test_stop_disabled_waits_for_release_without_issuing_control(self):
+        self.coordinator.allow_stop=False
+        start=self.now+1200;night=self.add(self.user,night=True,not_before=start)
+        self.monitor.rows=[{'node':'a','employee':'u23456789','card_ids':[0],
+            'control_ref':'a'*64+'@2026-11-04T20:00:00Z','process_key':'boot:42:987'}]
+        self.monitor.inventory_times['a']=start
+        await self.poll_at(start)
+        self.assertFalse(self.calls)
+        self.assertFalse(self.events)
+        self.assertTrue(any('自动停止容器未开启' in s for s in self.coordinator.status))
+        self.assertEqual(next(r for r in self.queue.view(self.user)['tasks'] if r['id']==night)['state'],'queued')
+        self.monitor.rows=[];self.monitor.inventory_times['a']=start+10
+        await self.poll_at(start+10)
+        self.assertFalse(self.calls)
+        self.assertEqual(next(r for r in self.queue.view(self.user)['tasks'] if r['id']==night)['state'],'active')
+
     async def test_shared_container_blocks_only_unauthorized_cards_without_stopping_owner(self):
         start=self.now+1200
         owner=self.add(self.user,cards=7,night=True,not_before=start)

@@ -81,7 +81,8 @@ class CapacityCompatibilityTests(unittest.TestCase):
         script=r'''
 const assert=require('assert/strict'),vm=require('vm'),source=JSON.parse(require('fs').readFileSync(0,'utf8'));
 class Element {
- constructor(text=''){this.textContent=text;this.children=[];this.className='';this.classList={add:c=>this.className+=' '+c};this._value='';}
+ constructor(text=''){this.textContent=text;this.children=[];this.className='';this.classList={add:c=>this.className+=' '+c,toggle:()=>{}};this.dataset={};this.attrs={};this._value='';}
+ setAttribute(name,value){this.attrs[name]=value;}
  append(...items){this.children.push(...items);}
  replaceChildren(){this.children=[];this._value='';}
  get options(){return this.children;}
@@ -89,15 +90,21 @@ class Element {
  set value(value){this._value=String(value);}
 }
 for(const capacity of [undefined,8,16]){
- const count=capacity||8,elements=Object.fromEntries(['machine','cards','resource-hint','card-grid','card-capacity-hint'].map(id=>[id,new Element()]));
+ const count=capacity||8,elements=Object.fromEntries(['machine','cards','resource-hint','card-grid','card-capacity-hint','machine-label','machine-picker','machine-picker-area','machine-selection-count','mode-auto','mode-selected'].map(id=>[id,new Element()]));
  const state={nodes:['a','b'],server_time:1000,tasks:[{state:'active',allocations:{a:[count-1]}}]};
  state.card_usage={a:Array(count).fill('unreserved_empty'),b:Array(count).fill('unreserved_unknown')};state.card_usage.a[count-1]='reserved_user';
  if(capacity!==undefined)state.cards_per_node=capacity;
- const c={state,machineNodes:'',$:id=>elements[id],element:(type,text)=>new Element(text),overtimeDuration:()=>''};
+ const c={state,machineNodes:'',resourceMode:'auto',selectedMachines:new Set(),gate:()=>{},expansion:{update:()=>{}},$:id=>elements[id],element:(type,text)=>new Element(text),overtimeDuration:()=>''};
  vm.createContext(c);vm.runInContext(source.fields+source.render,c);
  c.resourceFields();assert.equal(elements.cards.options.length,count);
  assert.deepEqual(elements.cards.options.map(x=>Number(x.value)),Array.from({length:count},(_,i)=>i+1));
  elements.machine.value='dual';c.resourceFields();assert.deepEqual(elements.cards.options.map(x=>Number(x.value)),count===8?[2,4,8,16]:[2,4,8,16,32]);
+ c.resourceMode='selected';c.resourceFields();assert.equal(elements.cards.disabled,true);
+ elements['machine-picker'].children[1].onclick();assert.equal(c.selectedMachines.has('b'),true);assert.equal(elements['machine-picker'].children[1].attrs['aria-pressed'],'true');
+ c.resourceFields();assert.deepEqual(JSON.parse(JSON.stringify(c.resourceRequest())),{machine:'selected',selected_nodes:['b'],cards:Number(elements.cards.value)});
+ elements['machine-picker'].children[0].onclick();assert.equal(c.resourceRequest().selected_nodes.length,2);
+ elements['machine-picker'].children[1].onclick();assert.deepEqual(JSON.parse(JSON.stringify(c.resourceRequest().selected_nodes)),['a']);
+ c.resourceMode='auto';assert.equal(c.resourceRequest().machine,'dual');assert.equal('selected_nodes' in c.resourceRequest(),false);
  c.renderCards();const lines=elements['card-grid'].children;assert.equal(lines.length,2);
  for(const line of lines){const tiles=line.children[1].children;assert.equal(tiles.length,count);assert.deepEqual(tiles.map(t=>t.children[0].textContent),Array.from({length:count},(_,i)=>i+' 号卡'));}
  const occupied=lines.flatMap(l=>l.children[1].children).filter(t=>t.className.includes('reserved-user'));

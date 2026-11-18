@@ -68,6 +68,24 @@ class UnifiedWindowTests(unittest.TestCase):
         # Before 9am still means the following calendar day's 9am.
         self.assertEqual(self.queue.cutoff(stamp('2026-11-04T01:00:00')), self.deadline)
 
+    def test_eight_hour_limit_preserves_existing_and_accepts_exact_maximum(self):
+        with patch('queue_unified.time.time', return_value=self.now):
+            existing=self.add(requested_seconds=7200)
+            self.queue.action(self.user,existing,'claim')
+            before=next(r for r in self.queue.view(self.user)['tasks'] if r['id']==existing)
+            expanded=UnifiedQueue(self.store,['a','b'],timezone='Asia/Shanghai',normal_max_seconds=28800,flexible_scheduling=True)
+            job=expanded.enqueue(self.user,{'machine':'b','cards':8,'requested_seconds':28800,'avoid_slots':[],'notifications_ready':True})
+            expanded.action(self.user,job,'claim')
+            rows={r['id']:r for r in expanded.view(self.user)['tasks']}
+            self.assertEqual(rows[job]['requested_seconds'],28800)
+            for key in ('state','activated','requested_seconds','allocations'):
+                self.assertEqual(rows[existing][key],before[key])
+            with self.assertRaises(ControlError) as error:
+                expanded.enqueue(self.user,{'cards':1,'requested_seconds':28860,'notifications_ready':True})
+            self.assertIn('普通任务最长 8 小时',str(error.exception))
+            for limit in (28801,29100,True):
+                with self.assertRaises(ValueError):UnifiedQueue(self.store,['a','b'],normal_max_seconds=limit)
+
     def test_waiting_tasks_never_move_past_original_deadline(self):
         with patch('queue_unified.time.time', return_value=self.now):
             job = self.add()

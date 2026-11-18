@@ -5,8 +5,9 @@ from queue_night_policy import enforcement_decisions
 
 
 class NightCoordinator:
-    def __init__(self,queue,monitor,agent,audit):
+    def __init__(self,queue,monitor,agent,audit,allow_stop=True):
         self.queue=queue;self.monitor=monitor;self.agent=agent;self.audit=audit
+        self.allow_stop=allow_stop
         self.status=[];self.attempted={}
 
     def decisions(self,now):
@@ -38,8 +39,8 @@ class NightCoordinator:
         for item in targets:blocked_cards.setdefault(item['node'],set()).update(item['cards'])
         self.status=[]
         if blocked_nodes or unknown:self.status.append('夜间资源接管待核实：进程采集、归属或共享容器存在不确定情况。')
-        if targets:self.status.append('夜间资源接管正在清理非预约容器，确认释放后开始登记。')
-        for target in targets:
+        if targets:self.status.append('夜间资源接管正在清理非预约容器，确认释放后开始登记。' if self.allow_stop else '夜间预约卡位仍被其他任务占用，等待释放后开始登记；自动停止容器未开启。')
+        for target in targets if self.allow_stop else []:
             if target['node'] in blocked_nodes:continue
             # A cancellation or whitelist change must invalidate a stale action.
             _,current,problems=self.decisions(time.time())

@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 from control_common import CONTAINER_ID, ControlError
 from process_exporter import employee_name_for, guard_display_start, guard_policy, parse_stat, CONTAINER
 
-EMPLOYEE = re.compile(r'[a-z][0-9]{8}\Z')
+EMPLOYEE = re.compile(r'(?:[a-z][0-9]{8}|p_[a-z][a-z0-9_]{0,61})\Z')
 LABEL = re.compile(r'(\w+)=("(?:[^"\\]|\\.)*")')
 
 

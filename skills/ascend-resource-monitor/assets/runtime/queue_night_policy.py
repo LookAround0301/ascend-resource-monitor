@@ -8,15 +8,24 @@ import math
 import re
 
 
-def reserve_night(nodes, reservations, start, seconds, cards, dual=False, fixed_node=''):
+def reserve_night(nodes, reservations, start, seconds, cards, dual=False, fixed_node='', node_count=None, selected_nodes=None):
     """Choose cards for an exact half-open interval, or return None on conflict."""
-    if (len(nodes)!=2 or any(len(v) not in (8,16) for v in nodes.values())
+    if (not 2<=len(nodes)<=32 or any(len(v) not in (8,16) for v in nodes.values())
             or len({len(v) for v in nodes.values()})!=1
             or not math.isfinite(start) or seconds<=0 or cards<=0):
         raise ValueError('invalid night reservation')
     capacity=len(next(iter(nodes.values())))
+    node_count = (2 if dual else 1) if node_count is None else node_count
+    if type(node_count) is not int or not 1<=node_count<=len(nodes) or (fixed_node and node_count>1):
+        raise ValueError('invalid requested node count')
     if cards>capacity or (fixed_node and fixed_node not in nodes):
         raise ValueError('invalid night allocation')
+    if selected_nodes is not None and (not isinstance(selected_nodes, list)
+            or any(not isinstance(node, str) for node in selected_nodes)
+            or len(set(selected_nodes)) != node_count or len(selected_nodes) != node_count
+            or not set(selected_nodes) <= set(nodes)
+            or (fixed_node and selected_nodes != [fixed_node])):
+        raise ValueError('invalid selected night nodes')
     end=start+seconds
     used={node:set() for node in nodes}
     for reservation in reservations:
@@ -38,12 +47,15 @@ def reserve_night(nodes, reservations, start, seconds, cards, dual=False, fixed_
                 intact=sum(set(g)<=remaining for g in (order[:half],order[half:]))
                 options.append(((-intact,tuple(map(str,subset))),list(subset)))
         return sorted(options,key=lambda item:item[0])
-    if dual:
+    if node_count>1:
         selected={node:choices(node) for node in nodes}
-        return {node:values[0][1] for node,values in selected.items()} if all(selected.values()) else None
+        eligible=sorted((node for node in nodes if selected[node] and (selected_nodes is None or node in selected_nodes)),
+                        key=lambda node:(capacity-len(used[node]),selected[node][0][0],str(node)))
+        return {node:selected[node][0][1] for node in eligible[:node_count]} if len(eligible)>=node_count else None
     options=[]
     for node in nodes:
         if fixed_node and node!=fixed_node:continue
+        if selected_nodes is not None and node not in selected_nodes:continue
         for score,selection in choices(node):
             options.append(((capacity-len(used[node]),score[0],str(node),score[1]),{node:selection}))
     return min(options,key=lambda item:item[0])[1] if options else None

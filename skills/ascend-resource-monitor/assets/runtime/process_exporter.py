@@ -24,7 +24,7 @@ try:
 except ImportError:
     pwd = None
 
-EMPLOYEE = re.compile(r"(?<![A-Za-z0-9])([A-Za-z][0-9]{8})(?![A-Za-z0-9])")
+EMPLOYEE = re.compile(r"(?<![A-Za-z0-9])([A-Za-z][0-9]{8}|p_[a-z][a-z0-9_]{0,61})(?![A-Za-z0-9_])")
 CONTAINER = re.compile(r"(?:docker[-/])([0-9a-f]{64})(?:[./\n]|$)")
 ROOT = Path(__file__).resolve().parent.parent
 HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -89,10 +89,33 @@ def guard_metrics(path):
 def employee_ids(text):
     return sorted(set(x.lower() for x in EMPLOYEE.findall(text or "")))
 
+def container_employee_ids(name, mapping):
+    """Match complete account strings in names, retaining ambiguity as a clue."""
+    name = str(name or '').lower()
+    # Underscores are common container-name separators, not part of numeric IDs.
+    found = set(re.findall(r'(?<![a-z0-9])([a-z][0-9]{8})(?![a-z0-9])', name))
+    roster = mapping.get('employee_names', {})
+    known = set()
+    if isinstance(roster, dict):
+        for key in roster:
+            account = str(key).strip().lower()
+            if re.fullmatch(r'[a-z][0-9]{8}', account):
+                # A roster account may be embedded in a longer descriptive name.
+                if re.search(re.escape(account)+r'(?![0-9])', name):known.add(account)
+            elif re.fullmatch(r'p_[a-z][a-z0-9_]{0,61}', account):
+                if re.search(re.escape(account)+r'(?![a-z0-9])', name):known.add(account)
+    found.update(known)
+    for account in employee_ids(name):
+        if not account.startswith('p_'):continue
+        # A known service account followed by _task must not create a second ID.
+        if not any(account == key or account.startswith(key+'_') for key in known if key.startswith('p_')):
+            found.add(account)
+    return sorted(found)
+
 def employee_name_for(employee, mapping):
     """Look up a roster name without changing process ownership evidence."""
     account = str(employee).strip().lower()
-    if not re.fullmatch(r"[a-z][0-9]{8}", account):
+    if not re.fullmatch(r"(?:[a-z][0-9]{8}|p_[a-z][a-z0-9_]{0,61})", account):
         return ""
     names = mapping.get("employee_names", {})
     value = names.get(account, "") if isinstance(names, dict) else ""
@@ -164,11 +187,12 @@ def owner_for(row, container, mapping):
     if len(explicit) == 1:
         return explicit[0], "容器标签线索"
     clues = " ".join([row.get("cwd", ""), row.get("host_cwd", ""),
-                      row.get("entrypoint", ""), container.get("name", ""),
-                      container.get("cwd", "")])
-    found = employee_ids(clues)
+                      row.get("entrypoint", ""), container.get("cwd", "")])
+    directory_ids = employee_ids(clues)
+    container_ids = container_employee_ids(container.get('name', ''), mapping)
+    found = sorted(set(directory_ids) | set(container_ids))
     if len(found) == 1:
-        return found[0], "目录/容器线索"
+        return found[0], "容器名称线索" if container_ids and not directory_ids else "目录/容器线索"
     return ("待确认", "多个工号线索") if found else ("未知", "无可用工号线索")
 
 def npu_processes(url):

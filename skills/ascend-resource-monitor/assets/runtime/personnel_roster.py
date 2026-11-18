@@ -10,7 +10,7 @@ import secrets
 from control_common import ControlError
 
 
-EMPLOYEE = re.compile(r'[a-z][0-9]{8}\Z')
+EMPLOYEE = re.compile(r'(?:[a-z][0-9]{8}|p_[a-z][a-z0-9_]{0,61})\Z')
 
 
 def personnel(employee, name):
@@ -18,7 +18,7 @@ def personnel(employee, name):
         raise ControlError(400, '请填写工号和姓名')
     employee, name = employee.strip().lower(), name.strip()
     if not EMPLOYEE.fullmatch(employee):
-        raise ControlError(400, '工号应为一位字母加八位数字，例如 u12345678')
+        raise ControlError(400, '账号应为一位字母加八位数字，或 p_ 开头的服务账号')
     if not 1 <= len(name) <= 120 or any(ord(c) < 32 or ord(c) == 127 for c in name):
         raise ControlError(400, '姓名不能为空，也不能包含控制字符')
     return employee, name
@@ -115,11 +115,11 @@ def combine(sources):
             people.setdefault(row['employee'], set()).add(row['name'])
     rows = []
     for employee, names in sorted(people.items()):
-        if len(names) > 1: issues.append('工号 ' + employee + ' 在两台服务器的姓名不一致')
+        if len(names) > 1: issues.append('工号 ' + employee + ' 在所有服务器的姓名不一致')
         rows.append({'employee': employee, 'name': ' / '.join(sorted(names))})
     if not issues and sources:
         sets = [{(row['employee'], row['name']) for row in source['people']} for source in sources.values()]
-        if any(rows != sets[0] for rows in sets[1:]): issues.append('两台服务器的人员名单尚未完全同步')
+        if any(rows != sets[0] for rows in sets[1:]): issues.append('所有服务器的人员名单尚未完全同步')
     return {'people': rows, 'issues': issues}
 
 
@@ -210,7 +210,7 @@ def install_roster(app, config, read_identity, identity, node_call):
             employee, name = personnel(data['employee'], data['name'])
             sources = await snapshots()
             if not sources or any(source.get('error') for source in sources.values()):
-                raise ControlError(503, '请等待两台服务器的名单均可读取后再添加')
+                raise ControlError(503, '请等待所有服务器的名单均可读取后再添加')
             for source in sources.values():
                 existing = next((row['name'] for row in source['people'] if row['employee'] == employee), None)
                 if existing is not None and existing != name:
@@ -230,7 +230,7 @@ def install_roster(app, config, read_identity, identity, node_call):
                 return web.json_response({'message': '部分服务器尚未确认保存：' + '、'.join(failures) +
                     '。请刷新核实后，使用相同工号和姓名重试。', 'results': results},
                     status=503, headers={'Cache-Control': 'no-store'})
-            message = ('人员已删除，并已同步到两台服务器' if any(r['changed'] for r in results) else '该人员已不在两台服务器的白名单中') if remove else ('人员已添加，并已同步到两台服务器' if any(r['changed'] for r in results) else '该人员已在两台服务器的白名单中')
+            message = ('人员已删除，并已同步到所有服务器' if any(r['changed'] for r in results) else '该人员已不在所有服务器的白名单中') if remove else ('人员已添加，并已同步到所有服务器' if any(r['changed'] for r in results) else '该人员已在所有服务器的白名单中')
             return web.json_response({'message': message, 'results': results}, headers={'Cache-Control': 'no-store'})
         except ControlError as e:
             return web.json_response({'message': e.message}, status=e.status, headers={'Cache-Control': 'no-store'})

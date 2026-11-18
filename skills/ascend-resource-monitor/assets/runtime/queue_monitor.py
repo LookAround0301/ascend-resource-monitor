@@ -8,13 +8,14 @@ import time
 from datetime import datetime
 from urllib.parse import urlsplit
 
-EMPLOYEE = re.compile(r'[a-z][0-9]{8}\Z')
+EMPLOYEE = re.compile(r'(?:[a-z][0-9]{8}|p_[a-z][a-z0-9_]{0,61})\Z')
 MAX_FUTURE_SKEW_SECONDS = 15
 
 
 class QueueMonitor:
     def __init__(self, nodes, settings, fetch):
         self.nodes=list(nodes); self.fetch=fetch; self.rows=[]; self.valid=set()
+        self.correct_node_clock_skew=settings.get('correct_node_clock_skew',False)
         self.sampled=0; self.next_poll=0;self.inventory_times={};self.night_empty={}
         self.night_log=None;self.night_log_error=''
         if settings.get('night_inventory_log_dir'):
@@ -51,7 +52,17 @@ class QueueMonitor:
     @property
     def query(self):
         names='|'.join(self.process_prefix+x for x in ('inventory_success','inventory_truncated','inventory_timestamp_seconds','container_metadata_age_seconds','inventory_processes','start_time_seconds','cpu_percent','resident_memory_bytes'))
-        return '{__name__=~"'+names+'"}'
+        base='{__name__=~"'+names+'"}'
+        if not self.correct_node_clock_skew:return base
+        stamp=self.process_prefix+'inventory_timestamp_seconds'
+        process_start=self.process_prefix+'start_time_seconds'
+        remainder='{__name__=~"'+names+'",__name__!="'+stamp+'",__name__!="'+process_start+'"}'
+        offset='(node_time_seconds - timestamp(node_time_seconds))'
+        normalized='('+stamp+' - on(node) '+offset+')'
+        normalized_start='('+process_start+' - on(node) group_left() '+offset+')'
+        fresh='((time() - timestamp(node_time_seconds)) >= 0 and (time() - timestamp(node_time_seconds)) < 30)'
+        name=lambda query,metric:'label_replace(('+query+' and on(node) '+fresh+'), "__name__", "'+metric+'", "node", ".*")'
+        return remainder+' or on(__name__,node,process_key) '+name(normalized,stamp)+' or on(__name__,node,process_key) '+name(normalized_start,process_start)
 
     async def poll(self):
         if time.monotonic()<self.next_poll:

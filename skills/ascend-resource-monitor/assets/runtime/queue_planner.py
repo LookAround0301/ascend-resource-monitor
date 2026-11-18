@@ -1,4 +1,4 @@
-"""Pure reservation planning for a two-node resource pool with 8 or 16 cards per node.
+"""Pure reservation planning for a resource pool with 8 or 16 cards per node.
 
 This module does not read hardware, start or stop jobs, or persist allocations.
 Callers must serialize planning and persistence and supply trustworthy intervals.
@@ -22,8 +22,8 @@ def plan(nodes, busy, jobs, now, buffer_seconds=600):
     Returned times are estimates based on declared durations, not guarantees.
     """
     capacity = len(next(iter(nodes.values()), ()))
-    if len(nodes) != 2 or capacity not in (8, 16) or any(len(cards) != capacity or len(set(cards)) != capacity for cards in nodes.values()):
-        raise ValueError('two nodes with the same 8 or 16 distinct ordered cards each are required')
+    if not 2 <= len(nodes) <= 32 or capacity not in (8, 16) or any(len(cards) != capacity or len(set(cards)) != capacity for cards in nodes.values()):
+        raise ValueError('2 to 32 nodes with the same 8 or 16 distinct ordered cards each are required')
     half = capacity // 2
     if buffer_seconds < 0 or not math.isfinite(now):
         raise ValueError('invalid planning time or buffer')
@@ -85,9 +85,14 @@ def plan(nodes, busy, jobs, now, buffer_seconds=600):
         end = start + seconds + (0 if reaches_midnight or no_buffer else buffer_seconds)
         available = {node: free(node, start, end, job.get('night', False), ignore_backfill_boundary) for node in nodes}
         count = job['cards']
-        if job.get('dual'):
+        node_count = job.get('node_count', 2 if job.get('dual') else 1)
+        if node_count > 1:
             choices = {node: card_choices(node, count, cards) for node, cards in available.items()}
-            return [{node: cards[0][1] for node, cards in choices.items()}] if all(choices.values()) else []
+            eligible = sorted((node for node in nodes if choices[node] and node in job.get('allowed_nodes', nodes)),
+                              key=lambda node: (len(available[node]), choices[node][0][0], str(node)))
+            if len(eligible) < node_count:
+                return []
+            return [{node: choices[node][0][1] for node in eligible[:node_count]}]
         choices = []
         allowed = job.get('allowed_nodes', nodes)
         for node in nodes:
@@ -101,10 +106,17 @@ def plan(nodes, busy, jobs, now, buffer_seconds=600):
     planned = []
     prior_reservations = []
     for job in jobs:
+        node_count = job.get('node_count', 2 if job.get('dual') else 1)
+        if type(node_count) is not int or not 1 <= node_count <= len(nodes):
+            raise ValueError('invalid requested node count')
         if (type(job.get('cards')) is not int or not 1 <= job['cards'] <= capacity
-                or (job.get('dual') and job['cards'] not in tuple(n for n in (1, 2, 4, 8, 16) if n <= capacity))
+                or (node_count > 1 and job['cards'] not in tuple(n for n in (1, 2, 4, 8, 16) if n <= capacity))
                 or type(job.get('seconds')) is not int or job['seconds'] <= 0):
             raise ValueError('invalid job size or duration')
+        if 'allowed_nodes' in job and (not isinstance(job['allowed_nodes'], list)
+                or len(set(job['allowed_nodes'])) != len(job['allowed_nodes'])
+                or not set(job['allowed_nodes']) <= set(nodes)):
+            raise ValueError('invalid allowed nodes')
         earliest = max(now, job.get('not_before', now))
         candidates = {earliest}
         candidates.update((direct if job.get('night') else end) for _, _, _, end, direct, _, _ in intervals
@@ -175,7 +187,7 @@ def plan(nodes, busy, jobs, now, buffer_seconds=600):
                 # must not take resources it might need when that release occurs.
                 latest = min(job.get('start_before') or math.inf,
                              (job['finish_before'] - job['seconds']) if job.get('finish_before') else math.inf)
-                allowed = set(nodes) if job.get('dual') else set(job.get('allowed_nodes', nodes))
+                allowed = set(job.get('allowed_nodes', nodes))
                 unknown = any(node in allowed and not math.isfinite(direct if job.get('night') else end)
                               for node, _, _, end, direct, _, _ in intervals)
                 if latest > earliest and unknown:

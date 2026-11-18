@@ -5,6 +5,30 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[2]/'assets/runtime'))
 import process_exporter as p
 
 class ProcessTests(unittest.TestCase):
+    def test_container_account_with_underscore_and_roster_substring(self):
+        mapping={'employee_names':{'z00000001':'测试姓名'}}
+        for name in ('z00000001_train_20261118','job_Z00000001_v2','trainz00000001release'):
+            self.assertEqual(p.owner_for({'user':'root'},{'name':name},mapping),('z00000001','容器名称线索'))
+        self.assertEqual(p.owner_for({'user':'root'},{'name':'job-x00000002_train'},{}),('x00000002','容器名称线索'))
+        self.assertEqual(p.container_employee_ids('job-z000000010',mapping),[])
+
+    def test_container_string_conflicts_do_not_override_stronger_identity(self):
+        mapping={'employee_names':{'z00000001':'One','x00000002':'Two'}}
+        container={'name':'z00000001_x00000002_train'}
+        self.assertEqual(p.owner_for({'user':'root'},container,mapping),('待确认','多个工号线索'))
+        self.assertEqual(p.owner_for({'user':'root','cwd':'/home/x00000002'},{'name':'z00000001_train'},mapping),('待确认','多个工号线索'))
+        self.assertEqual(p.owner_for({'login_user':'a00000003'},container,mapping),('a00000003','登录审计用户'))
+        self.assertEqual(p.owner_for({'user':'root'},{**container,'owner':'a00000003'},mapping),('a00000003','容器标签线索'))
+        mapping['containers']={container['name']:'a00000003'}
+        self.assertEqual(p.owner_for({},container,mapping),('a00000003','人工标注'))
+
+    def test_container_service_account_suffix_and_unknown_alias(self):
+        mapping={'employee_names':{'p_example':'Service'}}
+        self.assertEqual(p.owner_for({}, {'name':'train_p_example_v2'},mapping),('p_example','容器名称线索'))
+        self.assertEqual(p.container_employee_ids('p_examplex',mapping),['p_examplex'])
+        self.assertEqual(p.owner_for({}, {'name':'initials-training'},mapping),('未知','无可用工号线索'))
+        self.assertEqual(p.container_employee_ids('job_z00000001_run',{'employee_names':None}),['z00000001'])
+
     def test_process_clock_uses_start_ticks_and_does_not_carry_over_after_exit(self):
         import copy
         import types

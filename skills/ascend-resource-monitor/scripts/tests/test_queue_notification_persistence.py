@@ -22,7 +22,7 @@ function make(user){
  const elements={join:{},'enable-notifications':{},'notification-status':{}};
  function Notice(){this.close=()=>{};queueMicrotask(()=>this.onshow&&this.onshow());}
  Notice.permission='granted';
- const c={state:{user:{id:user,registered:true}},verifiedUser:null,verifying:false,version:0,failure:'',submitting:false,stopped:false,
+ const c={state:{user:{id:user,registered:true}},resourceMode:'auto',selectedMachines:new Set(),verifiedUser:null,verifying:false,version:0,failure:'',submitting:false,stopped:false,
   localStorage,window:{isSecureContext:true,Notification:Notice},Notification:Notice,openNotices:new Set(),$:(id)=>elements[id],
   notify:()=>{},setTimeout:()=>0,clearTimeout:()=>{},fetch:()=>{throw Error('unexpected fetch')}};
  vm.createContext(c);vm.runInContext(source,c);return {c,elements,ready:()=>vm.runInContext('ready()',c)};

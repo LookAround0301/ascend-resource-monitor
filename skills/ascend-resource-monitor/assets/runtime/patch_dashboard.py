@@ -70,7 +70,9 @@ def add_queue_home_panel(dashboard, nodes):
     old_titles = {node + ' 排队情况' for node in nodes}
     old = [panel for panel in result.get('panels', []) if panel.get('title') in old_titles]
     panels = [panel for panel in result.get('panels', []) if panel.get('title') not in old_titles]
-    anchor = min((p['gridPos']['y'] for p in old), default=10)
+    process_anchor = min((p['gridPos']['y'] for p in panels
+                          if p.get('title') == 'NPU 进程归属与工作目录'), default=10)
+    anchor = min((p['gridPos']['y'] for p in old), default=process_anchor)
     bottom = max((p['gridPos']['y']+p['gridPos']['h'] for p in old), default=anchor)
     height = 20
     shift = height - (bottom-anchor)
@@ -154,7 +156,7 @@ def place_guard_after_summary(dashboard, panel):
     position['y'] = anchor
 
 
-def add_guard_panel(dashboard, prefix='ascend'):
+def add_guard_panel(dashboard, prefix='ascend', datasource_uid='a5-prometheus'):
     """Only call for an explicitly provisioned persistent container guard."""
     result = copy.deepcopy(dashboard)
     result['links'] = [x for x in result.get('links', []) if x.get('url') != '/a5-control/guard'] + [
@@ -168,6 +170,7 @@ def add_guard_panel(dashboard, prefix='ascend'):
     for panel in result['panels']:
         if panel.get('title') == '容器管控 · 持续拦截与白名单': panel['title'] = title
         if panel.get('title') == title:
+            panel['datasource'] = {'type': 'prometheus', 'uid': datasource_uid}
             panel['description'] = description
             panel.setdefault('options', {}).update(enablePagination=False)
             position = panel['gridPos']
@@ -178,6 +181,8 @@ def add_guard_panel(dashboard, prefix='ascend'):
                     other['gridPos']['y'] += extra_height
             position['h'] += extra_height
             for target in panel.get('targets', []):
+                if 'datasource' in target:
+                    target['datasource'] = dict(panel['datasource'])
                 if '_container_guard_info' in target.get('expr', ''): target['expr'] = expression
             for override in panel.get('fieldConfig', {}).get('overrides', []):
                 if override.get('matcher', {}).get('options') == '管控标记':
@@ -197,7 +202,7 @@ def add_guard_panel(dashboard, prefix='ascend'):
     result['panels'].append({'id': panel_id, 'title': title, 'type': 'table',
         'gridPos': {'x': 0, 'y': 4, 'w': 24, 'h': height},
         'description': description,
-        'datasource': {'type': 'prometheus', 'uid': 'a5-prometheus'},
+        'datasource': {'type': 'prometheus', 'uid': datasource_uid},
         'targets': [{'refId': 'Guard', 'expr': expression, 'format': 'table', 'instant': True, 'range': False}],
         'transformations': [{'id': 'organize', 'options': {
             'excludeByName': {k: True for k in ['Time', 'Value', '__name__', 'job', 'instance', 'host']},

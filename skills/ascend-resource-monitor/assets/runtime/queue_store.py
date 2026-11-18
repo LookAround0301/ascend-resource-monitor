@@ -70,7 +70,7 @@ class QueueStore:
     def register(self, employee, name, password):
         employee = employee.strip().lower() if isinstance(employee, str) else ''
         name = name.strip() if isinstance(name, str) else ''
-        if not re.fullmatch(r'[a-z][0-9]{8}', employee) or not 1 <= len(name) <= 60 or any(ord(c) < 32 for c in name):
+        if not re.fullmatch(r'(?:[a-z][0-9]{8}|p_[a-z][a-z0-9_]{0,61})', employee) or not 1 <= len(name) <= 60 or any(ord(c) < 32 for c in name):
             raise ControlError(400, '请填写有效工号和姓名')
         salt = secrets.token_hex(16); digest = self.password(password, salt); account = secrets.token_hex(16)
         try:
@@ -89,7 +89,7 @@ class QueueStore:
     def login_without_password(self, employee, name):
         employee = employee.strip().lower() if isinstance(employee, str) else ''
         name = name.strip() if isinstance(name, str) else ''
-        if not re.fullmatch(r'[a-z][0-9]{8}', employee) or not 1 <= len(name) <= 60 or any(ord(c) < 32 for c in name):
+        if not re.fullmatch(r'(?:[a-z][0-9]{8}|p_[a-z][a-z0-9_]{0,61})', employee) or not 1 <= len(name) <= 60 or any(ord(c) < 32 for c in name):
             raise ControlError(400, '请填写有效工号和姓名')
         with self.db() as db:
             row = db.execute('SELECT id,name FROM accounts WHERE employee=?', (employee,)).fetchone()

@@ -10,7 +10,7 @@ import time
 from control_common import ControlError
 from queue_mobile import EMPLOYEE, HEX32, TransactionStore
 
-FIELDS = {'machine','cards','night','not_before','requested_seconds','avoid_slots',
+FIELDS = {'machine','cards','selected_nodes','night','not_before','requested_seconds','avoid_slots',
           'backfill_min_seconds'}
 
 
@@ -64,10 +64,14 @@ def command(unified, store, payload):
 
 def _insert_agent_notice(db,event_id,kind,row,owner,actor,now):
     """Write only task-scoped details; never persist the session or task plan."""
-    payload=dict(machine='dual' if row['dual'] else row['fixed_node'] or 'auto',
-                 cards=row['cards']*(2 if row['dual'] else 1),
+    row=dict(row)
+    count=row.get('node_count',2 if row['dual'] else 1)
+    payload=dict(machine=('dual' if count==2 else 'multi:'+str(count)) if count>1 else row['fixed_node'] or 'auto',
+                 cards=row['cards']*count,
                  requested_seconds=row['requested_seconds'],not_before=row['not_before'],
                  state=row['state'],actor=actor)
+    if json.loads(row.get('selected_nodes', '[]')):
+        payload.update(machine='selected', selected_nodes=json.loads(row['selected_nodes']))
     db.execute('INSERT INTO unified_notice_events VALUES (?,?,?,?,?,?,?,?)',
         (event_id,kind,row['id'],owner['employee'],owner['name'],'[]',now,
          json.dumps(payload,ensure_ascii=False)))

@@ -59,8 +59,8 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                 raise ControlError(503,'人员白名单暂不可用，请联系管理员核实') from exc
         names=await asyncio.gather(*(read(node) for node in config['nodes']))
         if not names or any(name is None for name in names):
-            raise ControlError(404,'该工号未在两台机器的人员白名单中，请联系管理员核实')
-        if len(set(names))!=1:raise ControlError(409,'两台机器的人员姓名不一致，请联系管理员核实')
+            raise ControlError(404,'该工号未在所有机器的人员白名单中，请联系管理员核实')
+        if len(set(names))!=1:raise ControlError(409,'所有机器的人员姓名不一致，请联系管理员核实')
         return {'employee':employee,'name':names[0]}
 
     async def allowed_search(query):
@@ -131,7 +131,8 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
             return names_cache['names']
 
     strict_nights=settings.get('strict_nights') is True
-    unified=UnifiedQueue(store, config['nodes'], settings.get('reservation_buffer_seconds',600), settings.get('timezone','UTC'), settings.get('daily_reset',False), settings.get('cards_per_node',8),strict_nights,settings.get('overtime_control') is True,settings.get('normal_priority') is True,settings.get('normal_max_seconds',7200),settings.get('night_carryover_cutoff_hour'),settings.get('missed_claim_limit',0),settings.get('midnight_separation') is True) if settings.get('unified_queue') is True else None
+    unified=UnifiedQueue(store, config['nodes'], settings.get('reservation_buffer_seconds',600), settings.get('timezone','UTC'), settings.get('daily_reset',False), settings.get('cards_per_node',8),strict_nights,settings.get('overtime_control') is True,settings.get('normal_priority') is True,settings.get('normal_max_seconds',7200),settings.get('night_carryover_cutoff_hour'),settings.get('missed_claim_limit',0),settings.get('midnight_separation') is True,settings.get('flexible_scheduling') is True,settings.get('daily_reset_normal_cutoff_hour'),settings.get('night_tomorrow_only') is True) if settings.get('unified_queue') is True else None
+    night_takeover_enabled=bool(strict_nights and settings.get('night_takeover_enabled') is not False)
     if unified and settings.get('agent_reservations_enabled') is True:
         from queue_agent import initialize_events
         initialize_events(store)
@@ -149,7 +150,7 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
     if strict_nights:
         if not unified or not monitor:raise ValueError('Strict night reservations require process monitoring')
         from queue_night_coordinator import NightCoordinator
-        coordinator=NightCoordinator(unified,monitor,agent,lambda event:audit(config['audit_log'],event))
+        coordinator=NightCoordinator(unified,monitor,agent,lambda event:audit(config['audit_log'],event),allow_stop=night_takeover_enabled)
 
     def cookie_name(request):
         return session_cookie_name(store.session_namespace,request.host)
@@ -253,7 +254,7 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
         process_metrics=monitor.metrics(rows,continuing=unified.continuing(),released=unified.released_usage()) if monitor else ''
         if unified:
             rows=[{**row,'node':node,'state':'queued' if row['state']=='ready' else row['state'], 'container':'',
-                   'title':('双机共 '+str(row['total_cards'])+' 卡（各 '+str(row['cards'])+' 卡）') if row['dual'] else '单机 '+str(row['cards'])+' 卡'}
+                   'title':(str(row.get('node_count',2))+' 台共 '+str(row['total_cards'])+' 卡（各 '+str(row['cards'])+' 卡）') if row['dual'] else '单机 '+str(row['cards'])+' 卡'}
                   for row in rows for node in (list(row['allocations']) or ([row['fixed_node']] if row['fixed_node'] else []))]
         return web.Response(text=render_queue_metrics(rows,list(config['nodes']),time.time(),
                             settings.get('metric_prefix','ascend'),settings.get('timezone','UTC'))+process_metrics,
@@ -314,6 +315,7 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                     if unified:
                         state['night_auto_finish_enabled']=bool(monitor and not strict_nights)
                         state['strict_nights']=strict_nights
+                        state['night_takeover_enabled']=night_takeover_enabled
                         state['overtime_control']=unified.overtime_control
                         state['normal_priority']=unified.normal_priority
                         state['midnight_separation']=unified.midnight_separation

@@ -89,6 +89,10 @@ def release_alert(release,unified):
 def agent_notice(record,unified):
     data=json.loads(record['payload'])
     machine={'auto':'任意单机','dual':'双机'}.get(data['machine'],data['machine'])
+    if data['machine']=='selected':
+        machine='指定机器 '+ '、'.join(data.get('selected_nodes',[]))
+    elif data['machine'].startswith('multi:'):
+        machine='任意 '+data['machine'].split(':',1)[1]+' 台机器'
     kind=record['kind']
     title='Agent 已创建预约' if kind=='agent-created' else 'Agent 已绑定预约'
     body=('你的 Agent 已创建预约' if kind=='agent-created' else '你的预约已绑定 Agent 会话')
