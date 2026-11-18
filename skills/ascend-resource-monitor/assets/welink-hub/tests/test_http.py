@@ -56,6 +56,15 @@ class CallbackTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status,200)
         self.assertEqual(self.hub.sent,[])
 
+    async def test_plain_creation_text_if_routed_is_rejected_without_claiming_success(self):
+        response=await self.client.post('/private',json=dict(sender='u00000001',receiver='u00000001',
+            type='Text',content='A5-124 预约夜间长任务9小时 0点开始'))
+        self.assertEqual(response.status,200)
+        self.assertEqual(await response.json(),{'message':'Unsupported command; no reservation created'})
+        self.assertIn('不支持创建新预约',self.hub.sent[-1][1])
+        self.assertIn('本次没有提交或占用任何卡位',self.hub.sent[-1][1])
+        self.assertNotIn('PRIVATE-NODE',self.hub.sent[-1][1])
+
     async def test_stale_snapshot_hides_private_data(self):
         self.hub.cache['test']['exported_at']=time.time()-100
         await self.client.post('/private',json=dict(sender='u00000001',receiver='u00000001',type='Text',content='查询'))

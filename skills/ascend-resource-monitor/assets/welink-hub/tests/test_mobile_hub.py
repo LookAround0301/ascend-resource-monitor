@@ -40,10 +40,10 @@ class MobileHubTests(unittest.IsolatedAsyncioTestCase):
 
     def task(self,job):return dict(id=job,state='active',employee='u00000001',cards=1,allowed_people=[])
 
-    async def post(self,params,employee='u00000001'):
+    async def post(self,params,employee='u00000001',unsupported=False):
         response=await self.client.post('/private',json=dict(sender=employee,receiver=employee,type='Text',content='/A5预约 '+params))
         self.assertEqual(response.status,200)
-        self.assertEqual(await response.json(),{'message':'Plugin executed'})
+        self.assertEqual(await response.json(),{'message':'Unsupported command; no reservation created'} if unsupported else {'message':'Plugin executed'})
         await self.hub.mobile.process_pending()
 
     def code(self):return re.search(r'/A5预约 确认 ([0-9a-f]{8})',self.hub.sent[-1][1]).group(1)
@@ -99,8 +99,24 @@ class MobileHubTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_trial_route_without_action_permission_cannot_prepare(self):
         self.hub.config['routes']['/private']['allow_actions']=False
-        await self.post('释放')
+        await self.post('释放',unsupported=True)
         self.assertNotIn('确认码',self.hub.sent[-1][1]);self.assertEqual(self.executions,[])
+
+    async def test_creation_request_is_explicitly_rejected_without_backend_execution(self):
+        await self.post('A5-124 预约夜间长任务9小时 0点开始',unsupported=True)
+        self.assertIn('预约操作未执行',self.hub.sent[-1][1])
+        self.assertIn('不支持创建新预约',self.hub.sent[-1][1])
+        self.assertIn('本次没有提交或占用任何卡位',self.hub.sent[-1][1])
+        self.assertEqual(self.executions,[])
+        with closing(sqlite3.connect(self.hub.config['database'])) as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM mobile_challenges').fetchone()[0],0)
+
+    async def test_creation_after_query_cannot_return_generic_plugin_success(self):
+        await self.post('查询')
+        before=len(self.hub.sent)
+        await self.post('帮我预约 A5-124 的8张卡',unsupported=True)
+        self.assertEqual(len(self.hub.sent),before)  # Existing private-reply rate limit remains.
+        self.assertEqual(self.executions,[])
 
     async def test_unconfirmed_operation_recovers_after_restart_without_retyping(self):
         await self.post('释放');code=self.code();self.fail_after_commit=True

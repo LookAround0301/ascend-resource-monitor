@@ -253,12 +253,16 @@ class Hub:
             return web.json_response({'message':'Plugin executed'})
         # Never send to a different receiver or expose queue contents/codes in
         # the callback response. Read-only routes cannot execute phone actions.
+        unsupported = params not in ('', '查询', '状态')
+        result = {'message': 'Unsupported command; no reservation created'} if unsupported else {'message': 'Plugin executed'}
         async with self.query_lock:
             if not allow_query(self.config['database'], employee):
                 LOG.info('Callback ignored: query rate limit')
-                return web.json_response({'message': 'Plugin executed'})
-        if params not in ('', '查询', '状态'):
-            message = HELP if self.mobile and route.get('allow_actions') else '【预约助手】当前入口支持查询自己的预约。'
+                return web.json_response(result)
+        if unsupported:
+            message = ('【预约操作未执行】当前小鲁班入口不支持创建新预约，本次没有提交或占用任何卡位。'
+                       '请通过对应集群网页或已配置的预约 Agent 申请，并核对实际预约编号和开始日期。')
+            message += '\n\n'+HELP if self.mobile and route.get('allow_actions') else '\n当前入口仅支持查询自己的预约。'
         else:
             parts = []
             for cluster in route['clusters']:
@@ -278,7 +282,7 @@ class Hub:
         except Exception as error:
             LOG.warning('Private query delivery outcome unknown: %s', type(error).__name__)
             raise web.HTTPServiceUnavailable()
-        return web.json_response({'message': 'Plugin executed'})
+        return web.json_response(result)
 
     async def healthz(self, _request):
         states = {s['id']: 'ok' if self.snapshot(s['id']) else 'unavailable' for s in self.config['sources']}

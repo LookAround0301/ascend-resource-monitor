@@ -2,6 +2,8 @@
 
 This integration relays reservation information to a compatible messaging platform. It is not enabled by the base monitor deployment and requires a separate service, platform credentials, and operator-managed configuration. The endpoint URLs, employee IDs, group IDs, tokens, host addresses, keys, and live queue data belong in private configuration, not in this repository.
 
+The messaging plugin does not create reservations from natural-language chat. Its supported mobile operations are query, confirmed release, and confirmed deferral. Unsupported commands explicitly report that no reservation was created, including in the generic callback acknowledgment when reply throttling applies. Messages that the upstream platform does not route to this plugin remain outside its control; an upstream conversational acknowledgment is not a reservation receipt. Create reservations through the queue webpage or the configured reservation Agent, then check the reservation ID and actual date. This restriction is independent of the Agent API, which does support creation.
+
 ## Components
 
 - `src/export_snapshot.py` reads one local queue state endpoint and a SQLite connection opened with `mode=ro`. It writes an atomic, minimal snapshot; `src/read_snapshot.py` is a forced SSH command that only returns a fresh snapshot. Each queue keeps its own database and exporter.
