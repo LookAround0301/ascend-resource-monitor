@@ -229,26 +229,32 @@ class UnifiedQueue:
     def _reset_if_due(self, db, now):
         if not self.daily_reset:
             return
-        if self.midnight_separation:
-            # Overnight submissions must still be queued when normal starts
-            # reopen at 09:00. Expired active reservations are handled below.
-            return
         boundary = self.reset_boundary(now)
         previous = db.execute("SELECT value FROM unified_meta WHERE key='reset_checkpoint'").fetchone()
         if previous and float(previous[0]) >= boundary:
             return
-        count = db.execute('SELECT COUNT(*) FROM unified_tasks WHERE not_before=0').fetchone()[0]
+        normal_filter = 'r.not_before=0'
+        normal_params = ()
+        if self.midnight_separation:
+            # Retire the previous normal period, but keep requests submitted
+            # during this night's closure for the normal queue reopening at 09:00.
+            cutoff = datetime.fromtimestamp(boundary, self.timezone).replace(
+                hour=getattr(self, 'night_start_hour', 0), minute=0, second=0, microsecond=0).timestamp()
+            normal_filter += ' AND r.created<?'
+            normal_params = (cutoff,)
+        expired_normals = 'SELECT r.id FROM unified_tasks r WHERE '+normal_filter
+        count = db.execute('SELECT COUNT(*) FROM unified_tasks r WHERE '+normal_filter, normal_params).fetchone()[0]
         shared={}
-        for row in db.execute("SELECT r.allocations,r.allowed_employees,a.employee FROM unified_tasks r JOIN accounts a ON a.id=r.account WHERE r.state='active' AND r.not_before=0").fetchall():
+        for row in db.execute("SELECT r.allocations,r.allowed_employees,a.employee FROM unified_tasks r JOIN accounts a ON a.id=r.account WHERE r.state='active' AND "+normal_filter, normal_params).fetchall():
             for node,cards in json.loads(row['allocations']).items():
                 db.execute('INSERT OR REPLACE INTO unified_continuing VALUES (?,?,?)',(node,row['employee'],boundary))
                 for employee in json.loads(row['allowed_employees']):
                     shared.setdefault((node,employee),set()).update(cards)
         for (node,employee),cards in shared.items():
             db.execute('INSERT OR REPLACE INTO unified_shared_continuing VALUES (?,?,?,?)', (node,employee,boundary,json.dumps(sorted(cards))))
-        db.execute('DELETE FROM confirmations WHERE job IN (SELECT id FROM unified_tasks WHERE not_before=0)')
-        db.execute('DELETE FROM reservations WHERE id IN (SELECT id FROM unified_tasks WHERE not_before=0)')
-        db.execute('DELETE FROM unified_tasks WHERE not_before=0')
+        db.execute('DELETE FROM confirmations WHERE job IN ('+expired_normals+')', normal_params)
+        db.execute('DELETE FROM reservations WHERE id IN ('+expired_normals+')', normal_params)
+        db.execute('DELETE FROM unified_tasks WHERE id IN ('+expired_normals+')', normal_params)
         # Unstarted reservations from a completed night must not be started anew at 09:00.
         expired=[row['id'] for row in db.execute("SELECT id,not_before,finish_before,night_fixed FROM unified_tasks WHERE not_before>0 AND state IN ('queued','ready')")
                  if not (self.strict_nights and row['night_fixed'])
@@ -275,7 +281,8 @@ class UnifiedQueue:
     def alerts(self, rows, user, now, reset, blocked, dependent, joint):
         result = []
         if reset and (reset['count'] or reset.get('cancelled_nights')) and 0 <= now-reset['at'] < 600:
-            message=('上午 9 点已清空普通任务预约；夜间预约按实际排程执行，未确认的过期预约已取消。'
+            message=('上午 9 点已清理上一普通时段的预约；夜间暂停期间新提交的普通预约已保留，过期夜间预约按规则结束登记。'
+                     if self.midnight_separation else '上午 9 点已清空普通任务预约；夜间预约按实际排程执行，未确认的过期预约已取消。'
                      if self.normal_priority else '上午 9 点已清空普通任务预约；已确认的夜间预约按固定时段执行，未确认的过期预约已取消。'
                      if self.strict_nights else '上午 9 点已清空普通任务预约，取消未开始的夜间预约；已开始的夜间任务保留，实际任务未停止。')
             result.append({'id':'daily-reset:'+str(reset['at']), 'kind':'reset','message':message})
