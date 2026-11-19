@@ -1,7 +1,7 @@
 """Queue controls mounted in the Grafana homepage, inside an isolated shadow DOM."""
 import json
 
-QUEUE_UI_VERSION = 'eight-node-midnight-tomorrow-2026-11-18'
+QUEUE_UI_VERSION = 'k31-admin-emergency-2026-11-19'
 
 HOME_FRAGMENT = '''<style>
 :host{display:block;height:100%;overflow:auto;color:#d8d9da;font:14px system-ui,sans-serif}*{box-sizing:border-box}.row{display:flex;gap:10px;align-items:end;flex-wrap:wrap}section{padding:10px 4px;border-bottom:1px solid #34383f}h3{font-size:15px;margin:0 0 10px}label{display:grid;gap:5px}input,select{background:#111217;color:#eee;border:1px solid #555b66;border-radius:4px;padding:7px;font:inherit;min-width:110px}input[type=password]{max-width:200px}button{font:inherit;border:0;border-radius:4px;padding:8px 12px;background:#316bd6;color:#fff;cursor:pointer}.secondary{background:#343f51}button:disabled{opacity:.45;cursor:not-allowed}.hidden{display:none!important}p{margin:8px 0;line-height:1.5;color:#adb9cb}.good{color:#7ed9a9}.error{color:#ff7886}.warning{color:#ffb457}.scroll{overflow:auto}table{width:100%;border-collapse:collapse}th,td{text-align:left;border-bottom:1px solid #34383f;padding:9px 7px;vertical-align:top;white-space:nowrap}th{color:#adb9cb;font-weight:500}small{color:#a4b1c4}.allowed-users{white-space:normal;max-width:320px;overflow-wrap:anywhere;line-height:1.5;margin:6px 0;color:#c6d2e0}td button{padding:6px 9px;margin:0 5px 4px 0}#message:empty{display:none}
@@ -32,6 +32,23 @@ HOME_JS = r'''"use strict";
   const $=id=>root.getElementById(id);
   let machineNodes='',state=null,polling=false,stopped=false,submitting=false,verifiedUser=null,verifying=false,version=0,lastRefreshAt=0,composingAllowed=false,autoCheckUser=null;
   let resourceMode='auto';const selectedMachines=new Set();
+  const emergencyPending=new Map(),emergencyBusy=new Set();
+  async function preemptReservation(row){
+   if(emergencyBusy.has(row.id))return;emergencyBusy.add(row.id);
+   try{
+    let request=emergencyPending.get(row.id);
+    if(!request){
+     const preview=await api('unified-emergency-preview',{job:row.id});
+     const resources=Object.entries(preview.allocations).map(([node,cards])=>node+'：'+cards.join('、')).join('\n');
+     const victims=preview.affected.map(item=>item.employee+' / '+item.name+'（'+(item.state==='active'?'使用中':'已分配待开始')+'）').join('\n')||'无，使用空闲资源';
+     if(!window.confirm('将 '+row.employee+' / '+row.name+' 的预约设为紧急并立即分配：\n'+resources+'\n\n受影响预约：\n'+victims+'\n\n被抢占预约整单回到队首，保留原需求和申请时长，并通知申请人及共同使用人自行释放资源。不会停止进程或容器。仍须在领取时限内登记开始，跨午夜截短。确认执行？'))return;
+     const operation=Array.from(crypto.getRandomValues(new Uint8Array(16)),n=>n.toString(16).padStart(2,'0')).join('');
+     request={job:row.id,operation,revision:preview.revision,confirmed:true};emergencyPending.set(row.id,request);
+    }
+    const result=await api('unified-emergency',request);emergencyPending.delete(row.id);report(result.message);await refresh();
+   }catch(error){if(error.status&&error.status<500)emergencyPending.delete(row.id);report(error.message+(emergencyPending.has(row.id)?'；结果待确认，再次点击将核对同一次操作。':''),true);}
+   finally{emergencyBusy.delete(row.id);render();}
+  }
   let failure='';const delivered=new Map(),openNotices=new Set(),alertSeen=new Set(),overdueNotices=new Map(),bottleneckStates=new Map(),allowedEditors=new Map(),avoidEditors=new Map(),backfillEditors=new Map(),extendChoices=new Map(),extending=new Set();
   const defaultAvoid=[24,25,26,27,35,36,37,38],initialAvoid=new Set(defaultAvoid);
   function clearAllowedEditors(){for(const editor of allowedEditors.values())clearTimeout(editor.timer);allowedEditors.clear();}
@@ -75,7 +92,7 @@ HOME_JS = r'''"use strict";
   }
   async function api(name,data){
    const response=await fetch('/a5-queue/api/'+name,{method:data===undefined?'GET':'POST',credentials:'same-origin',cache:'no-store',headers:data===undefined?{'X-A5-Queue-UI-Version':__QUEUE_UI_VERSION__}:{'Content-Type':'application/json','X-A5-Queue':'queue-v1'},body:data===undefined?undefined:JSON.stringify(data)});
-   const body=await response.json();if(!response.ok)throw new Error(body.message||'操作失败');return body;
+   const body=await response.json();if(!response.ok){const error=new Error(body.message||'操作失败');error.status=response.status;throw error;}return body;
   }
   function invalidate(text){if(registered())saveVerification(state.user.id,false);verifiedUser=null;failure=text;gate();}
   function closeNotices(){for(const n of openNotices)n.close();openNotices.clear();}
@@ -175,7 +192,7 @@ HOME_JS = r'''"use strict";
    const alerts=state.alerts||[],live=new Set(alerts.map(a=>a.id));for(const id of alertSeen)if(!live.has(id))alertSeen.delete(id);
    const jobs=new Set(state.tasks.map(row=>row.id));for(const id of overdueNotices.keys())if(!jobs.has(id))overdueNotices.delete(id);
    if(!registered()||permission()!=='granted'||failure)return;
-   for(const alert of alerts){const repeating=!!(alert.job&&alert.repeat_seconds),previous=repeating&&overdueNotices.get(alert.job),noticeUser=state.user.id,escalated=!!(previous&&previous.kind==='overdue-nonblocking'&&['overdue','overdue-joint','overdue-dependent'].includes(alert.kind));if(repeating){if(previous&&state.server_time-previous.at<alert.repeat_seconds&&!escalated)continue;}else if(alertSeen.has(alert.id))continue;try{const n=new Notification(escalated?(alert.kind==='overdue-joint'?'A5 超时任务共同阻塞':alert.kind==='overdue-dependent'?'A5 超时任务阻塞后续预约':'A5 超时任务已转为瓶颈'):alert.kind==='unregistered'?'A5 插队提醒':alert.kind==='over-allocation'?'A5 预约资源占用提醒':alert.kind==='reset'?'A5 预约清空通知':alert.kind==='night-rescheduled'?'A5 夜间预约顺延提醒':alert.kind==='extended-next'?'A5 排队延长提醒':alert.kind==='overtime-release'?'A5 预约登记已释放':alert.kind==='missed-cancel'?'A5 预约已自动取消':'A5 使用超时提醒',{body:escalated?(alert.kind==='overdue-joint'?'你的超时预约与其他超时任务共同影响后续预约，请尽快处理。':alert.kind==='overdue-dependent'?'你的超时预约占用后续预约所需资源，请尽快处理。':'你的超时预约已由非瓶颈转为瓶颈，正在阻挡后续预约，请尽快处理。'):alert.message,tag:'a5-alert:'+alert.id});if(repeating)overdueNotices.set(alert.job,{at:state.server_time,kind:alert.kind});else alertSeen.add(alert.id);openNotices.add(n);n.onerror=()=>{if(repeating)overdueNotices.delete(alert.job);else alertSeen.delete(alert.id);if(registered()&&state.user.id===noticeUser)invalidate('通知发送失败，请重新验证桌面通知。');};n.onclose=()=>openNotices.delete(n);n.onclick=()=>{window.focus();host.scrollIntoView({block:'center'});n.close();};}catch(e){invalidate('通知发送失败，请重新验证桌面通知。');break;}}
+   for(const alert of alerts){const repeating=!!(alert.job&&alert.repeat_seconds),previous=repeating&&overdueNotices.get(alert.job),noticeUser=state.user.id,escalated=!!(previous&&previous.kind==='overdue-nonblocking'&&['overdue','overdue-joint','overdue-dependent'].includes(alert.kind));if(repeating){if(previous&&state.server_time-previous.at<alert.repeat_seconds&&!escalated)continue;}else if(alertSeen.has(alert.id))continue;try{const n=new Notification(escalated?(alert.kind==='overdue-joint'?'A5 超时任务共同阻塞':alert.kind==='overdue-dependent'?'A5 超时任务阻塞后续预约':'A5 超时任务已转为瓶颈'):alert.kind==='unregistered'?'A5 插队提醒':alert.kind==='over-allocation'?'A5 预约资源占用提醒':alert.kind==='reset'?'A5 预约清空通知':alert.kind==='night-rescheduled'?'A5 夜间预约顺延提醒':alert.kind==='extended-next'?'A5 排队延长提醒':alert.kind==='overtime-release'?'A5 预约登记已释放':alert.kind==='missed-cancel'?'A5 预约已自动取消':alert.kind==='preempted'?'K3.1 紧急任务抢占通知':alert.kind==='emergency-allocated'?'K3.1 紧急预约已分配':'A5 使用超时提醒',{body:escalated?(alert.kind==='overdue-joint'?'你的超时预约与其他超时任务共同影响后续预约，请尽快处理。':alert.kind==='overdue-dependent'?'你的超时预约占用后续预约所需资源，请尽快处理。':'你的超时预约已由非瓶颈转为瓶颈，正在阻挡后续预约，请尽快处理。'):alert.message,tag:'a5-alert:'+alert.id});if(repeating)overdueNotices.set(alert.job,{at:state.server_time,kind:alert.kind});else alertSeen.add(alert.id);openNotices.add(n);n.onerror=()=>{if(repeating)overdueNotices.delete(alert.job);else alertSeen.delete(alert.id);if(registered()&&state.user.id===noticeUser)invalidate('通知发送失败，请重新验证桌面通知。');};n.onclose=()=>openNotices.delete(n);n.onclick=()=>{window.focus();host.scrollIntoView({block:'center'});n.close();};}catch(e){invalidate('通知发送失败，请重新验证桌面通知。');break;}}
   }
   function notify(){
    notifyAlerts();
@@ -234,7 +251,8 @@ HOME_JS = r'''"use strict";
     const tr=document.createElement('tr');tr.dataset.job=row.id;if(night)tr.className='night-task';
     const status=element('td',row.overdue&&night&&state.strict_nights?'夜间预约已到期 · 正在释放登记':row.overdue?'使用中 · 已超时 '+Math.max(1,Math.ceil(row.overdue_seconds/60))+' 分钟 · '+(row.overdue_bottleneck?'阻塞后续预约':row.overdue_joint_blocker?'与其他超时任务共同阻塞':row.overdue_pending_blocker?'阻塞后续预约（尚有其他占用）':'当前非瓶颈'):row.state==='active'&&row.bottleneck?'使用中 · 瓶颈任务':({queued:row.night_unconfirmed?'旧预约冲突 · 待处理':row.night_schedule_blocked?'资源释放待确认':row.night_fixed?(state.server_time>=row.not_before?'已预约 · 接管中':'已预约'):'等待中 · 组内第 '+groupPositions.get(row.id)+' 位',ready:'已分配，待开始',active:'使用中'})[row.state]);if(night){const badge=element('span','夜间');badge.className='night-badge';status.prepend(badge);}if(row.overdue)status.className=row.overdue_bottleneck||row.overdue_joint_blocker||row.overdue_pending_blocker?'error':'warning';else if(row.state==='active'&&row.bottleneck)status.className='bottleneck';if(row.mine&&(normalStartUnknown||row.normal_start_after_two)){status.classList.add('standby-status');status.append(document.createElement('br'),element('strong',normalStartUnknown?'预计开始时间暂无法确定，候补中':row.normal_start_after_midnight?'预计无法在午夜 0 点前开始，候补中':row.normal_start_after_one?'预计无法在凌晨 1 点前开始，候补中':'预计无法在凌晨 2 点前开始，候补中'));status.append(document.createElement('br'),element('span','资源提前释放时可替补；可考虑申请夜间任务，并自行设置自己的 agent 定时拉起任务。'));}
     if(state.overtime_control&&row.state==='ready'){const warnings=[];for(const [node,cards] of Object.entries(row.allocations||{}))for(const card of cards){const value=((state.card_usage||{})[node]||[])[card];if(['reserved_other','reserved_mixed'].includes(value))warnings.push(card);}if(warnings.length){status.append(document.createElement('br'),element('small','⚠ 预约卡仍检测到其他人的进程，请先核实实际使用情况'));}}
-    if(row.urgent){const badge=element('span','紧急');badge.className='urgent-badge';status.prepend(badge);}
+    if(row.urgent){const badge=element('span',row.emergency_at?'管理员紧急':'紧急');badge.className='urgent-badge';status.prepend(badge);}
+    if(row.preempted_at&&['queued','ready'].includes(row.state))status.append(document.createElement('br'),element('small','抢占后优先恢复'));
     if(row.night_end_requested)status.append(document.createElement('br'),element('small','正在结束登记'));
     if(row.night_reclaimed)status.append(document.createElement('br'),element('small','夜间接管已回收部分卡位'));
     if(state.overtime_control&&(row.extension_total_minutes||row.extension_minutes)){const total=row.extension_total_minutes??row.extension_minutes;status.append(document.createElement('br'),element('small',row.extension_total_complete===0?'累计延长至少 '+total+' 分钟（历史记录不完整）':'累计延长 '+total+' 分钟'));}
@@ -250,6 +268,7 @@ HOME_JS = r'''"use strict";
      const select=element('select','');select.dataset.extendFor=row.id;select.setAttribute('aria-label','延长时长');for(const minutes of [10,20,30]){const option=element('option',minutes+' 分钟');option.value=String(minutes);select.append(option);}select.value=extendChoices.get(row.id)||'10';select.onchange=()=>extendChoices.set(row.id,select.value);const extend=element('button','延长使用');extend.type='button';extend.disabled=extending.has(row.id);extend.onclick=async()=>{if(extending.has(row.id))return;const minutes=Number(select.value);extending.add(row.id);extend.disabled=true;try{const result=await api('unified-action',{job:row.id,action:'extend',extension_minutes:minutes,confirmed:true});extendChoices.delete(row.id);report(result.message);await refresh();}catch(e){report(e.message,true);}finally{extending.delete(row.id);extend.disabled=false;}};actions.append(select,extend);
     }
     if(state.user&&state.user.admin&&row.state==='queued'){button('置顶','priority-top');actions.lastElementChild.disabled=!row.can_raise_priority;button('↑ 调高','priority-up');actions.lastElementChild.disabled=!row.can_raise_priority;}
+    if(state.admin_preemption_enabled&&state.user?.admin&&!night&&['queued','ready'].includes(row.state)&&!(row.emergency_at&&row.state==='ready')){const emergency=element('button',emergencyPending.has(row.id)?'核对紧急抢占结果':'紧急抢占');emergency.type='button';emergency.className='secondary';emergency.disabled=emergencyBusy.has(row.id);emergency.title='管理员立即分配所需资源，被抢占预约回到队首并通知用户；不停止容器';emergency.onclick=()=>preemptReservation(row);actions.append(emergency);}
     if(state.user&&(row.mine||state.user.admin)&&['queued','ready'].includes(row.state)){button('↓ 调低','priority-down');actions.lastElementChild.disabled=!row.can_lower_priority;}
     if(!night&&row.mine&&['queued','ready'].includes(row.state)&&(state.can_urgent||row.urgent)){const urgent=element('button',row.urgent?'取消紧急':'设为紧急');urgent.type='button';urgent.className='secondary';urgent.onclick=async()=>{urgent.disabled=true;try{const result=await api('unified-urgent',{job:row.id,enabled:!row.urgent,confirmed:true});report(result.message);await refresh();}catch(e){report(e.message,true);}finally{urgent.disabled=false;}};actions.append(urgent);}
     if((state.flexible_scheduling||state.strict_nights)&&!night&&state.user&&(row.mine||state.user.admin)&&['queued','ready'].includes(row.state)){

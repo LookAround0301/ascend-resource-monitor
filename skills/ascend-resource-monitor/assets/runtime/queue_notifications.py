@@ -184,6 +184,12 @@ def build_feed(unified,store,monitor):
                     event['recipient']=employee
                     unique[event['key']]=event
         for record in history:
+            if record['kind'] in ('preempted','emergency-allocated') and employee in [record['employee'],*json.loads(record['allowed_employees'])]:
+                event=dict(recipient=employee,key=record['id'],kind=record['kind'],
+                    title='紧急任务抢占通知' if record['kind']=='preempted' else '紧急预约已分配',
+                    body=json.loads(record['payload'])['message'],job=record['job'],
+                    occurred_at=record['at'],valid_until=record['at']+86400)
+                unique[event['key']]=event
             if record['kind'] in ('agent-created','agent-bound') and employee==record['employee'] and now<record['at']+3600:
                 event=agent_notice(record,unified)
                 unique[event['key']]=event

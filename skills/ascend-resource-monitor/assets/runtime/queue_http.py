@@ -131,7 +131,7 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
             return names_cache['names']
 
     strict_nights=settings.get('strict_nights') is True
-    unified=UnifiedQueue(store, config['nodes'], settings.get('reservation_buffer_seconds',600), settings.get('timezone','UTC'), settings.get('daily_reset',False), settings.get('cards_per_node',8),strict_nights,settings.get('overtime_control') is True,settings.get('normal_priority') is True,settings.get('normal_max_seconds',7200),settings.get('night_carryover_cutoff_hour'),settings.get('missed_claim_limit',0),settings.get('midnight_separation') is True,settings.get('flexible_scheduling') is True,settings.get('daily_reset_normal_cutoff_hour'),settings.get('night_tomorrow_only') is True) if settings.get('unified_queue') is True else None
+    unified=UnifiedQueue(store, config['nodes'], settings.get('reservation_buffer_seconds',600), settings.get('timezone','UTC'), settings.get('daily_reset',False), settings.get('cards_per_node',8),strict_nights,settings.get('overtime_control') is True,settings.get('normal_priority') is True,settings.get('normal_max_seconds',7200),settings.get('night_carryover_cutoff_hour'),settings.get('missed_claim_limit',0),settings.get('midnight_separation') is True,settings.get('flexible_scheduling') is True,settings.get('daily_reset_normal_cutoff_hour'),settings.get('night_tomorrow_only') is True,settings.get('admin_preemption_enabled') is True) if settings.get('unified_queue') is True else None
     night_takeover_enabled=bool(strict_nights and settings.get('night_takeover_enabled') is not False)
     if unified and settings.get('agent_reservations_enabled') is True:
         from queue_agent import initialize_events
@@ -394,6 +394,19 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                 # deployment that has not upgraded yet.
                 set_session_cookie(response,request,'');return response
             if unified:
+                if operation in ('unified-emergency-preview','unified-emergency'):
+                    await admin_identity(request)
+                    from queue_emergency import emergency
+                    if operation=='unified-emergency-preview':
+                        result=emergency(unified,person,data.get('job'))
+                    else:
+                        if data.get('confirmed') is not True:
+                            raise ControlError(400,'请确认紧急抢占及受影响用户')
+                        if not data.get('operation') or not data.get('revision'):
+                            raise ControlError(400,'请先预览紧急抢占')
+                        event(person,'emergency_confirm',job=data.get('job'),operation=data.get('operation'))
+                        result=emergency(unified,person,data.get('job'),data['operation'],data['revision'])
+                    return web.json_response(result,headers={'Cache-Control':'no-store'})
                 if operation in ('unified-allowed-lookup','unified-allowed-search','unified-allowed-names','unified-allowed'):
                     if not person.get('registered'):raise ControlError(401,'请先登录预约申请人的个人账号')
                     job=data.get('job')

@@ -12,7 +12,7 @@ from queue_planner import plan
 
 
 class UnifiedQueue:
-    def __init__(self, store, nodes, buffer_seconds=600, timezone='UTC', daily_reset=False, cards_per_node=8, strict_nights=False, overtime_control=False, normal_priority=False, normal_max_seconds=7200, night_carryover_cutoff_hour=None, missed_claim_limit=0, midnight_separation=False, flexible_scheduling=False, daily_reset_normal_cutoff_hour=None, night_tomorrow_only=False):
+    def __init__(self, store, nodes, buffer_seconds=600, timezone='UTC', daily_reset=False, cards_per_node=8, strict_nights=False, overtime_control=False, normal_priority=False, normal_max_seconds=7200, night_carryover_cutoff_hour=None, missed_claim_limit=0, midnight_separation=False, flexible_scheduling=False, daily_reset_normal_cutoff_hour=None, night_tomorrow_only=False, admin_preemption_enabled=False):
         self.store = store
         self.timezone = dt_timezone.utc if timezone == 'UTC' else ZoneInfo(timezone)
         self.daily_reset = daily_reset
@@ -25,6 +25,9 @@ class UnifiedQueue:
         self.overtime_control = bool(strict_nights and (overtime_control or normal_priority))
         self.midnight_separation = bool(midnight_separation and strict_nights)
         self.night_tomorrow_only = bool(night_tomorrow_only)
+        self.admin_preemption_enabled = bool(admin_preemption_enabled)
+        if self.admin_preemption_enabled and not self.midnight_separation:
+            raise ValueError('Administrator preemption requires midnight separation')
         if self.night_tomorrow_only and not self.midnight_separation:
             raise ValueError('tomorrow-only nights require midnight separation')
         self.normal_priority = bool(strict_nights and normal_priority and not self.midnight_separation)
@@ -81,6 +84,8 @@ class UnifiedQueue:
                                      ('backfill_end_before', 'REAL NOT NULL DEFAULT 0'),
                                      ('backfill_no_buffer', 'INTEGER NOT NULL DEFAULT 0'),
                                      ('urgent', 'INTEGER NOT NULL DEFAULT 0'),
+                                     ('emergency_at', 'REAL NOT NULL DEFAULT 0'),
+                                     ('preempted_at', 'REAL NOT NULL DEFAULT 0'),
                                      ('extension_minutes', 'INTEGER NOT NULL DEFAULT 0'),
                                      ('extension_at', 'REAL NOT NULL DEFAULT 0'),
                                      ('night_requested_start', 'REAL NOT NULL DEFAULT 0'),
@@ -110,6 +115,9 @@ class UnifiedQueue:
                 at REAL NOT NULL, payload TEXT NOT NULL)''')
             db.execute('CREATE TABLE IF NOT EXISTS unified_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
             db.execute('CREATE TABLE IF NOT EXISTS unified_urgent_users (employee TEXT PRIMARY KEY, name TEXT NOT NULL)')
+            db.execute('''CREATE TABLE IF NOT EXISTS unified_emergency_operations (
+                id TEXT PRIMARY KEY, actor TEXT NOT NULL, job TEXT NOT NULL,
+                revision TEXT NOT NULL, at REAL NOT NULL, result TEXT NOT NULL)''')
             db.execute('''CREATE TABLE IF NOT EXISTS unified_night_reclaims (
                 id INTEGER PRIMARY KEY,job TEXT NOT NULL,night_job TEXT NOT NULL,at REAL NOT NULL,
                 old_allocations TEXT NOT NULL,new_allocations TEXT NOT NULL)''')
@@ -366,7 +374,7 @@ class UnifiedQueue:
         pending = [dict(row) for row in db.execute("SELECT * FROM unified_tasks WHERE state IN ('queued','ready') ORDER BY queue_order,rowid")]
         expired = [row for row in pending if row['state']=='ready' and
                    ((row['claim_before'] and row['claim_before']<=now) or
-                    (self.flexible_scheduling and not row['not_before'] and any(a<=now<b for a,b in self.avoid_windows(json.loads(row['avoid_slots']),now))) or
+                    (self.flexible_scheduling and not row['not_before'] and not row.get('emergency_at') and any(a<=now<b for a,b in self.avoid_windows(json.loads(row['avoid_slots']),now))) or
                     (not row['not_before'] and self.midnight_separation and self.normal_allowed_from(now)>now) or
                     (not row['not_before'] and not self.midnight_separation and now >= (self.normal_one_am(row['created']) if self.strict_nights else self.normal_two_am(row['created']))))]
         missed = {row['id'] for row in expired if row['ready_since'] and now>=row['ready_since']+600}
@@ -382,7 +390,7 @@ class UnifiedQueue:
                 db.execute('DELETE FROM reservations WHERE id=?',(row['id'],))
                 db.execute('DELETE FROM unified_tasks WHERE id=?',(row['id'],))
                 continue
-            db.execute("UPDATE unified_tasks SET state='queued',allocations='{}',claim_before=0,ready_since=0,offer_id='',offer_end_before=0,backfill_end_before=0,backfill_no_buffer=0,missed_claims=missed_claims+? WHERE id=?",
+            db.execute("UPDATE unified_tasks SET state='queued',allocations='{}',claim_before=0,ready_since=0,offer_id='',offer_end_before=0,backfill_end_before=0,backfill_no_buffer=0,emergency_at=0,missed_claims=missed_claims+? WHERE id=?",
                        (int(row['id'] in missed), row['id']))
         pending=[row for row in pending if row['id'] not in removed]
         missed-=removed
@@ -731,7 +739,7 @@ class UnifiedQueue:
                     reserved=json.loads(night['allocations'])
                     if any(set(cards).intersection(reserved.get(node,[])) for node,cards in allocations.items()):
                         end=min(end,night['not_before']-(0 if self.midnight_separation else self.buffer))
-                future_avoid=[begin for begin,finish in self.avoid_windows(json.loads(row['avoid_slots']),now) if begin>now]
+                future_avoid=[] if row['emergency_at'] else [begin for begin,finish in self.avoid_windows(json.loads(row['avoid_slots']),now) if begin>now]
                 minimum=row['backfill_min_seconds'] if row['backfill_end_before'] else 60
                 start_before=self.normal_one_am(now if self.midnight_separation else row['created']) if self.strict_nights else self.normal_two_am(row['created'])
                 deadline=min([row['claim_before'],start_before,end-minimum+0.001,*future_avoid])
@@ -1022,11 +1030,16 @@ class UnifiedQueue:
             reclaimed={row['job'] for row in db.execute("SELECT DISTINCT job FROM unified_night_reclaims WHERE job IN (SELECT id FROM unified_tasks WHERE state IN ('active','ready','queued'))")}
             releases=[dict(row) for row in db.execute('SELECT * FROM unified_overtime_releases WHERE released_at>?',(now-86400,))] if self.overtime_control and user else []
             missed_cancellations=[dict(row) for row in db.execute("SELECT * FROM unified_notice_events WHERE kind='missed-cancel' AND at>?",(now-86400,))] if user else []
+            emergency_notices=[dict(row) for row in db.execute("SELECT * FROM unified_notice_events WHERE kind IN ('preempted','emergency-allocated') AND at>?",(now-86400,))] if user else []
             can_urgent=bool(user and user.get('employee') and db.execute('SELECT 1 FROM unified_urgent_users WHERE employee=?',(user['employee'],)).fetchone())
         blocked=self.bottlenecks(rows,now)
         dependent,joint=self.overdue_resource_dependencies(rows,now)
         allowances=self.overtime_allowances(rows,now,{**blocked,**dependent})
         alerts=self.alerts(rows,user,now,reset,blocked,dependent,joint)
+        from queue_emergency import notice
+        for record in emergency_notices:
+            if user.get('employee','') in [record['employee'],*json.loads(record['allowed_employees'])]:
+                alerts.append(notice(record))
         for cancellation in missed_cancellations:
             if user.get('employee','') in [cancellation['employee'],*json.loads(cancellation['allowed_employees'])]:
                 alerts.append({'id':cancellation['id'],'kind':'missed-cancel',
@@ -1108,6 +1121,7 @@ class UnifiedQueue:
                 'alerts':alerts, 'daily_reset_enabled':self.daily_reset, 'last_daily_reset':reset,
                 'flexible_scheduling':self.flexible_scheduling, 'daily_reset_normal_cutoff_hour':self.daily_reset_normal_cutoff_hour,
                 'night_tomorrow_only':self.night_tomorrow_only,
+                'admin_preemption_enabled':self.admin_preemption_enabled,
                 'reservation_buffer_seconds': self.buffer,
                 'reservation_window': {'start': now, 'end': self.normal_night_end(now) if self.midnight_separation else self.cutoff(now), 'timezone': str(self.timezone),
                                        'today':datetime.fromtimestamp(now, self.timezone).date().isoformat(),
@@ -1223,13 +1237,14 @@ class UnifiedQueue:
 
     @staticmethod
     def _order_urgent(db,job,enabled):
-        rows=db.execute("SELECT id,queue_order,urgent FROM unified_tasks WHERE not_before=0 AND state IN ('queued','ready') ORDER BY queue_order,rowid").fetchall()
+        rows=db.execute("SELECT id,queue_order,urgent,preempted_at FROM unified_tasks WHERE not_before=0 AND state IN ('queued','ready') ORDER BY queue_order,rowid").fetchall()
         current=next((row for row in rows if row['id']==job),None)
         if current is None:return
         others=[row for row in rows if row['id']!=job]
-        urgent=[row for row in others if row['urgent']]
-        normal=[row for row in others if not row['urgent']]
-        ordered=urgent+([current] if enabled else [])+normal+([] if enabled else [current])
+        resumed=[row for row in rows if row['preempted_at']]
+        urgent=[row for row in others if row['urgent'] and not row['preempted_at']]
+        normal=[row for row in others if not row['urgent'] and not row['preempted_at']]
+        ordered=resumed+urgent+([current] if enabled and not current['preempted_at'] else [])+normal+([] if enabled or current['preempted_at'] else [current])
         for slot,row in zip(rows,ordered):db.execute('UPDATE unified_tasks SET queue_order=? WHERE id=?',(slot['queue_order'],row['id']))
 
     def urgent_users(self):
@@ -1421,7 +1436,7 @@ class UnifiedQueue:
                     if row['backfill_end_before'] and seconds<row['backfill_min_seconds']:
                         raise ControlError(409,'插空剩余时间不足最低接受时长，请继续等待')
                     if seconds<60:raise ControlError(409,'剩余使用时段不足 1 分钟，请重新排队')
-                db.execute("UPDATE unified_tasks SET state='active',activated=?,requested_seconds=? WHERE id=?", (now,seconds,job))
+                db.execute("UPDATE unified_tasks SET state='active',activated=?,requested_seconds=?,preempted_at=0 WHERE id=?", (now,seconds,job))
             elif action == 'finish' and row['state'] == 'active':
                 db.execute('DELETE FROM unified_tasks WHERE id=?', (job,))
                 db.execute('DELETE FROM confirmations WHERE job=?', (job,))
