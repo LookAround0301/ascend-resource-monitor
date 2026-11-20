@@ -220,14 +220,16 @@ class StrictQueueTests(unittest.TestCase):
         self.clock.return_value+=1200+600
         with self.assertRaises(ControlError):self.queue.action(self.user,job,'extend',extension_minutes=10)
 
-    def test_extensions_accumulate_and_legacy_history_is_marked_incomplete(self):
+    def test_legacy_extension_history_is_preserved_but_cannot_extend_again(self):
         job=self.add(requested_seconds=3600)
         row=next(r for r in self.queue.view(self.user)['tasks'] if r['id']==job)
         self.queue.action(self.user,job,'claim',row['offer_id'])
         self.clock.return_value+=3600+60
         self.queue.action(self.user,job,'extend',extension_minutes=20)
         self.clock.return_value+=1200+60
-        self.queue.action(self.user,job,'extend',extension_minutes=10)
+        # Simulate history created before the one-extension policy.
+        with self.store.db() as db:
+            db.execute('UPDATE unified_tasks SET extension_minutes=10,extension_total_minutes=30,extension_count=2 WHERE id=?',(job,))
         row=next(r for r in self.queue.view(self.user)['tasks'] if r['id']==job)
         self.assertEqual((row['extension_minutes'],row['extension_total_minutes'],row['extension_total_complete']),(10,30,1))
         with self.store.db() as db:
@@ -236,10 +238,9 @@ class StrictQueueTests(unittest.TestCase):
         reopened=UnifiedQueue(self.store,['a','b'],timezone='Asia/Shanghai',strict_nights=True,overtime_control=True)
         row=next(r for r in reopened.view(self.user)['tasks'] if r['id']==job)
         self.assertEqual((row['extension_minutes'],row['extension_total_minutes'],row['extension_total_complete']),(10,10,0))
-        self.clock.return_value+=600+60
-        reopened.action(self.user,job,'extend',extension_minutes=30)
+        with self.assertRaises(ControlError):reopened.action(self.user,job,'extend',extension_minutes=30)
         row=next(r for r in reopened.view(self.user)['tasks'] if r['id']==job)
-        self.assertEqual((row['extension_minutes'],row['extension_total_minutes'],row['extension_total_complete']),(30,40,0))
+        self.assertEqual((row['extension_minutes'],row['extension_total_minutes'],row['extension_total_complete']),(10,10,0))
 
     def test_extension_cannot_cut_into_fixed_night_buffer(self):
         self.clock.return_value=self.stamp('2026-11-05T00:30:00')
@@ -290,9 +291,10 @@ class StrictQueueTests(unittest.TestCase):
         self.assertEqual(next(r for r in state['tasks'] if r['id']==next_job)['estimated_start'],self.clock.return_value+1200+600)
         self.assertTrue(any(a['kind']=='extended-next' and '20 分钟' in a['message'] for a in state['alerts']))
         self.clock.return_value+=1200+60
-        self.queue.action(self.user,job,'extend',extension_minutes=10)
+        with self.assertRaises(ControlError):self.queue.action(self.user,job,'extend',extension_minutes=10)
         state=self.queue.view(waiting)
-        self.assertTrue(any(a['kind']=='extended-next' and '累计延长使用 30 分钟' in a['message'] for a in state['alerts']))
+        current=next(r for r in state['tasks'] if r['id']==job)
+        self.assertEqual((current['extension_count'],current['extension_total_minutes']),(1,20))
 
     def test_disabled_overtime_control_does_not_release_existing_reservation(self):
         self.queue=UnifiedQueue(self.store,['a','b'],timezone='Asia/Shanghai',strict_nights=True)

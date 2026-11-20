@@ -323,6 +323,9 @@ class UnifiedQueue:
                 if self.overtime_control and not row['not_before']:
                     message=('请在超时后的 10 分钟内结束登记或选择延长；普通任务最晚在凌晨 1 点释放登记。'
                              if self.normal_priority else '请在超时后的 10 分钟内结束登记，或选择延长 10、20、30 分钟。')
+                    if row['extension_count'] or row['extension_at'] or row['extension_minutes']:
+                        message='本预约已使用唯一一次延长机会，不能再次延长。请在超时后的 10 分钟内结束登记并自行停止任务。'
+                    else:message+=' 每条预约最多延长一次，这是唯一一次延长机会。'
                 result.append({'id':'usage-overdue:'+row['id']+':owner:'+status,
                                'job':row['id'],'repeat_seconds':interval,
                                'kind':'overdue' if bottleneck else 'overdue-joint' if jointly_blocking else 'overdue-dependent' if indirectly_blocking else 'overdue-nonblocking',
@@ -1076,7 +1079,7 @@ class UnifiedQueue:
             row['can_lower_priority']=bool(user and not row['urgent'] and (row['mine'] or user.get('admin')) and row in pending and pending.index(row)<len(pending)-1)
         return {'user': user, 'tasks': rows, 'nodes': list(self.nodes), 'cards_per_node': self.capacity, 'server_time': now, 'unified': True, 'can_urgent':can_urgent, 'normal_max_seconds':self.normal_max_seconds, 'night_carryover_cutoff_hour':self.night_carryover_cutoff_hour, 'missed_claim_limit':self.missed_claim_limit,
                 'alerts':alerts, 'daily_reset_enabled':self.daily_reset, 'last_daily_reset':reset,
-                'reservation_buffer_seconds': self.buffer,
+                'extension_limit': 1, 'reservation_buffer_seconds': self.buffer,
                 'reservation_window': {'start': now, 'end': self.normal_night_end(now) if self.midnight_separation else self.cutoff(now), 'timezone': str(self.timezone),
                                        'start_dates': [(datetime.fromtimestamp(now, self.timezone).date() + timedelta(days=i)).isoformat() for i in (0, 1)],
                                        'night_windows': self.night_windows(now)}}
@@ -1330,6 +1333,8 @@ class UnifiedQueue:
             if action=='extend':
                 if not self.overtime_control or row['not_before'] or row['state']!='active' or type(extension_minutes) is not int or extension_minutes not in (10,20,30):
                     raise ControlError(400,'请选择可延长的普通任务和有效时长')
+                if row['extension_count'] or row['extension_at'] or row['extension_minutes']:
+                    raise ControlError(409,'每条预约最多延长一次，本预约已使用唯一一次延长机会，请按时结束登记并自行停止任务')
                 end=row['activated']+row['requested_seconds']
                 if now<end or now>=end+600:raise ControlError(409,'只能在超时后的 10 分钟内申请延长')
                 limit=self.normal_night_end(row['activated'])

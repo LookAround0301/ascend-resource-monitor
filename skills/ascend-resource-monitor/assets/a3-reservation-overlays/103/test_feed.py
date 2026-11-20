@@ -162,16 +162,17 @@ class FeedTests(unittest.TestCase):
                 row=db.execute("SELECT missed_claims,state FROM unified_tasks WHERE id='retained'").fetchone()
                 self.assertEqual((row['missed_claims'],row['state']),(count+1,'queued'))
 
-    def test_second_extension_records_primary_owner_and_no_first_event(self):
+    def test_shared_user_cannot_extend_twice_or_create_second_notice(self):
         self.task('extended','a00000001',age=3601,allowed=['b00000002'])
         user=dict(id=self.accounts['b00000002'],employee='b00000002',admin=False)
         self.queue.action(user,'extended','extend',extension_minutes=10)
         self.assertEqual(build_feed(self.queue,self.store,None)['extensions'],[])
         self.time_mock.return_value=self.now+601
-        self.queue.action(user,'extended','extend',extension_minutes=20)
-        extension=build_feed(self.queue,self.store,None)['extensions'][0]
-        self.assertEqual((extension['employee'],extension['count'],extension['minutes'],extension['total']),
-                         ('a00000001',2,20,30))
+        from control_common import ControlError
+        with self.assertRaises(ControlError):self.queue.action(user,'extended','extend',extension_minutes=20)
+        self.assertEqual(build_feed(self.queue,self.store,None)['extensions'],[])
+        with self.store.db() as db:
+            self.assertEqual(db.execute("SELECT extension_count FROM unified_tasks WHERE id='extended'").fetchone()[0],1)
 
 
     def test_free_cards_do_not_generate_private_unregistered_notice(self):
