@@ -68,9 +68,9 @@ class Client:
     def login(self):self.call('login',{'employee':self.config['employee'],'name':self.config['name']})
     def state(self):
         state=self.call('state')
-        keys=('id','state','employee','name','mine','collaborator','position','machine','total_cards','requested_seconds','effective_requested_seconds','estimated_start','not_before','allocations','claim_before','offer_id','activated','overdue','overdue_seconds','overtime_release_at','allowed_people')
+        keys=('id','state','employee','name','mine','collaborator','position','machine','total_cards','requested_seconds','effective_requested_seconds','estimated_start','not_before','allocations','claim_before','offer_id','activated','overdue','overdue_seconds','overtime_release_at','allowed_people','urgent','extension_count','extension_at','extension_minutes','extension_total_minutes')
         return {'server_time':state.get('server_time'),'nodes':state.get('nodes'),
-                'card_usage':state.get('card_usage'),'process_monitor_errors':state.get('process_monitor_errors'),
+                'extension_limit':state.get('extension_limit'),'urgent_extension_limit':state.get('urgent_extension_limit'),'card_usage':state.get('card_usage'),'process_monitor_errors':state.get('process_monitor_errors'),
                 'tasks':[{k:r.get(k) for k in keys if k in r} for r in state.get('tasks',[]) if r.get('mine') or r.get('collaborator')]}
 
 def main():
