@@ -12,7 +12,7 @@ from queue_planner import plan
 
 
 class UnifiedQueue:
-    def __init__(self, store, nodes, buffer_seconds=600, timezone='UTC', daily_reset=False, cards_per_node=8, strict_nights=False, overtime_control=False, normal_priority=False, normal_max_seconds=7200, night_carryover_cutoff_hour=None, missed_claim_limit=0, midnight_separation=False):
+    def __init__(self, store, nodes, buffer_seconds=600, timezone='UTC', daily_reset=False, cards_per_node=8, strict_nights=False, overtime_control=False, normal_priority=False, normal_max_seconds=7200, night_carryover_cutoff_hour=None, missed_claim_limit=0, midnight_separation=False, normal_reservation_limit=5):
         self.store = store
         self.timezone = dt_timezone.utc if timezone == 'UTC' else ZoneInfo(timezone)
         self.daily_reset = daily_reset
@@ -28,6 +28,9 @@ class UnifiedQueue:
         if type(normal_max_seconds) is not int or not 300 <= normal_max_seconds <= 7200 or normal_max_seconds % 300:
             raise ValueError('normal_max_seconds must be a multiple of five minutes, between 5 minutes and 2 hours')
         self.normal_max_seconds = normal_max_seconds
+        if type(normal_reservation_limit) is not int or not 1 <= normal_reservation_limit <= 5:
+            raise ValueError('normal_reservation_limit must be an integer from 1 to 5')
+        self.normal_reservation_limit = normal_reservation_limit
         if night_carryover_cutoff_hour is not None and (type(night_carryover_cutoff_hour) not in (int, float) or not 9<=night_carryover_cutoff_hour<=23 or (night_carryover_cutoff_hour * 60) % 1):
             raise ValueError('night carryover cutoff must be a local hour between 9 and 23')
         if night_carryover_cutoff_hour is not None and not (self.strict_nights and (self.normal_priority or self.midnight_separation)):
@@ -41,6 +44,7 @@ class UnifiedQueue:
             raise ValueError('unified queue requires exactly two nodes')
         self.buffer = buffer_seconds
         with store.db() as db:
+            db.execute('CREATE TABLE IF NOT EXISTS unified_user_preferences (account TEXT PRIMARY KEY, default_avoid_slots TEXT NOT NULL)')
             db.execute('''CREATE TABLE IF NOT EXISTS unified_tasks (
                 id TEXT PRIMARY KEY, account TEXT NOT NULL, title TEXT NOT NULL,
                 state TEXT NOT NULL, created REAL NOT NULL, activated REAL, finished REAL,
@@ -61,6 +65,7 @@ class UnifiedQueue:
             columns = {row['name'] for row in db.execute('PRAGMA table_info(unified_tasks)')}
             for name, definition in [('queue_order', 'INTEGER NOT NULL DEFAULT 0'),
                                      ('ready_since', 'REAL NOT NULL DEFAULT 0'),
+                                     ('purpose', "TEXT NOT NULL DEFAULT ''"),
                                      ('offer_id', "TEXT NOT NULL DEFAULT ''"),
                                      ('missed_claims', 'INTEGER NOT NULL DEFAULT 0'),
                                      ('allowed_employees', "TEXT NOT NULL DEFAULT '[]'"),
@@ -198,6 +203,21 @@ class UnifiedQueue:
         if not isinstance(value,list) or len(value)>48 or any(type(slot) is not int or not 0<=slot<48 for slot in value):
             raise ControlError(400,'避开时段必须是有效的半小时时段')
         return sorted(set(value))
+
+    def default_avoid_slots(self, user):
+        if user and user.get('id'):
+            with self.store.db() as db:
+                row=db.execute('SELECT default_avoid_slots FROM unified_user_preferences WHERE account=?',(user['id'],)).fetchone()
+            if row is not None:return self.validate_avoid_slots(json.loads(row[0]))
+        return [24,25,26,27,35,36,37,38]
+
+    def set_default_avoid_slots(self,user,slots):
+        if not self.strict_nights:raise ControlError(400,'当前部署不支持避开时段')
+        if not user or not user.get('id'):raise ControlError(401,'请先登录个人账号')
+        slots=self.validate_avoid_slots(slots)
+        with self.store.db() as db:
+            db.execute('INSERT INTO unified_user_preferences(account,default_avoid_slots) VALUES (?,?) ON CONFLICT(account) DO UPDATE SET default_avoid_slots=excluded.default_avoid_slots',(user['id'],json.dumps(slots)))
+        return slots
 
     def avoid_windows(self, slots, now):
         day=datetime.fromtimestamp(now,self.timezone).date()
@@ -640,7 +660,7 @@ class UnifiedQueue:
                 row['not_before']=start;row['requested_seconds']=seconds;row['night_schedule_blocked']=0
                 if changed:row['night_rescheduled_at']=now
 
-    def _schedule(self, db, now):
+    def _schedule(self, db, now, revised_offer=None):
         self._reset_if_due(db, now)
         if self.night_carryover_cutoff_hour is not None:
             nights=[dict(row) for row in db.execute('''SELECT r.*,a.employee FROM unified_tasks r JOIN accounts a ON a.id=r.account
@@ -811,8 +831,13 @@ class UnifiedQueue:
                             if not prediction.get('backfill_end_before'):
                                 deadlines.append(earlier['start'] - prediction.get('seconds',row['requested_seconds'] or 3600) - self.buffer)
                 claim_before=min(deadlines)
+                ready_since=now
+                if revised_offer is not None and row['id']==revised_offer['id']:
+                    # Editing a ready reservation must not restart its claim window.
+                    claim_before=min(claim_before,revised_offer['claim_before'])
+                    ready_since=revised_offer['ready_since'] or now
                 db.execute("UPDATE unified_tasks SET state='ready',allocations=?,claim_before=?,ready_since=?,offer_id=?,offer_end_before=?,backfill_end_before=?,backfill_no_buffer=? WHERE id=? AND state='queued'",
-                           (json.dumps(prediction['allocations']), claim_before, now, secrets.token_hex(16),offer_end,prediction.get('backfill_end_before',0),int(bool(prediction.get('backfill_no_buffer'))),row['id']))
+                           (json.dumps(prediction['allocations']), claim_before, ready_since, secrets.token_hex(16),offer_end,prediction.get('backfill_end_before',0),int(bool(prediction.get('backfill_no_buffer'))),row['id']))
             if prediction:
                 previous.append(prediction)
         if expired:
@@ -1078,26 +1103,17 @@ class UnifiedQueue:
             pending=[r for r in rows if r['state'] in ('queued','ready') and bool(r['not_before'])==bool(row['not_before']) and r['urgent']==row['urgent']]
             row['can_raise_priority']=bool(user and user.get('admin') and not row['urgent'] and row in waiting and waiting.index(row)>0)
             row['can_lower_priority']=bool(user and not row['urgent'] and (row['mine'] or user.get('admin')) and row in pending and pending.index(row)<len(pending)-1)
-        return {'user': user, 'tasks': rows, 'nodes': list(self.nodes), 'cards_per_node': self.capacity, 'server_time': now, 'unified': True, 'can_urgent':can_urgent, 'normal_max_seconds':self.normal_max_seconds, 'night_carryover_cutoff_hour':self.night_carryover_cutoff_hour, 'missed_claim_limit':self.missed_claim_limit,
+        return {'user': user, 'tasks': rows, 'nodes': list(self.nodes), 'cards_per_node': self.capacity, 'server_time': now, 'unified': True, 'can_urgent':can_urgent, 'normal_max_seconds':self.normal_max_seconds, 'normal_reservation_limit':self.normal_reservation_limit, 'default_avoid_slots':self.default_avoid_slots(user), 'night_carryover_cutoff_hour':self.night_carryover_cutoff_hour, 'missed_claim_limit':self.missed_claim_limit,
                 'alerts':alerts, 'daily_reset_enabled':self.daily_reset, 'last_daily_reset':reset,
                 'extension_limit': 1, 'urgent_extension_limit': None, 'reservation_buffer_seconds': self.buffer,
                 'reservation_window': {'start': now, 'end': self.normal_night_end(now) if self.midnight_separation else self.cutoff(now), 'timezone': str(self.timezone),
                                        'start_dates': [(datetime.fromtimestamp(now, self.timezone).date() + timedelta(days=i)).isoformat() for i in (0, 1)],
                                        'night_windows': self.night_windows(now)}}
 
-    def enqueue(self, user, data):
-        if data.get('notifications_ready') is not True:
-            raise ControlError(400, '请先在主页开启桌面通知并通过测试，再加入队列')
-        if self.capacity != 8 and data.get('cards_per_node') != self.capacity:
-            raise ControlError(409, '卡位配置已更新，请刷新页面后重新预约')
-        cards, seconds = data.get('cards'), data.get('requested_seconds')
-        dual, night, start = data.get('dual', False), data.get('night', False), data.get('not_before', 0)
-        urgent=data.get('urgent',False)
-        if type(urgent) is not bool:raise ControlError(400,'无效紧急标记')
-        if urgent and night:raise ControlError(400,'只有普通任务可以设为紧急')
-        now = time.time()
+    def reservation_resources(self, data):
+        cards, dual = data.get('cards'), data.get('dual', False)
         fixed_node = ''
-        if type(dual) is not bool or type(night) is not bool or type(cards) is not int:
+        if type(dual) is not bool or type(cards) is not int:
             raise ControlError(400, '请选择有效的机器和卡数')
         if 'machine' in data:
             machine = data['machine']
@@ -1115,10 +1131,131 @@ class UnifiedQueue:
         elif not 1 <= cards <= self.capacity or (dual and cards != self.capacity):
             # Legacy form uses a per-node count and supports full-node dual requests.
             raise ControlError(400, f'旧版请求请使用单机 1–{self.capacity} 卡或双机各 {self.capacity} 卡')
+        return cards, dual, fixed_node
+
+    @staticmethod
+    def validate_purpose(purpose):
+        if not isinstance(purpose, str):
+            raise ControlError(400, '预约事项必须是文本')
+        purpose = purpose.strip()
+        if not purpose:
+            raise ControlError(400, '请填写预约事项')
+        if len(purpose) > 120 or re.search(r'[\x00-\x1f\x7f-\x9f\u2028\u2029\ud800-\udfff]', purpose):
+            raise ControlError(400, '预约事项须为不超过 120 字的单行文本')
+        return purpose
+
+    def validate_duration(self, seconds, night):
         night_max_seconds=9*3600 if self.midnight_separation else 13*3600
         if type(seconds) is not int or seconds < 60 or seconds % 60 or (not night and seconds > self.normal_max_seconds) or (night and seconds > night_max_seconds):
             normal_limit=(str(self.normal_max_seconds//3600)+' 小时' if self.normal_max_seconds%3600==0 else str(self.normal_max_seconds//60)+' 分钟')
             raise ControlError(400, '请按整分钟填写时长，至少 1 分钟；普通任务最长 '+normal_limit+'，夜间任务最长 '+str(night_max_seconds//3600)+' 小时')
+
+    def fit_duration(self, seconds, booking, now):
+        start = booking['not_before']
+        if start and self.night_carryover_cutoff_hour is not None:
+            deadline = self.night_hard_cutoff(booking)
+            seconds = min(seconds, math.floor(deadline-start))
+            if seconds <= 0:
+                raise ControlError(409, '夜间预约时段已无剩余时间')
+        finish_before = booking['finish_before'] or self.cutoff(booking.get('created', now))
+        if not start and not self.midnight_separation and now + seconds > finish_before:
+            raise ControlError(400, '预约开始和预计结束时间都必须在次日上午 9 点前（含 9 点）')
+        return seconds
+
+    def allocate_edited_night(self, db, row, seconds, resources, keep_cards):
+        from queue_night_policy import reserve_night
+        reservations=[]
+        for other in db.execute("SELECT * FROM unified_tasks WHERE id<>? AND not_before>0 AND state IN ('queued','ready','active') ORDER BY queue_order,rowid", (row['id'],)):
+            begin=other['activated'] if other['state']=='active' and not other['night_fixed'] else other['not_before']
+            allocation=json.loads(other['allocations'])
+            if not allocation:
+                possible=[other['fixed_node']] if other['fixed_node'] else list(self.nodes)
+                allocation={node:self.nodes[node] for node in possible}
+            reservations.append({'start':begin,'end':begin+other['requested_seconds'],'allocations':allocation})
+        if keep_cards:
+            allocation=json.loads(row['allocations'])
+            for other in reservations:
+                if other['start']<row['not_before']+seconds and row['not_before']<other['end']:
+                    if any(set(cards).intersection(other['allocations'].get(node,[])) for node,cards in allocation.items()):
+                        raise ControlError(409, '原夜间卡位与新时长冲突，请缩短时长或修改机器和卡数')
+            return allocation
+        allocation=reserve_night(self.nodes,reservations,row['not_before'],seconds,*resources)
+        if allocation is None:
+            raise ControlError(409, '所选夜间时间段没有足够的固定卡位，请调整机器、卡数或时长')
+        return allocation
+
+    def update_reservation(self, user, job, data):
+        if not isinstance(job, str):
+            raise ControlError(400, '无效的预约')
+        resources = None
+        if {'machine', 'cards', 'dual'} & data.keys():
+            if 'machine' not in data:
+                raise ControlError(400, '请选择有效的预约机器和卡数')
+            if self.capacity != 8 and data.get('cards_per_node') != self.capacity:
+                raise ControlError(409, '卡位配置已更新，请刷新页面')
+            resources = self.reservation_resources(data)
+        offer_id = data.get('offer_id', '')
+        if not isinstance(offer_id, str):
+            raise ControlError(400, '无效的分配编号')
+
+        with self.store.db() as db:
+            now = time.time()
+            self._schedule(db, now)
+            row = db.execute('SELECT * FROM unified_tasks WHERE id=?', (job,)).fetchone()
+            if not row:
+                raise ControlError(404, '预约不存在')
+            if row['account'] != user['id'] and not user.get('admin'):
+                raise ControlError(403, '只能修改自己的预约')
+            if row['state'] not in ('queued', 'ready') or row['night_takeover'] or (
+                    row['not_before'] and row['not_before'] <= now):
+                raise ControlError(409, '当前预约状态不支持修改')
+            if offer_id != (row['offer_id'] if row['state'] == 'ready' else ''):
+                raise ControlError(409, '分配状态已变化，请刷新后重试')
+            purpose = self.validate_purpose(data['purpose']) if 'purpose' in data else row['purpose']
+            seconds = row['requested_seconds']
+            if 'requested_seconds' in data:
+                seconds = data['requested_seconds']
+                self.validate_duration(seconds, bool(row['not_before']))
+                seconds = self.fit_duration(seconds, dict(row), now)
+
+            current = (row['cards'], bool(row['dual']), row['fixed_node'])
+            resources = resources or current
+            if resources == current and seconds == row['requested_seconds']:
+                if purpose != row['purpose']:
+                    db.execute('UPDATE unified_tasks SET purpose=? WHERE id=?', (purpose, job))
+                return
+
+            cards, dual, fixed_node = resources
+            night_fixed = bool(row['not_before'] and (self.strict_nights or row['night_fixed']))
+            allocation = {}
+            if night_fixed:
+                keep_cards = bool(resources == current and row['night_fixed'] and json.loads(row['allocations']))
+                allocation = self.allocate_edited_night(db, row, seconds, resources, keep_cards)
+            backfill = row['backfill_min_seconds'] if row['backfill_min_seconds'] <= seconds else 0
+            db.execute('''UPDATE unified_tasks SET cards=?, dual=?, fixed_node=?,
+                requested_seconds=?, purpose=?, backfill_min_seconds=?, night_fixed=?, allocations=?,
+                state='queued', claim_before=0, ready_since=0, offer_id='', offer_end_before=0,
+                backfill_end_before=0, backfill_no_buffer=0, night_schedule_blocked=0 WHERE id=?''',
+                (cards, int(dual), fixed_node, seconds, purpose,
+                 backfill, int(night_fixed), json.dumps(allocation), job))
+            self._schedule(db, now, revised_offer=row if row['state']=='ready' else None)
+            return row['backfill_min_seconds'] > seconds
+
+    def enqueue(self, user, data):
+        if data.get('notifications_ready') is not True:
+            raise ControlError(400, '请先在主页开启桌面通知并通过测试，再加入队列')
+        if self.capacity != 8 and data.get('cards_per_node') != self.capacity:
+            raise ControlError(409, '卡位配置已更新，请刷新页面后重新预约')
+        purpose = self.validate_purpose(data['purpose']) if 'purpose' in data else ''
+        cards, seconds = data.get('cards'), data.get('requested_seconds')
+        dual, night, start = data.get('dual', False), data.get('night', False), data.get('not_before', 0)
+        urgent=data.get('urgent',False)
+        if type(urgent) is not bool:raise ControlError(400,'无效紧急标记')
+        if urgent and night:raise ControlError(400,'只有普通任务可以设为紧急')
+        now = time.time()
+        if type(night) is not bool:raise ControlError(400, '请选择有效的预约类型')
+        cards, dual, fixed_node = self.reservation_resources(data)
+        self.validate_duration(seconds, night)
         backfill=self.validate_backfill(data.get('backfill_min_seconds',0),seconds)
         if backfill and (night or not self.strict_nights):raise ControlError(400,'只有普通任务支持短时插空')
         if type(start) not in (int, float) or not math.isfinite(start) or start < 0:
@@ -1129,7 +1266,7 @@ class UnifiedQueue:
             raise ControlError(400, '夜间任务开始时间须在 00:00 至 09:00 前' if self.midnight_separation else '夜间任务开始时间须在晚上 20:00 至次日 09:00 前')
         if not night and start:
             raise ControlError(400, '普通任务无需填写预约开始时间')
-        avoid=self.validate_avoid_slots(data.get('avoid_slots',[24,25,26,27,35,36,37,38])) if self.strict_nights and not night else []
+        avoid=self.validate_avoid_slots(data['avoid_slots'] if 'avoid_slots' in data else self.default_avoid_slots(user)) if self.strict_nights and not night else []
         # Exactly 09:00 belongs to the preceding night, not the following one.
         finish_before = self.night_cutoff(start if self.midnight_separation else start - 0.001) if night else (0 if self.midnight_separation else self.cutoff(now))
         if night and self.night_carryover_cutoff_hour is not None:
@@ -1141,6 +1278,10 @@ class UnifiedQueue:
             if urgent and not db.execute('SELECT 1 FROM unified_urgent_users WHERE employee=?',(user.get('employee',''),)).fetchone():
                 raise ControlError(403,'当前账号不在紧急用户名单中')
             self._reset_if_due(db, now)
+            if not night:
+                normal_count = db.execute("SELECT COUNT(*) FROM unified_tasks WHERE account=? AND not_before=0 AND state IN ('queued','ready','active')", (user['id'],)).fetchone()[0]
+                if normal_count >= self.normal_reservation_limit:
+                    raise ControlError(409, '每人最多保留 '+str(self.normal_reservation_limit)+' 条未结束普通预约（含排队、待开始和使用中）')
             count = db.execute("SELECT COUNT(*) FROM unified_tasks WHERE account=? AND state IN ('queued','ready','active')", (user['id'],)).fetchone()[0]
             if count >= 5:
                 raise ControlError(409, '每人最多保留 5 个未结束预约')
@@ -1165,6 +1306,7 @@ class UnifiedQueue:
                 night_fixed=1
             db.execute('''INSERT INTO unified_tasks(id,account,title,state,created,requested_seconds,cards,dual,not_before,finish_before,fixed_node,queue_order)
                 VALUES (?,?,?,'queued',?,?,?,?,?,?,?,?)''', (job, user['id'], '', now, seconds, cards, int(dual), start, finish_before, fixed_node, order))
+            db.execute('UPDATE unified_tasks SET purpose=? WHERE id=?',(purpose,job))
             if night_fixed:
                 db.execute('UPDATE unified_tasks SET night_fixed=1,allocations=?,night_requested_start=? WHERE id=?',(json.dumps(allocation),start,job))
             if avoid:
@@ -1232,7 +1374,8 @@ class UnifiedQueue:
                 db.execute('UPDATE unified_tasks SET backfill_min_seconds=? WHERE id=?',(value,job))
             self._schedule(db,now)
 
-    def update_avoid_slots(self,user,job,slots):
+    def update_avoid_slots(self,user,job,slots,save_as_default=False):
+        if type(save_as_default) is not bool:raise ControlError(400,'以此为默认必须是布尔值')
         if not self.strict_nights or not isinstance(job,str):raise ControlError(400,'当前部署不支持避开时段')
         slots=self.validate_avoid_slots(slots);now=time.time()
         with self.store.db() as db:
@@ -1240,7 +1383,10 @@ class UnifiedQueue:
             if not row:raise ControlError(404,'预约不存在')
             if row['account']!=user['id'] and not user.get('admin'):raise ControlError(403,'只能修改自己的预约')
             if row['not_before'] or row['state'] not in ('queued','ready'):raise ControlError(409,'只能修改尚未开始的普通任务')
+            if save_as_default and row['account']!=user['id']:raise ControlError(403,'只能从自己的预约保存个人默认时段')
             db.execute('UPDATE unified_tasks SET avoid_slots=? WHERE id=?',(json.dumps(slots),job))
+            if save_as_default:
+                db.execute('INSERT INTO unified_user_preferences(account,default_avoid_slots) VALUES (?,?) ON CONFLICT(account) DO UPDATE SET default_avoid_slots=excluded.default_avoid_slots',(user['id'],json.dumps(slots)))
             self._schedule(db,now)
 
     @staticmethod

@@ -51,6 +51,19 @@ class HomeNavigationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status,200)
             self.assertIn('<script src="/a5-queue/home.js" defer></script>',await response.text())
 
+    async def test_configured_normal_reservation_limit_is_published(self):
+        config={**self.config,'task_queue':{**self.config['task_queue'],'normal_reservation_limit':3}}
+        client=TestClient(TestServer(create_app(config,agent_override=True)))
+        await client.start_server()
+        try:
+            response=await client.get('/a5-queue/api/state')
+            self.assertEqual(response.status,200)
+            self.assertEqual((await response.json())['normal_reservation_limit'],3)
+            response=await client.get('/a5-queue/home.js')
+            self.assertIn("state.normal_reservation_limit+' 条未结束普通预约",await response.text())
+        finally:
+            await client.close()
+
     async def test_default_home_alias_gets_unified_panel_in_both_formats(self):
         response=await self.client.get('/api/dashboards/uid/default-home-dashboard')
         model=(await response.json())['dashboard']

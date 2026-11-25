@@ -63,6 +63,41 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
         if len(set(names))!=1:raise ControlError(409,'两台机器的人员姓名不一致，请联系管理员核实')
         return {'employee':employee,'name':names[0]}
 
+    whitelist_status_cache={}
+    whitelist_status_lock=asyncio.Lock()
+
+    async def require_personnel_whitelist(employee, name):
+        if settings.get('require_personnel_whitelist') is not True:return
+        from personnel_roster import personnel
+        employee,name=personnel(employee,name)
+        key=(employee,name)
+        if key not in whitelist_status_cache and len(whitelist_status_cache)>=512:
+            whitelist_status_cache.pop(next(iter(whitelist_status_cache)))
+        try:
+            try:matched=await allowed_person(employee)
+            except ControlError as error:
+                if error.status==404:
+                    raise ControlError(403,'该工号不在 A5-118／124 预约白名单中，无法登录或预约，请联系管理员添加') from error
+                raise
+            if matched['name']!=name:
+                raise ControlError(403,'姓名与人员白名单不一致，无法登录或预约，请核对工号和姓名')
+        except ControlError as error:
+            whitelist_status_cache[key]=(time.monotonic()+5,False,error.message)
+            raise
+        else:
+            whitelist_status_cache[key]=(time.monotonic()+30,True,'')
+
+    async def reservation_eligibility(person):
+        if not person or not person.get('registered'):return False,''
+        key=(person['employee'],person['name'])
+        async with whitelist_status_lock:
+            cached=whitelist_status_cache.get(key)
+            if not cached or cached[0]<=time.monotonic():
+                try:await require_personnel_whitelist(*key)
+                except ControlError as error:return False,error.message
+                cached=whitelist_status_cache[key]
+            return cached[1:]
+
     async def allowed_search(query):
         from personnel_roster import personnel
         if not isinstance(query,str):raise ControlError(400,'请输入工号或姓名')
@@ -131,7 +166,7 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
             return names_cache['names']
 
     strict_nights=settings.get('strict_nights') is True
-    unified=UnifiedQueue(store, config['nodes'], settings.get('reservation_buffer_seconds',600), settings.get('timezone','UTC'), settings.get('daily_reset',False), settings.get('cards_per_node',8),strict_nights,settings.get('overtime_control') is True,settings.get('normal_priority') is True,settings.get('normal_max_seconds',7200),settings.get('night_carryover_cutoff_hour'),settings.get('missed_claim_limit',0),settings.get('midnight_separation') is True) if settings.get('unified_queue') is True else None
+    unified=UnifiedQueue(store, config['nodes'], settings.get('reservation_buffer_seconds',600), settings.get('timezone','UTC'), settings.get('daily_reset',False), settings.get('cards_per_node',8),strict_nights,settings.get('overtime_control') is True,settings.get('normal_priority') is True,settings.get('normal_max_seconds',7200),settings.get('night_carryover_cutoff_hour'),settings.get('missed_claim_limit',0),settings.get('midnight_separation') is True,normal_reservation_limit=settings.get('normal_reservation_limit',5)) if settings.get('unified_queue') is True else None
     if unified and settings.get('agent_reservations_enabled') is True:
         from queue_agent import initialize_events
         initialize_events(store)
@@ -308,6 +343,9 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                 if operation=='state':
                     state=unified.view(person) if unified else {**store.view(person),'nodes':list(config['nodes']),'server_time':time.time(),'auto_match_employee':auto is not None}
                     state['agent_reservations_enabled']=bool(unified and settings.get('agent_reservations_enabled') is True)
+                    if unified and settings.get('require_personnel_whitelist') is True:
+                        state['whitelist_required']=True
+                        state['reservation_allowed'],state['reservation_block_reason']=await reservation_eligibility(person)
                     if monitor:state=monitor.decorate(state,unified.continuing(),unified.released_usage())
                     if coordinator:state['process_monitor_errors'].extend(coordinator.status)
                     if monitor and monitor.night_log_error:state['process_monitor_errors'].append(monitor.night_log_error)
@@ -369,7 +407,9 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                     while history and history[0]<now-300:history.popleft()
                     if len(history)>=maximum:raise ControlError(429,'尝试次数过多，请五分钟后重试')
                 for key,_ in keys:limits[key].append(now)
-                if unified:token=await asyncio.to_thread(store.login_without_password,data.get('employee'),data.get('name'))
+                if unified:
+                    await require_personnel_whitelist(data.get('employee'),data.get('name'))
+                    token=await asyncio.to_thread(store.login_without_password,data.get('employee'),data.get('name'))
                 elif operation=='register':token=await asyncio.to_thread(store.register,data.get('employee'),data.get('name'),data.get('password'))
                 else:token=await asyncio.to_thread(store.login,data.get('employee'),data.get('password'))
                 response=web.json_response({'message':'登录成功'})
@@ -392,6 +432,9 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                 # deployment that has not upgraded yet.
                 set_session_cookie(response,request,'');return response
             if unified:
+                if person.get('registered') and (operation in ('enqueue','agent-enqueue','unified-resources','unified-urgent','unified-backfill','unified-avoid','unified-allowed') or (operation in ('unified-action','agent-action') and data.get('action') in ('claim','extend'))):
+                    # Always re-read the authoritative rosters for writes; UI status is only a cache.
+                    await require_personnel_whitelist(person['employee'],person['name'])
                 if operation in ('unified-allowed-lookup','unified-allowed-search','unified-allowed-names','unified-allowed'):
                     if not person.get('registered'):raise ControlError(401,'请先登录预约申请人的个人账号')
                     job=data.get('job')
@@ -422,12 +465,27 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                     names_cache['until']=0
                     event(person,'unified_allowed_'+str(change),job=job)
                     return web.json_response({'message':'已更新该预约的允许用户'})
+                if operation=='unified-avoid-default':
+                    if not person.get('registered'):raise ControlError(401,'请先登录个人账号')
+                    if data.get('confirmed') is not True:raise ControlError(400,'请先确认操作')
+                    slots=unified.set_default_avoid_slots(person,data.get('avoid_slots'))
+                    event(person,'unified_avoid_default')
+                    return web.json_response({'message':'已保存为我的默认避开时段，新建普通预约时自动使用','default_avoid_slots':slots})
                 if operation=='unified-avoid':
                     if not person.get('registered'):raise ControlError(401,'请先登录个人账号')
                     if data.get('confirmed') is not True:raise ControlError(400,'请先确认操作')
-                    unified.update_avoid_slots(person,data.get('job'),data.get('avoid_slots'))
-                    event(person,'unified_avoid',job=data.get('job'))
-                    return web.json_response({'message':'已更新避开时段，预计开始时间已重新计算'})
+                    unified.update_avoid_slots(person,data.get('job'),data.get('avoid_slots'),data.get('save_as_default',False))
+                    event(person,'unified_avoid',job=data.get('job'),save_as_default=data.get('save_as_default',False))
+                    return web.json_response({'message':'已更新避开时段，预计开始时间已重新计算'+('；已保存为我的默认，新建普通预约时自动使用' if data.get('save_as_default') else '')})
+                if operation=='unified-resources':
+                    if not (person.get('registered') or person.get('admin')):raise ControlError(401,'请先登录')
+                    if data.get('confirmed') is not True:raise ControlError(400,'请先确认操作')
+                    disabled_backfill=unified.update_reservation(person,data.get('job'),data)
+                    event(person,'unified_resources',job=data.get('job'),machine=data.get('machine'),
+                          cards=data.get('cards'),requested_seconds=data.get('requested_seconds'),purpose_updated='purpose' in data)
+                    message='已保存预约，保留原排队顺位'
+                    if disabled_backfill:message+='。新时长低于原插空下限，已关闭本次插空'
+                    return web.json_response({'message':message})
                 if operation=='unified-backfill':
                     if not person.get('registered'):raise ControlError(401,'请先登录个人账号')
                     if data.get('confirmed') is not True:raise ControlError(400,'请先确认操作')
