@@ -86,7 +86,7 @@ class QueueStore:
         if row is None or not hmac.compare_digest(row['digest'], digest): raise ControlError(401, '工号或个人密码不正确')
         return self.new_session(row['id'])
 
-    def login_without_password(self, employee, name):
+    def login_without_password(self, employee, name, *, verified_name=None):
         employee = employee.strip().lower() if isinstance(employee, str) else ''
         name = name.strip() if isinstance(name, str) else ''
         if not re.fullmatch(r'[a-z][0-9]{8}', employee) or not 1 <= len(name) <= 60 or any(ord(c) < 32 for c in name):
@@ -95,7 +95,10 @@ class QueueStore:
             row = db.execute('SELECT id,name FROM accounts WHERE employee=?', (employee,)).fetchone()
             if row:
                 if row['name'] != name:
-                    raise ControlError(401, '工号与已登记姓名不一致，请核对或联系管理员')
+                    # Only a fresh server-side roster check may correct a legacy name.
+                    if verified_name != name:
+                        raise ControlError(401, '工号与已登记姓名不一致，请核对或联系管理员')
+                    db.execute('UPDATE accounts SET name=? WHERE id=?', (name, row['id']))
                 account = row['id']
             else:
                 account = secrets.token_hex(16)

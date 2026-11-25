@@ -41,7 +41,7 @@ class AgentHTTPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.post('login',{'employee':'a00000001','name':'User One'})).status,200)
         body={'operation':secrets.token_hex(16),'request':{'purpose':'测试预约','machine':'auto','cards':1,'requested_seconds':1800,'admin':True}}
         self.assertEqual((await self.post('agent-enqueue',body)).status,400)
-        self.assertEqual((await self.post('login',{'employee':'a00000001','name':'Other'})).status,401)
+        self.assertEqual((await self.post('login',{'employee':'a00000001','name':'Other','verified_name':'Other'})).status,401)
 
     async def test_binding_notice_requires_owner_or_collaborator_and_deduplicates(self):
         job='a'*32;op=secrets.token_hex(16)

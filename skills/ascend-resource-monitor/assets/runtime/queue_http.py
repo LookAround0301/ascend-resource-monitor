@@ -80,12 +80,13 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                     raise ControlError(403,'该工号不在 A5-118／124 预约白名单中，无法登录或预约，请联系管理员添加') from error
                 raise
             if matched['name']!=name:
-                raise ControlError(403,'姓名与人员白名单不一致，无法登录或预约，请核对工号和姓名')
+                raise ControlError(403,'姓名与人员白名单不一致，请用白名单登记的姓名重新登录')
         except ControlError as error:
             whitelist_status_cache[key]=(time.monotonic()+5,False,error.message)
             raise
         else:
             whitelist_status_cache[key]=(time.monotonic()+30,True,'')
+            return matched['name']
 
     async def reservation_eligibility(person):
         if not person or not person.get('registered'):return False,''
@@ -408,8 +409,8 @@ def install_queue(app,config,read_identity,admin_identity,agent_override=None):
                     if len(history)>=maximum:raise ControlError(429,'尝试次数过多，请五分钟后重试')
                 for key,_ in keys:limits[key].append(now)
                 if unified:
-                    await require_personnel_whitelist(data.get('employee'),data.get('name'))
-                    token=await asyncio.to_thread(store.login_without_password,data.get('employee'),data.get('name'))
+                    verified_name=await require_personnel_whitelist(data.get('employee'),data.get('name'))
+                    token=await asyncio.to_thread(store.login_without_password,data.get('employee'),data.get('name'),verified_name=verified_name)
                 elif operation=='register':token=await asyncio.to_thread(store.register,data.get('employee'),data.get('name'),data.get('password'))
                 else:token=await asyncio.to_thread(store.login,data.get('employee'),data.get('password'))
                 response=web.json_response({'message':'登录成功'})

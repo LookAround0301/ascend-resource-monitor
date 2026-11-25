@@ -60,6 +60,46 @@ class WhitelistHTTPTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(self.cookie,response.cookies)
         self.assertTrue((await self.state(self.one))['reservation_allowed'])
 
+    async def test_correct_roster_name_repairs_legacy_account_and_preserves_bookings(self):
+        _,created=await self.post('enqueue',self.payload(),self.one)
+        await self.post('unified-avoid-default',{'avoid_slots':[20,21],'confirmed':True},self.one)
+        with self.store.db() as db:
+            account=dict(db.execute('SELECT * FROM accounts WHERE employee=?',('u12345678',)).fetchone())
+            reservation=dict(db.execute('SELECT * FROM unified_tasks WHERE id=?',(created['job'],)).fetchone())
+            preferences=[tuple(row) for row in db.execute('SELECT * FROM unified_user_preferences')]
+            db.execute("UPDATE accounts SET name='wrong-pinyin' WHERE id=?",(account['id'],))
+        self.assertFalse((await self.state(self.one))['reservation_allowed'])
+        await self.post('login',{'employee':'u12345678','name':'wrong-pinyin'},status=403)
+        response,_=await self.post('login',{'employee':' U12345678 ','name':' One '})
+        new_token=response.cookies[self.cookie].value
+        self.assertEqual(self.store.user(new_token)['id'],account['id'])
+        self.assertEqual(self.store.user(self.one)['name'],'One')
+        state=await self.state(new_token)
+        self.assertTrue(state['reservation_allowed'])
+        self.assertEqual(state['default_avoid_slots'],[20,21])
+        self.assertTrue(next(row for row in state['tasks'] if row['id']==created['job'])['mine'])
+        with self.store.db() as db:
+            self.assertEqual(dict(db.execute('SELECT * FROM accounts WHERE id=?',(account['id'],)).fetchone()),account)
+            self.assertEqual(dict(db.execute('SELECT * FROM unified_tasks WHERE id=?',(created['job'],)).fetchone()),reservation)
+            self.assertEqual([tuple(row) for row in db.execute('SELECT * FROM unified_user_preferences')],preferences)
+        await self.post('enqueue',self.payload(),new_token)
+
+    async def test_failed_roster_check_cannot_repair_old_name_or_create_session(self):
+        with self.store.db() as db:
+            db.execute("UPDATE accounts SET name='old-name' WHERE employee='u12345678'")
+            sessions=db.execute('SELECT COUNT(*) FROM sessions').fetchone()[0]
+        for condition in ('wrong-name','missing-node','conflicting-nodes','unavailable'):
+            self.rosters['b']=[{'employee':'u12345678','name':'One'}]
+            self.unavailable=condition=='unavailable'
+            name='Bad' if condition=='wrong-name' else 'One'
+            if condition=='missing-node':self.rosters['b']=[]
+            if condition=='conflicting-nodes':self.rosters['b'][0]['name']='Another'
+            status=503 if condition=='unavailable' else 409 if condition=='conflicting-nodes' else 403
+            await self.post('login',{'employee':'u12345678','name':name,'verified_name':name},status=status)
+            with self.store.db() as db:
+                self.assertEqual(db.execute("SELECT name FROM accounts WHERE employee='u12345678'").fetchone()[0],'old-name')
+                self.assertEqual(db.execute('SELECT COUNT(*) FROM sessions').fetchone()[0],sessions)
+
     async def test_login_rejects_name_mismatch_partial_roster_and_unavailability(self):
         await self.post('login',{'employee':'u12345678','name':'Incorrect'},status=403)
         self.rosters['b']=[]
