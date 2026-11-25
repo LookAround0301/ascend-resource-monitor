@@ -29,7 +29,7 @@ class ExtensionLimitTests(unittest.TestCase):
 
     def active(self,urgent=False):
         if urgent:self.queue.set_urgent_user(self.user['employee'],self.user['name'],True)
-        job=self.queue.enqueue(self.user,dict(machine='a',cards=1,cards_per_node=self.queue.capacity,requested_seconds=600,
+        job=self.queue.enqueue(self.user,dict(purpose='测试预约',machine='a',cards=1,cards_per_node=self.queue.capacity,requested_seconds=600,
                                              notifications_ready=True,avoid_slots=[],urgent=urgent))
         row=next(r for r in self.queue.view(self.user)['tasks'] if r['id']==job)
         self.queue.action(self.user,job,'claim',row['offer_id'])

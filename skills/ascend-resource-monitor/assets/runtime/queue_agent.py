@@ -10,7 +10,7 @@ import time
 from control_common import ControlError
 from queue_mobile import EMPLOYEE, HEX32, TransactionStore
 
-FIELDS = {'machine','cards','night','not_before','requested_seconds','avoid_slots',
+FIELDS = {'purpose','machine','cards','night','not_before','requested_seconds','avoid_slots',
           'backfill_min_seconds'}
 
 

@@ -71,7 +71,7 @@ class WhitelistHTTPTests(unittest.IsolatedAsyncioTestCase):
         state=await self.state(self.outside)
         self.assertFalse(state['reservation_allowed']);self.assertIn('白名单',state['reservation_block_reason'])
         await self.post('enqueue',self.payload(),self.outside,403)
-        await self.post('agent-enqueue',{'operation':'a'*32,'request':{'cards':1,'requested_seconds':3600}},self.outside,403)
+        await self.post('agent-enqueue',{'operation':'a'*32,'request':{'purpose':'测试预约','cards':1,'requested_seconds':3600}},self.outside,403)
         self.assertEqual((await self.state(self.one))['tasks'],[])
 
     async def test_removal_blocks_fresh_writes_despite_cached_allowed_status(self):

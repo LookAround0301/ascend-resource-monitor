@@ -57,7 +57,7 @@ class ClaimHTTPTests(unittest.IsolatedAsyncioTestCase):
         return await r.json()
 
     async def enqueue(self):
-        return (await self.post('enqueue',{'machine':'a','cards':8,'requested_seconds':3600,'notifications_ready':True}))['job']
+        return (await self.post('enqueue',{'purpose':'测试预约','machine':'a','cards':8,'requested_seconds':3600,'notifications_ready':True}))['job']
 
     async def test_passwordless_login_preserves_jobs_and_admin_checks(self):
         job=await self.enqueue()
@@ -139,7 +139,7 @@ class ClaimHTTPTests(unittest.IsolatedAsyncioTestCase):
         day=datetime.fromtimestamp(self.now,timezone.utc).date()+timedelta(days=1)
         start=datetime.combine(day,datetime.min.time(),timezone.utc).replace(hour=20).timestamp()
         self.clock.return_value=start-3600
-        payload={'machine':'a','cards':8,'requested_seconds':13*3600,'notifications_ready':True,
+        payload={'purpose':'测试预约','machine':'a','cards':8,'requested_seconds':13*3600,'notifications_ready':True,
                  'night':True,'not_before':start}
         await self.post('enqueue',payload)
         error=await self.post('enqueue',{**payload,'requested_seconds':13*3600+300},400)
@@ -149,7 +149,7 @@ class ClaimHTTPTests(unittest.IsolatedAsyncioTestCase):
         day=datetime.fromtimestamp(self.now,timezone.utc).date()+timedelta(days=1)
         start=datetime.combine(day,datetime.min.time(),timezone.utc).replace(hour=21).timestamp()
         self.clock.return_value=start-3600
-        payload={'machine':'a','cards':8,'requested_seconds':13*3600,'notifications_ready':True,
+        payload={'purpose':'测试预约','machine':'a','cards':8,'requested_seconds':13*3600,'notifications_ready':True,
                  'night':True,'not_before':start}
         job=(await self.post('enqueue',payload))['job']
         row=next(r for r in (await self.state())['tasks'] if r['id']==job)
@@ -161,7 +161,7 @@ class ClaimHTTPTests(unittest.IsolatedAsyncioTestCase):
         day=datetime.fromtimestamp(self.now,timezone.utc).date()+timedelta(days=1)
         start=datetime.combine(day,datetime.min.time(),timezone.utc).replace(hour=20).timestamp()
         self.clock.return_value=start-3600
-        job=(await self.post('enqueue',{'machine':'a','cards':8,'requested_seconds':13*3600,
+        job=(await self.post('enqueue',{'purpose':'测试预约','machine':'a','cards':8,'requested_seconds':13*3600,
                                       'notifications_ready':True,'night':True,'not_before':start}))['job']
         self.clock.return_value=start
         original=next(r for r in (await self.state())['tasks'] if r['id']==job)
@@ -176,7 +176,7 @@ class ClaimHTTPTests(unittest.IsolatedAsyncioTestCase):
         day=datetime.fromtimestamp(self.now,timezone.utc).date()+timedelta(days=1)
         start=datetime.combine(day,datetime.min.time(),timezone.utc).replace(hour=20).timestamp()
         self.clock.return_value=start-3600
-        night=(await self.post('enqueue',{'machine':'a','cards':8,'requested_seconds':8*3600,
+        night=(await self.post('enqueue',{'purpose':'测试预约','machine':'a','cards':8,'requested_seconds':8*3600,
             'notifications_ready':True,'night':True,'not_before':start}))['job']
         self.clock.return_value=start
         self.assertEqual(next(r for r in (await self.state())['tasks'] if r['id']==night)['state'],'active')

@@ -39,7 +39,7 @@ class DailyResetTests(unittest.TestCase):
                             night_carryover_cutoff_hour=9, midnight_separation=True, **options)
 
     def add(self, **values):
-        payload = dict(machine='a', cards=8, requested_seconds=3600,
+        payload = dict(purpose='测试预约',machine='a', cards=8, requested_seconds=3600,
                        notifications_ready=True, avoid_slots=[])
         payload.update(values)
         return self.q.enqueue(self.user, payload)

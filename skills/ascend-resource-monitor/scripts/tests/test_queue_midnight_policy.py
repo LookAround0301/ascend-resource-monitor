@@ -25,7 +25,7 @@ class MidnightPolicyTests(unittest.TestCase):
 
     def ts(self,s):return datetime.fromisoformat(s).replace(tzinfo=ZoneInfo('Asia/Shanghai')).timestamp()
     def add(self,**kw):
-        values=dict(machine='a',cards=8,requested_seconds=3600,notifications_ready=True,avoid_slots=[])
+        values=dict(purpose='测试预约',machine='a',cards=8,requested_seconds=3600,notifications_ready=True,avoid_slots=[])
         values.update(kw)
         return self.q.enqueue(self.user,values)
     def row(self,job):return next(r for r in self.q.view(self.user)['tasks'] if r['id']==job)

@@ -79,7 +79,7 @@ def main():
     cfg=sub.add_parser('configure');cfg.add_argument('--employee',required=True);cfg.add_argument('--name',required=True);cfg.add_argument('--url',default='http://127.0.0.1:13000');cfg.add_argument('--ca-file')
     sub.add_parser('query')
     shared=sub.add_parser('shared');shared.add_argument('kind',choices=('list','search','add','remove'));shared.add_argument('--job',required=True);shared.add_argument('--employee');shared.add_argument('--name');shared.add_argument('--query')
-    create=sub.add_parser('create');create.add_argument('--machine',default='auto');create.add_argument('--cards',type=int,required=True);create.add_argument('--minutes',type=int,required=True);create.add_argument('--night-start');create.add_argument('--backfill-minutes',type=int,default=0)
+    create=sub.add_parser('create');create.add_argument('--purpose',required=True,help='预约事项，1–120 字');create.add_argument('--machine',default='auto');create.add_argument('--cards',type=int,required=True);create.add_argument('--minutes',type=int,required=True);create.add_argument('--night-start');create.add_argument('--backfill-minutes',type=int,default=0)
     recover=sub.add_parser('recover');recover.add_argument('operation')
     retry=sub.add_parser('retry');retry.add_argument('operation')
     events=sub.add_parser('events');events.add_argument('--job',required=True);events.add_argument('--after',type=int,default=0);events.add_argument('--wait',type=int,default=0,choices=range(26),metavar='SECONDS')
@@ -157,7 +157,7 @@ def main():
             if start.tzinfo is None:start=start.replace(tzinfo=timezone(timedelta(hours=8)))
             start=start.timestamp()
         else:start=0
-        payload={'machine':args.machine,'cards':args.cards,'night':night,'not_before':start,
+        payload={'purpose':args.purpose,'machine':args.machine,'cards':args.cards,'night':night,'not_before':start,
                  'requested_seconds':args.minutes*60,'backfill_min_seconds':args.backfill_minutes*60}
         operation=secrets.token_hex(16)
         journal={'operation':operation,'employee':config['employee'],'url':config['url'],'request':payload}

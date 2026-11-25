@@ -24,7 +24,7 @@ class AgentQueueTests(unittest.TestCase):
         self.queue=UnifiedQueue(self.store,['A5-118','A5-124'],strict_nights=True,
                                 overtime_control=True,normal_priority=True,timezone='Asia/Shanghai',night_carryover_cutoff_hour=9.5)
         initialize_events(self.store)
-        self.request=dict(machine='auto',cards=1,night=False,not_before=0,requested_seconds=1800,
+        self.request=dict(purpose='测试预约',machine='auto',cards=1,night=False,not_before=0,requested_seconds=1800,
                           avoid_slots=[],backfill_min_seconds=0)
     def tearDown(self):self.clock.stop();self.temp.cleanup()
     def payload(self,mode='agent_preview'):
@@ -47,6 +47,19 @@ class AgentQueueTests(unittest.TestCase):
         payload=self.payload('agent_execute')
         with ThreadPoolExecutor(max_workers=2) as pool:results=list(pool.map(lambda _:command(self.queue,self.store,payload),range(2)))
         self.assertEqual(results[0],results[1]);self.assertEqual(self.count(),1)
+
+    def test_agent_requires_purpose_and_rejects_without_a_receipt(self):
+        for mode in ('agent_preview','agent_execute'):
+            for missing,value in ((True,None),(False,''),(False,' \t\u3000 '),(False,None)):
+                data=self.payload(mode)
+                if missing:data['request'].pop('purpose')
+                else:data['request']['purpose']=value
+                with self.assertRaises(ControlError) as caught:command(self.queue,self.store,data)
+                self.assertEqual(caught.exception.status,400)
+        self.assertEqual(self.count(),0)
+        with self.store.db() as db:
+            if db.execute("SELECT 1 FROM sqlite_master WHERE name='agent_reservation_receipts'").fetchone():
+                self.assertEqual(db.execute('SELECT COUNT(*) FROM agent_reservation_receipts').fetchone()[0],0)
 
     def test_creation_notice_is_atomic_and_once_per_operation(self):
         command(self.queue,self.store,self.payload())

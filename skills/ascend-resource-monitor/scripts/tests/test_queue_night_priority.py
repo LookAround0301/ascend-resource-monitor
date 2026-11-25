@@ -28,7 +28,7 @@ class NightPriorityTests(unittest.TestCase):
         self.addCleanup(patch.stopall)
 
     def add(self, **kwargs):
-        return self.queue.enqueue(self.user, {'machine': 'a', 'cards': 8, 'requested_seconds': 3600,
+        return self.queue.enqueue(self.user, {'purpose':'测试预约','machine': 'a', 'cards': 8, 'requested_seconds': 3600,
                                               'notifications_ready': True, **kwargs})
 
     def test_night_end_after_nine_starts_automatically_when_due(self):

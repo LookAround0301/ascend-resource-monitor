@@ -1246,7 +1246,7 @@ class UnifiedQueue:
             raise ControlError(400, '请先在主页开启桌面通知并通过测试，再加入队列')
         if self.capacity != 8 and data.get('cards_per_node') != self.capacity:
             raise ControlError(409, '卡位配置已更新，请刷新页面后重新预约')
-        purpose = self.validate_purpose(data['purpose']) if 'purpose' in data else ''
+        purpose = self.validate_purpose(data.get('purpose', ''))
         cards, seconds = data.get('cards'), data.get('requested_seconds')
         dual, night, start = data.get('dual', False), data.get('night', False), data.get('not_before', 0)
         urgent=data.get('urgent',False)

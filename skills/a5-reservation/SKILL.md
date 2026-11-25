@@ -12,7 +12,8 @@ description: Create, query, and manage A5 NPU reservations using the user's conf
 - 配置：`python <skill目录>/scripts/a5_client.py configure --employee 工号 --name 姓名 --url 地址`
 - 查询：`python <skill目录>/scripts/a5_client.py query`
 - 共同使用人：仅预约申请人可管理。用 `shared list --job 预约编号` 查询，`shared search --job 预约编号 --query 姓名或工号` 搜索名单，`shared add --job 预约编号 --employee 工号` 添加，`shared remove --job 预约编号 --employee 工号` 删除；命令前加 `python <skill目录>/scripts/a5_client.py`。添加时客户端核对名单上的姓名，可用 `--name 姓名` 校验用户指定的姓名；搜索有多个结果时先让用户确定。操作结果未知时先查询名单核对，不要盲目重试。
-- 普通预约：`python <skill目录>/scripts/a5_client.py create --machine auto --cards 2 --minutes 60`。`--machine` 可用 `auto`、`A5-118`、`A5-124`、`dual`，双机卡数为总数且平均分配。
+- 新预约必须提供 `--purpose "预约事项"`（1–120 字，不能空白）；按用户实际任务填写。
+- 普通预约：`python <skill目录>/scripts/a5_client.py create --purpose "模型验证" --machine auto --cards 2 --minutes 60`。`--machine` 可用 `auto`、`A5-118`、`A5-124`、`dual`，双机卡数为总数且平均分配。
 - 夜间预约：可提前创建，增加 `--night-start "YYYY-MM-DD HH:MM"`（北京时间）；开始时间为 00:00–09:00 前，申请时长最长 9 小时，超过当天 09:00 的部分自动截短。避免自行猜测日期、时间、机器或卡数。普通任务单次最长 1 小时，跨午夜截短至 00:00；00:00–09:00 不开始普通任务，等待中的预约保留。
 - 夜间预约按用户指定时长登记；若跨越 09:00 将截短，创建前向用户说明实际结束时间。预约结束登记不代表业务进程已停止。
 - 用户明确允许短时插空时可增加 `--backfill-minutes N`，否则不启用。普通任务的避开时段沿用服务端默认值。其他修改和取消暂用预约网页或已有小鲁班功能。

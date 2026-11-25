@@ -33,7 +33,7 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         async def agent(node,path,body):self.calls.append((node,path,body));return {'stopped':True}
         self.coordinator=NightCoordinator(self.queue,self.monitor,agent,self.events.append)
     def add(self,user,**values):
-        return self.queue.enqueue(user,{'machine':'a','cards':8,'requested_seconds':3600,'notifications_ready':True,**values})
+        return self.queue.enqueue(user,{'purpose':'测试预约','machine':'a','cards':8,'requested_seconds':3600,'notifications_ready':True,**values})
     async def poll_at(self,now):
         self.clock.return_value=now
         with patch('queue_night_coordinator.time.time',return_value=now):await self.coordinator.poll()

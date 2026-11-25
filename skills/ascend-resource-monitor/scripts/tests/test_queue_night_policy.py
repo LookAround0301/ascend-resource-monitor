@@ -125,7 +125,7 @@ class StrictQueueTests(unittest.TestCase):
         self.stamp=lambda s:datetime.fromisoformat(s).replace(tzinfo=ZoneInfo('Asia/Shanghai')).timestamp()
         self.clock.return_value=self.stamp('2026-11-04T23:00:00')
     def add(self,**values):
-        return self.queue.enqueue(self.user,{'machine':'a','cards':8,'requested_seconds':7200,
+        return self.queue.enqueue(self.user,{'purpose':'测试预约','machine':'a','cards':8,'requested_seconds':7200,
                                               'notifications_ready':True,**values})
     def test_night_reservation_is_stable_and_conflicts_are_rejected(self):
         start=self.stamp('2026-11-05T02:00:00')
@@ -259,7 +259,7 @@ class StrictQueueTests(unittest.TestCase):
         self.queue.allowed_user(self.user,job,'u23456789','add')
         row=next(r for r in self.queue.view(self.user)['tasks'] if r['id']==job)
         self.queue.action(shared,job,'claim',row['offer_id'])
-        next_job=self.queue.enqueue(waiting,{'machine':'a','cards':8,'requested_seconds':3600,'notifications_ready':True})
+        next_job=self.queue.enqueue(waiting,{'purpose':'测试预约','machine':'a','cards':8,'requested_seconds':3600,'notifications_ready':True})
         self.clock.return_value+=3600
         owner_state=self.queue.view(self.user)
         self.assertEqual(next(r for r in owner_state['tasks'] if r['id']==next_job)['estimated_start'],self.clock.return_value+600)
@@ -284,7 +284,7 @@ class StrictQueueTests(unittest.TestCase):
         job=self.add(requested_seconds=3600)
         row=next(r for r in self.queue.view(self.user)['tasks'] if r['id']==job)
         self.queue.action(self.user,job,'claim',row['offer_id'])
-        next_job=self.queue.enqueue(waiting,{'machine':'a','cards':8,'requested_seconds':3600,'notifications_ready':True})
+        next_job=self.queue.enqueue(waiting,{'purpose':'测试预约','machine':'a','cards':8,'requested_seconds':3600,'notifications_ready':True})
         self.clock.return_value+=3600+60
         self.queue.action(self.user,job,'extend',extension_minutes=20)
         state=self.queue.view(waiting)

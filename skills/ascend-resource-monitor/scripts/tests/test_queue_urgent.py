@@ -31,7 +31,7 @@ class UrgentQueueTests(unittest.TestCase):
         self.queue.action(self.users[0],active,'claim',offer_id=row['offer_id'])
 
     def add(self,user,**overrides):
-        return self.queue.enqueue(user,{'machine':'a','cards':8,'requested_seconds':3600,
+        return self.queue.enqueue(user,{'purpose':'测试预约','machine':'a','cards':8,'requested_seconds':3600,
                                         'notifications_ready':True,**overrides})
 
     def rows(self):return {row['id']:row for row in self.queue.view(self.users[0])['tasks']}

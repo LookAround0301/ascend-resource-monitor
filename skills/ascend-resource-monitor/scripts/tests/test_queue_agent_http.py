@@ -27,7 +27,7 @@ class AgentHTTPTests(unittest.IsolatedAsyncioTestCase):
         return await self.session.post(self.server.make_url('/a5-queue/api/'+op),json=data,
              headers={'Origin':str(self.server.make_url('')).rstrip('/'),'X-A5-Queue':'queue-v1'})
     async def test_creation_retry_and_receipt_are_scoped_to_logged_in_user(self):
-        op=secrets.token_hex(16);body={'operation':op,'request':{'machine':'auto','cards':1,'requested_seconds':1800}}
+        op=secrets.token_hex(16);body={'operation':op,'request':{'purpose':'测试预约','machine':'auto','cards':1,'requested_seconds':1800}}
         r=await self.post('agent-enqueue',body);self.assertEqual(r.status,401)
         r=await self.post('login',{'employee':'a00000001','name':'User One'});self.assertEqual(r.status,200)
         r=await self.post('agent-enqueue',body);self.assertEqual(r.status,200,await r.text());first=await r.json()
@@ -39,7 +39,7 @@ class AgentHTTPTests(unittest.IsolatedAsyncioTestCase):
         with self.store.db() as db:self.assertEqual(db.execute('SELECT count(*) FROM unified_tasks').fetchone()[0],1)
     async def test_unknown_fields_and_name_mismatch_rejected(self):
         self.assertEqual((await self.post('login',{'employee':'a00000001','name':'User One'})).status,200)
-        body={'operation':secrets.token_hex(16),'request':{'machine':'auto','cards':1,'requested_seconds':1800,'admin':True}}
+        body={'operation':secrets.token_hex(16),'request':{'purpose':'测试预约','machine':'auto','cards':1,'requested_seconds':1800,'admin':True}}
         self.assertEqual((await self.post('agent-enqueue',body)).status,400)
         self.assertEqual((await self.post('login',{'employee':'a00000001','name':'Other'})).status,401)
 
@@ -48,7 +48,7 @@ class AgentHTTPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.post('agent-bound',{'job':job,'operation':op})).status,401)
         await self.post('login',{'employee':'a00000001','name':'User One'})
         created=await (await self.post('agent-enqueue',{'operation':secrets.token_hex(16),
-            'request':{'machine':'auto','cards':1,'requested_seconds':1800}})).json()
+            'request':{'purpose':'测试预约','machine':'auto','cards':1,'requested_seconds':1800}})).json()
         data={'job':created['job'],'operation':op}
         self.assertEqual((await self.post('agent-bound',data)).status,200)
         self.assertEqual((await self.post('agent-bound',data)).status,200)
@@ -59,7 +59,7 @@ class AgentHTTPTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_event_delivery_and_action_replay(self):
         self.assertEqual((await self.post('login',{'employee':'a00000001','name':'User One'})).status,200)
-        body={'operation':secrets.token_hex(16),'request':{'machine':'auto','cards':1,'requested_seconds':1800}}
+        body={'operation':secrets.token_hex(16),'request':{'purpose':'测试预约','machine':'auto','cards':1,'requested_seconds':1800}}
         response=await self.post('agent-enqueue',body);created=await response.json()
         response=await self.post('agent-events',{'after':0,'job':created['job'],'wait_seconds':0})
         events=(await response.json())['events'];self.assertEqual(len(events),1);self.assertEqual(events[0]['state'],'ready')
@@ -75,7 +75,7 @@ class AgentHTTPTests(unittest.IsolatedAsyncioTestCase):
     async def test_stream_push_and_reconnect_replays_only_after_cursor(self):
         self.assertEqual((await self.post('login',{'employee':'a00000001','name':'User One'})).status,200)
         created=await (await self.post('agent-enqueue',{'operation':secrets.token_hex(16),
-            'request':{'machine':'auto','cards':1,'requested_seconds':1800}})).json()
+            'request':{'purpose':'测试预约','machine':'auto','cards':1,'requested_seconds':1800}})).json()
         job=created['job']
         events=(await (await self.post('agent-events',{'job':job,'after':0})).json())['events']
         response=await self.post('agent-stream',{'job':job,'after':events[0]['seq']})
@@ -100,7 +100,7 @@ class AgentHTTPTests(unittest.IsolatedAsyncioTestCase):
     async def test_listener_delivers_and_recovers_cursor_after_restart(self):
         self.assertEqual((await self.post('login',{'employee':'a00000001','name':'User One'})).status,200)
         created=await (await self.post('agent-enqueue',{'operation':secrets.token_hex(16),
-            'request':{'machine':'auto','cards':1,'requested_seconds':1800}})).json()
+            'request':{'purpose':'测试预约','machine':'auto','cards':1,'requested_seconds':1800}})).json()
         job=created['job'];root=Path(self.temp.name);received=root/'received.jsonl'
         adapter=root/'adapter.py'
         adapter.write_text('import json,sys\nfrom pathlib import Path\n'
@@ -158,7 +158,7 @@ class AgentHTTPTests(unittest.IsolatedAsyncioTestCase):
     async def test_background_listener_binds_owner_and_stops_on_end(self):
         self.assertEqual((await self.post('login',{'employee':'a00000001','name':'User One'})).status,200)
         created=await (await self.post('agent-enqueue',{'operation':secrets.token_hex(16),
-            'request':{'machine':'auto','cards':1,'requested_seconds':1800}})).json()
+            'request':{'purpose':'测试预约','machine':'auto','cards':1,'requested_seconds':1800}})).json()
         job=created['job'];root=Path(self.temp.name);received=root/'bg-received.jsonl'
         adapter=root/'bg-adapter.py'
         adapter.write_text('import json,sys\nfrom pathlib import Path\ne=json.load(sys.stdin)\n'
@@ -203,7 +203,7 @@ class AgentHTTPTests(unittest.IsolatedAsyncioTestCase):
             return out.decode()
         await run('configure','--employee','u00000001','--name','Test User',
                   '--url',str(self.server.make_url('')).rstrip('/'))
-        output=await run('create','--cards','2','--minutes','30')
+        output=await run('create','--purpose','接口预约验证','--cards','2','--minutes','30')
         first=json.loads(output.splitlines()[0]);operation=first['operation']
         retried=json.loads((await run('retry',operation)).splitlines()[0])
         self.assertEqual(retried['job'],first['job'])

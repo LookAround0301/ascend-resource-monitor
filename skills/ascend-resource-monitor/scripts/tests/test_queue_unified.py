@@ -29,7 +29,7 @@ class UnifiedWindowTests(unittest.TestCase):
         self.deadline = stamp('2026-11-05T09:00:00')
 
     def add(self, **data):
-        return self.queue.enqueue(self.user, {'cards': 1, 'requested_seconds': 90*60,
+        return self.queue.enqueue(self.user, {'purpose':'测试预约','cards': 1, 'requested_seconds': 90*60,
                                              'notifications_ready': True, **data})
 
     def test_minutes_and_normal_two_hour_limit(self):
@@ -48,12 +48,12 @@ class UnifiedWindowTests(unittest.TestCase):
             limited=UnifiedQueue(self.store,['a','b'],timezone='Asia/Shanghai',normal_max_seconds=3600)
             self.assertEqual(limited.view(self.user)['normal_max_seconds'],3600)
             self.assertEqual(next(r for r in limited.view(self.user)['tasks'] if r['id']==existing)['requested_seconds'],7200)
-            normal=limited.enqueue(self.user,{'cards':1,'requested_seconds':3600,'notifications_ready':True})
+            normal=limited.enqueue(self.user,{'purpose':'测试预约','cards':1,'requested_seconds':3600,'notifications_ready':True})
             self.assertTrue(normal)
             with self.assertRaises(ControlError) as error:
-                limited.enqueue(self.user,{'cards':1,'requested_seconds':3660,'notifications_ready':True})
+                limited.enqueue(self.user,{'purpose':'测试预约','cards':1,'requested_seconds':3660,'notifications_ready':True})
             self.assertIn('普通任务最长 1 小时',str(error.exception))
-            night=limited.enqueue(self.user,{'cards':1,'requested_seconds':7200,'night':True,
+            night=limited.enqueue(self.user,{'purpose':'测试预约','cards':1,'requested_seconds':7200,'night':True,
                                            'not_before':self.deadline-7200,'notifications_ready':True})
             self.assertTrue(night)
         self.assertEqual(self.queue.normal_max_seconds,7200)

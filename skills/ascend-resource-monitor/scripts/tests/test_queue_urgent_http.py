@@ -53,12 +53,12 @@ class UrgentHTTPTests(unittest.IsolatedAsyncioTestCase):
         await self.post('urgent-users',change,200,self.headers(True))
         state=await (await self.client.get('/a5-queue/api/state',headers=self.headers())).json()
         self.assertTrue(state['can_urgent'])
-        result=await self.post('enqueue',{'machine':'a','cards':8,'requested_seconds':3600,
+        result=await self.post('enqueue',{'purpose':'测试预约','machine':'a','cards':8,'requested_seconds':3600,
                                           'notifications_ready':True,'urgent':True})
         state=await (await self.client.get('/a5-queue/api/state',headers=self.headers())).json()
         self.assertTrue(next(row for row in state['tasks'] if row['id']==result['job'])['urgent'])
         await self.post('urgent-users',{**change,'enabled':False},200,self.headers(True))
-        await self.post('enqueue',{'machine':'a','cards':8,'requested_seconds':3600,
+        await self.post('enqueue',{'purpose':'测试预约','machine':'a','cards':8,'requested_seconds':3600,
                                    'notifications_ready':True,'urgent':True},403)
         await self.post('unified-urgent',{'job':result['job'],'enabled':False,'confirmed':True})
         await self.post('unified-urgent',{'job':result['job'],'enabled':True,'confirmed':True},403)

@@ -26,7 +26,7 @@ class CapacityCompatibilityTests(unittest.TestCase):
         self.clock.start();self.addCleanup(self.clock.stop)
 
     def enqueue(self,queue,**data):
-        return queue.enqueue(self.user,{'cards':8,'requested_seconds':600,'notifications_ready':True,**data})
+        return queue.enqueue(self.user,{'purpose':'测试预约','cards':8,'requested_seconds':600,'notifications_ready':True,**data})
 
     def test_a5_old_single_and_dual_payloads_keep_original_meaning(self):
         queue=UnifiedQueue(self.store,['a','b'])

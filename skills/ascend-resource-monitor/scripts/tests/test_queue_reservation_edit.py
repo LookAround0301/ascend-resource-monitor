@@ -47,14 +47,27 @@ class ReservationEditTests(unittest.TestCase):
     def night(self,hour):
         return datetime(2026,11,26,hour,tzinfo=ZoneInfo('Asia/Shanghai')).timestamp()
 
-    def test_purpose_roundtrip_and_legacy_create(self):
+    def test_purpose_roundtrip_and_existing_blank_reservation(self):
         job=self.add(purpose='  模型验证 <script>  ')
         self.queue=self.reopen()
         self.assertEqual(next(r['purpose'] for r in self.queue.view(self.one)['tasks'] if r['id']==job),'模型验证 <script>')
-        legacy=self.queue.enqueue(self.two,{'cards':1,'requested_seconds':60,'notifications_ready':True})
+        legacy=self.add(user=self.two,requested_seconds=60)
+        with self.store.db() as db:db.execute("UPDATE unified_tasks SET purpose='' WHERE id=?",(legacy,))
+        self.queue=self.reopen()
+        self.assertEqual(self.row(legacy)['purpose'],'')
+        self.edit(legacy,user=self.two,requested_seconds=120)
         self.assertEqual(self.row(legacy)['purpose'],'')
         self.edit(legacy,user=self.two,purpose='补充事项')
         self.assertEqual(self.row(legacy)['purpose'],'补充事项')
+
+    def test_new_reservations_require_purpose_before_insertion(self):
+        for night in (False,True):
+            for invalid in ({},{'purpose':''},{'purpose':' \t\n\u3000 '},{'purpose':None}):
+                with self.subTest(night=night,invalid=invalid):
+                    data={'cards':1,'requested_seconds':60,'notifications_ready':True,
+                          'night':night,'not_before':self.night(1) if night else 0,**invalid}
+                    self.rejected(400,lambda:self.queue.enqueue(self.one,data))
+        with self.store.db() as db:self.assertEqual(db.execute('SELECT COUNT(*) FROM unified_tasks').fetchone()[0],0)
 
     def test_invalid_purpose_does_not_change_reservation(self):
         job=self.add();before=self.row(job)
@@ -196,6 +209,11 @@ class ReservationEditHTTPTests(unittest.IsolatedAsyncioTestCase):
         await self.post('unified-resources',data,self.one)
         state=await (await self.client.get('/a5-queue/api/state',headers=self.headers(self.one))).json()
         self.assertEqual(next(r['purpose'] for r in state['tasks'] if r['id']==job),'修改事项')
+
+    async def test_http_rejects_missing_and_blank_purpose(self):
+        for invalid in ({},{'purpose':''},{'purpose':' \t\u3000 '},{'purpose':None}):
+            await self.post('enqueue',{'cards':1,'requested_seconds':60,'notifications_ready':True,**invalid},self.one,400)
+        with self.store.db() as db:self.assertEqual(db.execute('SELECT COUNT(*) FROM unified_tasks').fetchone()[0],0)
 
 
 if __name__=='__main__':unittest.main()

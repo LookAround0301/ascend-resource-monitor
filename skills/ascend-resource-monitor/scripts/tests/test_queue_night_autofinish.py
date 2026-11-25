@@ -49,7 +49,7 @@ class NightAutoFinishTests(unittest.TestCase):
         self.monitor=QueueMonitor(['a','b'],{'metric_prefix':'a5'},None)
 
     def add(self, machine='a', cards=8):
-        return self.queue.enqueue(self.user,{'machine':machine,'cards':cards,'requested_seconds':3600,
+        return self.queue.enqueue(self.user,{'purpose':'测试预约','machine':machine,'cards':cards,'requested_seconds':3600,
                                             'night':True,'not_before':self.start,'notifications_ready':True})
 
     def sample(self, now, processes=(), invalid_node=None):
@@ -119,7 +119,7 @@ class NightAutoFinishTests(unittest.TestCase):
         self.assertEqual(self.sample(self.start+41),{job})
 
     def test_normal_active_reservation_is_never_automatically_removed(self):
-        job=self.queue.enqueue(self.user,{'machine':'a','cards':8,'requested_seconds':60,'notifications_ready':True})
+        job=self.queue.enqueue(self.user,{'purpose':'测试预约','machine':'a','cards':8,'requested_seconds':60,'notifications_ready':True})
         offer=self.queue.view(self.user)['tasks'][0]['offer_id'];self.queue.action(self.user,job,'claim',offer)
         for elapsed in (120,130,140,150):self.sample(self.start+elapsed)
         self.assertIn(job,self.rows())
@@ -171,7 +171,7 @@ class NightAutoFinishHTTPTests(unittest.IsolatedAsyncioTestCase):
     async def test_background_loop_finishes_night_without_browser_polling(self):
         cookie=session_cookie_name(self.store.session_namespace,self.client.make_url('').authority)
         headers={'Origin':str(self.client.make_url('')).rstrip('/'),'X-A5-Queue':'queue-v1','Cookie':cookie+'='+self.token}
-        response=await self.client.post('/a5-queue/api/enqueue',headers=headers,json={
+        response=await self.client.post('/a5-queue/api/enqueue',headers=headers,json={'purpose':'测试预约',
             'machine':'a','cards':8,'requested_seconds':3600,'night':True,'not_before':self.start,'notifications_ready':True})
         self.assertEqual(response.status,200);job=(await response.json())['job']
         self.processes=[{'node':'a','cards':'0'}];self.clock.return_value=self.start

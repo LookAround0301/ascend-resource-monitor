@@ -50,7 +50,7 @@ class NormalPriorityTests(unittest.TestCase):
                                 overtime_control=True,normal_priority=True)
 
     def add(self,**values):
-        return self.queue.enqueue(self.user,{'machine':'a','cards':8,'requested_seconds':3600,
+        return self.queue.enqueue(self.user,{'purpose':'测试预约','machine':'a','cards':8,'requested_seconds':3600,
                                              'avoid_slots':[],'notifications_ready':True,**values})
 
     def test_short_backfill_requires_opt_in_and_preserves_first_slot(self):

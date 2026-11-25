@@ -30,7 +30,7 @@ class NormalReservationLimitTests(unittest.TestCase):
         return UnifiedQueue(self.store, ['a', 'b'], timezone='Asia/Shanghai', normal_reservation_limit=limit)
 
     def add(self, queue=None, **extra):
-        return (queue or self.queue).enqueue(self.user, {'cards': 1, 'requested_seconds': 3600,
+        return (queue or self.queue).enqueue(self.user, {'purpose':'测试预约','cards': 1, 'requested_seconds': 3600,
                                                        'notifications_ready': True, **extra})
 
     def test_three_allowed_fourth_rejected_without_inserting(self):

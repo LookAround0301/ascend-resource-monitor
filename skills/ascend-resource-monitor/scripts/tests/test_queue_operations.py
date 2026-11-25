@@ -18,7 +18,7 @@ class QueueOperationTests(unittest.TestCase):
         self.store=QueueStore(Path(self.temp.name)/'queue.db')
         self.users=[self.store.user(self.store.register('u1234567'+str(i),'Person'+str(i),'fixture-password')) for i in range(3)]
         self.queue=UnifiedQueue(self.store,['a','b'],timezone='Asia/Shanghai',daily_reset=True)
-    def add(self,user=None,seconds=60):return self.queue.enqueue(user or self.users[0],{'machine':'a','cards':8,'requested_seconds':seconds,'notifications_ready':True})
+    def add(self,user=None,seconds=60):return self.queue.enqueue(user or self.users[0],{'purpose':'测试预约','machine':'a','cards':8,'requested_seconds':seconds,'notifications_ready':True})
     def claim(self,job,user=None):
         user=user or self.users[0];row=next(r for r in self.queue.view(user)['tasks'] if r['id']==job)
         self.queue.action(user,job,'claim',row['offer_id'])
@@ -52,11 +52,11 @@ class QueueOperationTests(unittest.TestCase):
         row=next(r for r in self.queue.view(self.users[0])['tasks'] if r['id']==first)
         self.assertFalse(row['bottleneck'])
     def test_latest_estimated_release_is_bottleneck_for_dual_waiter(self):
-        first=self.queue.enqueue(self.users[0],{'machine':'a','cards':1,'requested_seconds':600,'notifications_ready':True})
+        first=self.queue.enqueue(self.users[0],{'purpose':'测试预约','machine':'a','cards':1,'requested_seconds':600,'notifications_ready':True})
         self.claim(first)
-        latest=self.queue.enqueue(self.users[1],{'machine':'b','cards':8,'requested_seconds':1200,'notifications_ready':True})
+        latest=self.queue.enqueue(self.users[1],{'purpose':'测试预约','machine':'b','cards':8,'requested_seconds':1200,'notifications_ready':True})
         self.claim(latest,self.users[1])
-        self.queue.enqueue(self.users[2],{'machine':'dual','cards':16,'requested_seconds':60,'notifications_ready':True})
+        self.queue.enqueue(self.users[2],{'purpose':'测试预约','machine':'dual','cards':16,'requested_seconds':60,'notifications_ready':True})
         rows={r['id']:r for r in self.queue.view(self.users[1])['tasks']}
         self.assertFalse(rows[first]['bottleneck'])
         self.assertEqual(rows[first]['overtime_remaining_seconds'],600)
@@ -66,9 +66,9 @@ class QueueOperationTests(unittest.TestCase):
 
     def test_equal_latest_releases_are_both_bottlenecks(self):
         first=self.add(seconds=600);self.claim(first)
-        other=self.queue.enqueue(self.users[1],{'machine':'b','cards':8,'requested_seconds':600,'notifications_ready':True})
+        other=self.queue.enqueue(self.users[1],{'purpose':'测试预约','machine':'b','cards':8,'requested_seconds':600,'notifications_ready':True})
         self.claim(other,self.users[1])
-        self.queue.enqueue(self.users[2],{'machine':'dual','cards':16,'requested_seconds':60,'notifications_ready':True})
+        self.queue.enqueue(self.users[2],{'purpose':'测试预约','machine':'dual','cards':16,'requested_seconds':60,'notifications_ready':True})
         rows={r['id']:r for r in self.queue.view(self.users[0])['tasks']}
         self.assertTrue(rows[first]['bottleneck'])
         self.assertTrue(rows[other]['bottleneck'])
@@ -78,7 +78,7 @@ class QueueOperationTests(unittest.TestCase):
             return {'id':job,'state':'active','activated':self.now-60,'created':self.now-60,
                     'requested_seconds':finish+60,'allocations':json.dumps({node:cards})}
         def queued(job,cards,seconds=3600,dual=False):
-            return {'id':job,'state':'queued','cards':cards,'dual':dual,'requested_seconds':seconds,
+            return {'purpose':'测试预约','id':job,'state':'queued','cards':cards,'dual':dual,'requested_seconds':seconds,
                     'not_before':0,'finish_before':self.now+18*3600,'created':self.now,'fixed_node':''}
         rows=[active('a4','a',[0,1,2,3],106*60),
               active('a1','a',[4],46*60),active('a2','a',[5],40*60),
@@ -94,7 +94,7 @@ class QueueOperationTests(unittest.TestCase):
 
     def test_future_night_waiter_does_not_create_estimated_bottleneck(self):
         first=self.add(seconds=600);self.claim(first)
-        self.queue.enqueue(self.users[1],{'machine':'a','cards':8,'requested_seconds':60,'notifications_ready':True,
+        self.queue.enqueue(self.users[1],{'purpose':'测试预约','machine':'a','cards':8,'requested_seconds':60,'notifications_ready':True,
                                          'night':True,'not_before':self.now+300})
         row=next(r for r in self.queue.view(self.users[0])['tasks'] if r['id']==first)
         self.assertFalse(row['bottleneck'])
@@ -103,12 +103,12 @@ class QueueOperationTests(unittest.TestCase):
         self.assertTrue(row['bottleneck'])
 
     def test_multiple_overdue_tasks_jointly_block_dual_waiter_and_warn_owners(self):
-        first=self.queue.enqueue(self.users[0],{'machine':'a','cards':1,'requested_seconds':60,'notifications_ready':True})
+        first=self.queue.enqueue(self.users[0],{'purpose':'测试预约','machine':'a','cards':1,'requested_seconds':60,'notifications_ready':True})
         self.claim(first)
-        second=self.queue.enqueue(self.users[1],{'machine':'a','cards':7,'requested_seconds':120,'notifications_ready':True})
+        second=self.queue.enqueue(self.users[1],{'purpose':'测试预约','machine':'a','cards':7,'requested_seconds':120,'notifications_ready':True})
         self.claim(second,self.users[1])
-        offered=self.queue.enqueue(self.users[2],{'machine':'b','cards':8,'requested_seconds':300,'notifications_ready':True})
-        waiting=self.queue.enqueue(self.users[2],{'machine':'dual','cards':16,'requested_seconds':60,'notifications_ready':True})
+        offered=self.queue.enqueue(self.users[2],{'purpose':'测试预约','machine':'b','cards':8,'requested_seconds':300,'notifications_ready':True})
+        waiting=self.queue.enqueue(self.users[2],{'purpose':'测试预约','machine':'dual','cards':16,'requested_seconds':60,'notifications_ready':True})
         with self.store.db() as db:
             a=db.execute('SELECT queue_order FROM unified_tasks WHERE id=?',(offered,)).fetchone()[0]
             b=db.execute('SELECT queue_order FROM unified_tasks WHERE id=?',(waiting,)).fetchone()[0]
@@ -129,14 +129,14 @@ class QueueOperationTests(unittest.TestCase):
 
     def test_only_nearest_waiter_gets_overdue_dependency_notice(self):
         owner=self.users[0]
-        overdue=self.queue.enqueue(owner,{'machine':'a','cards':1,'requested_seconds':60,'notifications_ready':True})
+        overdue=self.queue.enqueue(owner,{'purpose':'测试预约','machine':'a','cards':1,'requested_seconds':60,'notifications_ready':True})
         self.claim(overdue)
-        offered=self.queue.enqueue(self.users[1],{'machine':'b','cards':8,'requested_seconds':600,'notifications_ready':True})
+        offered=self.queue.enqueue(self.users[1],{'purpose':'测试预约','machine':'b','cards':8,'requested_seconds':600,'notifications_ready':True})
         users=[self.users[1],self.users[2]]
         for i in (3,4):
             users.append(self.store.user(self.store.register('u1234567'+str(i),'Person'+str(i),'fixture-password')))
         for user in users:
-            self.queue.enqueue(user,{'machine':'dual','cards':16,'requested_seconds':60,'notifications_ready':True})
+            self.queue.enqueue(user,{'purpose':'测试预约','machine':'dual','cards':16,'requested_seconds':60,'notifications_ready':True})
         self.clock.return_value=self.now+361
         first=self.queue.view(users[0])
         self.assertTrue(any(a['kind']=='overdue-dependent-next' for a in first['alerts']))
@@ -151,22 +151,22 @@ class QueueOperationTests(unittest.TestCase):
 
     def test_simultaneous_independent_waiters_are_both_notified(self):
         owner=self.users[0]
-        overdue=self.queue.enqueue(owner,{'machine':'dual','cards':16,'requested_seconds':60,'notifications_ready':True})
+        overdue=self.queue.enqueue(owner,{'purpose':'测试预约','machine':'dual','cards':16,'requested_seconds':60,'notifications_ready':True})
         self.claim(overdue)
         for user,node in ((self.users[1],'a'),(self.users[2],'b')):
-            self.queue.enqueue(user,{'machine':node,'cards':8,'requested_seconds':60,'notifications_ready':True})
+            self.queue.enqueue(user,{'purpose':'测试预约','machine':node,'cards':8,'requested_seconds':60,'notifications_ready':True})
         self.clock.return_value=self.now+361
         for user in self.users[1:]:
             alerts=self.queue.view(user)['alerts']
             self.assertTrue(any(a['kind']=='overdue-next' for a in alerts))
 
     def test_single_overdue_dependency_is_visible_when_other_node_has_ready_offer(self):
-        overdue=self.queue.enqueue(self.users[0],{'machine':'a','cards':1,'requested_seconds':60,'notifications_ready':True})
+        overdue=self.queue.enqueue(self.users[0],{'purpose':'测试预约','machine':'a','cards':1,'requested_seconds':60,'notifications_ready':True})
         self.claim(overdue)
-        active=self.queue.enqueue(self.users[1],{'machine':'a','cards':1,'requested_seconds':600,'notifications_ready':True})
+        active=self.queue.enqueue(self.users[1],{'purpose':'测试预约','machine':'a','cards':1,'requested_seconds':600,'notifications_ready':True})
         self.claim(active,self.users[1])
-        offered=self.queue.enqueue(self.users[2],{'machine':'b','cards':8,'requested_seconds':600,'notifications_ready':True})
-        waiter=self.queue.enqueue(self.users[1],{'machine':'dual','cards':16,'requested_seconds':60,'notifications_ready':True})
+        offered=self.queue.enqueue(self.users[2],{'purpose':'测试预约','machine':'b','cards':8,'requested_seconds':600,'notifications_ready':True})
+        waiter=self.queue.enqueue(self.users[1],{'purpose':'测试预约','machine':'dual','cards':16,'requested_seconds':60,'notifications_ready':True})
         self.clock.return_value=self.now+61
         row=next(r for r in self.queue.view(self.users[0])['tasks'] if r['id']==overdue)
         self.assertTrue(row['overdue_pending_blocker'])
@@ -179,24 +179,24 @@ class QueueOperationTests(unittest.TestCase):
         self.assertEqual(rows[waiter]['state'],'queued')
 
     def test_unrelated_overdue_tasks_are_not_called_joint_blockers(self):
-        first=self.queue.enqueue(self.users[0],{'machine':'a','cards':1,'requested_seconds':60,'notifications_ready':True})
+        first=self.queue.enqueue(self.users[0],{'purpose':'测试预约','machine':'a','cards':1,'requested_seconds':60,'notifications_ready':True})
         self.claim(first)
-        unrelated=self.queue.enqueue(self.users[1],{'machine':'b','cards':1,'requested_seconds':60,'notifications_ready':True})
+        unrelated=self.queue.enqueue(self.users[1],{'purpose':'测试预约','machine':'b','cards':1,'requested_seconds':60,'notifications_ready':True})
         self.claim(unrelated,self.users[1])
-        other=self.queue.enqueue(self.users[2],{'machine':'a','cards':7,'requested_seconds':600,'notifications_ready':True})
+        other=self.queue.enqueue(self.users[2],{'purpose':'测试预约','machine':'a','cards':7,'requested_seconds':600,'notifications_ready':True})
         self.claim(other,self.users[2])
-        self.queue.enqueue(self.users[2],{'machine':'a','cards':8,'requested_seconds':60,'notifications_ready':True})
+        self.queue.enqueue(self.users[2],{'purpose':'测试预约','machine':'a','cards':8,'requested_seconds':60,'notifications_ready':True})
         self.clock.return_value=self.now+61
         rows={r['id']:r for r in self.queue.view(self.users[0])['tasks']}
         self.assertFalse(rows[first]['overdue_joint_blocker'])
         self.assertFalse(rows[unrelated]['overdue_joint_blocker'])
 
     def test_unknown_due_full_machine_waiter_blocks_later_backfill(self):
-        first=self.queue.enqueue(self.users[0],{'machine':'a','cards':1,'requested_seconds':60,'notifications_ready':True})
+        first=self.queue.enqueue(self.users[0],{'purpose':'测试预约','machine':'a','cards':1,'requested_seconds':60,'notifications_ready':True})
         self.claim(first)
         self.clock.return_value=self.now+61
-        waiter=self.queue.enqueue(self.users[1],{'machine':'dual','cards':16,'requested_seconds':600,'notifications_ready':True})
-        later=self.queue.enqueue(self.users[2],{'machine':'b','cards':8,'requested_seconds':600,'notifications_ready':True})
+        waiter=self.queue.enqueue(self.users[1],{'purpose':'测试预约','machine':'dual','cards':16,'requested_seconds':600,'notifications_ready':True})
+        later=self.queue.enqueue(self.users[2],{'purpose':'测试预约','machine':'b','cards':8,'requested_seconds':600,'notifications_ready':True})
         rows={r['id']:r for r in self.queue.view(self.users[1])['tasks']}
         self.assertEqual(rows[waiter]['state'],'queued')
         self.assertIsNone(rows[waiter]['estimated_start'])
@@ -208,7 +208,7 @@ class QueueOperationTests(unittest.TestCase):
 
     def test_nonblocking_can_become_bottleneck_when_other_cards_release(self):
         def add_cards(user,cards,seconds):
-            return self.queue.enqueue(user,{'machine':'a','cards':cards,'requested_seconds':seconds,'notifications_ready':True})
+            return self.queue.enqueue(user,{'purpose':'测试预约','machine':'a','cards':cards,'requested_seconds':seconds,'notifications_ready':True})
         first=add_cards(self.users[0],1,60);self.claim(first)
         other=add_cards(self.users[1],7,120);self.claim(other,self.users[1])
         waiting=add_cards(self.users[2],8,60)
@@ -227,19 +227,19 @@ class QueueOperationTests(unittest.TestCase):
         self.assertEqual(next(r for r in view['tasks'] if r['id']==waiting)['state'],'queued')
     def test_dual_waiter_requires_other_node_to_be_free(self):
         first=self.add();self.claim(first)
-        other=self.queue.enqueue(self.users[1],{'machine':'b','cards':8,'requested_seconds':120,'notifications_ready':True})
+        other=self.queue.enqueue(self.users[1],{'purpose':'测试预约','machine':'b','cards':8,'requested_seconds':120,'notifications_ready':True})
         self.claim(other,self.users[1])
-        self.queue.enqueue(self.users[2],{'machine':'dual','cards':16,'requested_seconds':60,'notifications_ready':True})
+        self.queue.enqueue(self.users[2],{'purpose':'测试预约','machine':'dual','cards':16,'requested_seconds':60,'notifications_ready':True})
         self.clock.return_value=self.now+61
         self.assertFalse(next(r for r in self.queue.view(self.users[0])['tasks'] if r['id']==first)['overdue_bottleneck'])
         self.queue.action(self.users[1],other,'finish')
         self.assertTrue(next(r for r in self.queue.view(self.users[0])['tasks'] if r['id']==first)['overdue_bottleneck'])
     def test_remaining_overtime_uses_competing_task_end_without_ten_minute_buffer(self):
-        first=self.queue.enqueue(self.users[0],{'machine':'a','cards':1,'requested_seconds':60,'notifications_ready':True})
+        first=self.queue.enqueue(self.users[0],{'purpose':'测试预约','machine':'a','cards':1,'requested_seconds':60,'notifications_ready':True})
         self.claim(first)
-        other=self.queue.enqueue(self.users[1],{'machine':'a','cards':7,'requested_seconds':120,'notifications_ready':True})
+        other=self.queue.enqueue(self.users[1],{'purpose':'测试预约','machine':'a','cards':7,'requested_seconds':120,'notifications_ready':True})
         self.claim(other,self.users[1])
-        self.queue.enqueue(self.users[2],{'machine':'a','cards':8,'requested_seconds':60,'notifications_ready':True})
+        self.queue.enqueue(self.users[2],{'purpose':'测试预约','machine':'a','cards':8,'requested_seconds':60,'notifications_ready':True})
         row=next(r for r in self.queue.view(self.users[0])['tasks'] if r['id']==first)
         self.assertFalse(row['bottleneck']);self.assertEqual(row['overtime_remaining_seconds'],60)
         self.clock.return_value=self.now+61
@@ -251,11 +251,11 @@ class QueueOperationTests(unittest.TestCase):
         row=next(r for r in self.queue.view(self.users[0])['tasks'] if r['id']==first)
         self.assertTrue(row['overdue_bottleneck']);self.assertIsNone(row['overtime_remaining_seconds'])
     def test_remaining_overtime_is_unknown_for_unrelated_resources_or_overdue_reference(self):
-        first=self.queue.enqueue(self.users[0],{'machine':'a','cards':1,'requested_seconds':60,'notifications_ready':True})
+        first=self.queue.enqueue(self.users[0],{'purpose':'测试预约','machine':'a','cards':1,'requested_seconds':60,'notifications_ready':True})
         self.claim(first)
-        other=self.queue.enqueue(self.users[1],{'machine':'b','cards':8,'requested_seconds':120,'notifications_ready':True})
+        other=self.queue.enqueue(self.users[1],{'purpose':'测试预约','machine':'b','cards':8,'requested_seconds':120,'notifications_ready':True})
         self.claim(other,self.users[1])
-        self.queue.enqueue(self.users[2],{'machine':'b','cards':8,'requested_seconds':60,'notifications_ready':True})
+        self.queue.enqueue(self.users[2],{'purpose':'测试预约','machine':'b','cards':8,'requested_seconds':60,'notifications_ready':True})
         row=next(r for r in self.queue.view(self.users[0])['tasks'] if r['id']==first)
         self.assertFalse(row['bottleneck']);self.assertIsNone(row['overtime_remaining_seconds'])
         self.clock.return_value=self.now+121
@@ -263,20 +263,20 @@ class QueueOperationTests(unittest.TestCase):
         self.assertIsNone(row['overtime_remaining_seconds'])
     def test_remaining_overtime_for_dual_waiter_uses_other_node_end(self):
         first=self.add(seconds=60);self.claim(first)
-        other=self.queue.enqueue(self.users[1],{'machine':'b','cards':8,'requested_seconds':120,'notifications_ready':True})
+        other=self.queue.enqueue(self.users[1],{'purpose':'测试预约','machine':'b','cards':8,'requested_seconds':120,'notifications_ready':True})
         self.claim(other,self.users[1])
-        self.queue.enqueue(self.users[2],{'machine':'dual','cards':16,'requested_seconds':60,'notifications_ready':True})
+        self.queue.enqueue(self.users[2],{'purpose':'测试预约','machine':'dual','cards':16,'requested_seconds':60,'notifications_ready':True})
         row=next(r for r in self.queue.view(self.users[0])['tasks'] if r['id']==first)
         self.assertFalse(row['bottleneck']);self.assertEqual(row['overtime_remaining_seconds'],60)
     def test_remaining_overtime_ignores_unrelated_earlier_bottleneck(self):
-        first=self.queue.enqueue(self.users[0],{'machine':'a','cards':1,'requested_seconds':60,'notifications_ready':True})
+        first=self.queue.enqueue(self.users[0],{'purpose':'测试预约','machine':'a','cards':1,'requested_seconds':60,'notifications_ready':True})
         self.claim(first)
-        related=self.queue.enqueue(self.users[1],{'machine':'a','cards':7,'requested_seconds':180,'notifications_ready':True})
+        related=self.queue.enqueue(self.users[1],{'purpose':'测试预约','machine':'a','cards':7,'requested_seconds':180,'notifications_ready':True})
         self.claim(related,self.users[1])
-        unrelated=self.queue.enqueue(self.users[2],{'machine':'b','cards':8,'requested_seconds':120,'notifications_ready':True})
+        unrelated=self.queue.enqueue(self.users[2],{'purpose':'测试预约','machine':'b','cards':8,'requested_seconds':120,'notifications_ready':True})
         self.claim(unrelated,self.users[2])
-        self.queue.enqueue(self.users[0],{'machine':'a','cards':8,'requested_seconds':60,'notifications_ready':True})
-        self.queue.enqueue(self.users[1],{'machine':'b','cards':8,'requested_seconds':60,'notifications_ready':True})
+        self.queue.enqueue(self.users[0],{'purpose':'测试预约','machine':'a','cards':8,'requested_seconds':60,'notifications_ready':True})
+        self.queue.enqueue(self.users[1],{'purpose':'测试预约','machine':'b','cards':8,'requested_seconds':60,'notifications_ready':True})
         rows={r['id']:r for r in self.queue.view(self.users[0])['tasks']}
         self.assertTrue(rows[unrelated]['bottleneck'])
         self.assertFalse(rows[first]['bottleneck'])
@@ -288,7 +288,7 @@ class QueueOperationTests(unittest.TestCase):
             return {'id':job,'state':'active','activated':self.now-60,'created':self.now-60,
                     'requested_seconds':finish+60,'allocations':json.dumps({node:cards})}
         def queued(job,cards,dual=False):
-            return {'id':job,'state':'queued','cards':cards,'dual':dual,'requested_seconds':3600,
+            return {'purpose':'测试预约','id':job,'state':'queued','cards':cards,'dual':dual,'requested_seconds':3600,
                     'not_before':0,'finish_before':self.now+18*3600,'created':self.now,'fixed_node':''}
         rows=[active('a4','a',[0,1,2,3],106*60),
               active('a1','a',[4],46*60),active('a2','a',[5],40*60),
@@ -320,7 +320,7 @@ class QueueOperationTests(unittest.TestCase):
         self.assertNotIn('a1',self.queue.overtime_allowances(rows,self.now,{}))
     def test_future_waiter_does_not_make_overdue_task_a_bottleneck_yet(self):
         first=self.add();self.claim(first)
-        self.queue.enqueue(self.users[1],{'machine':'a','cards':8,'requested_seconds':60,'notifications_ready':True,
+        self.queue.enqueue(self.users[1],{'purpose':'测试预约','machine':'a','cards':8,'requested_seconds':60,'notifications_ready':True,
                                          'night':True,'not_before':self.now+300})
         self.clock.return_value=self.now+61
         self.assertFalse(next(r for r in self.queue.view(self.users[0])['tasks'] if r['id']==first)['overdue_bottleneck'])
@@ -391,7 +391,7 @@ class QueueOperationTests(unittest.TestCase):
         self.assertFalse(self.queue.view(self.users[0])['tasks'][0]['can_lower_priority'])
         offer=self.queue.view(self.users[0])['tasks'][0]['offer_id']
         with self.assertRaises(ControlError):self.queue.action(self.users[0],a,'priority-down',offer)
-        b=self.queue.enqueue(self.users[1],{'machine':'b','cards':8,'requested_seconds':60,'notifications_ready':True})
+        b=self.queue.enqueue(self.users[1],{'purpose':'测试预约','machine':'b','cards':8,'requested_seconds':60,'notifications_ready':True})
         before=self.queue.view(self.users[0])['tasks'];other=before[1]['offer_id']
         self.queue.action(self.users[0],a,'priority-down',offer)
         rows=self.queue.view(self.users[0])['tasks']

@@ -29,7 +29,7 @@ class AvoidDefaultsTests(unittest.TestCase):
         return UnifiedQueue(QueueStore(self.path),['a','b'],timezone='Asia/Shanghai',strict_nights=True)
 
     def add(self,user=None,**data):
-        return self.queue.enqueue(user or self.one,{'cards':1,'requested_seconds':3600,'notifications_ready':True,**data})
+        return self.queue.enqueue(user or self.one,{'purpose':'测试预约','cards':1,'requested_seconds':3600,'notifications_ready':True,**data})
 
     def slots(self,job):
         return next(row['avoid_slots'] for row in self.queue.view(self.one)['tasks'] if row['id']==job)
@@ -121,7 +121,7 @@ class AvoidDefaultsHTTPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status,200);return await response.json()
 
     async def test_save_roundtrip_and_new_reservation_default(self):
-        payload={'cards':1,'requested_seconds':60,'notifications_ready':True}
+        payload={'purpose':'测试预约','cards':1,'requested_seconds':60,'notifications_ready':True}
         job=(await self.post('enqueue',payload,self.one))['job']
         result=await self.post('unified-avoid',{'job':job,'avoid_slots':[],'save_as_default':True,'confirmed':True},self.one)
         self.assertIn('已保存为我的默认',result['message'])
@@ -133,7 +133,7 @@ class AvoidDefaultsHTTPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.state(self.one))['default_avoid_slots'],[])
 
     async def test_other_account_and_invalid_flag_are_rejected(self):
-        job=(await self.post('enqueue',{'cards':1,'requested_seconds':60,'notifications_ready':True},self.one))['job']
+        job=(await self.post('enqueue',{'purpose':'测试预约','cards':1,'requested_seconds':60,'notifications_ready':True},self.one))['job']
         payload={'job':job,'avoid_slots':[],'save_as_default':True,'confirmed':True}
         await self.post('unified-avoid',payload,self.two,403)
         await self.post('unified-avoid',{**payload,'save_as_default':'true'},self.one,400)
@@ -146,7 +146,7 @@ class AvoidDefaultsHTTPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.state(self.one))['default_avoid_slots'],[20,22])
         self.assertEqual((await self.state(self.two))['default_avoid_slots'],MEALS)
         self.assertEqual((await self.state(self.one))['tasks'],[])
-        job=(await self.post('enqueue',{'cards':1,'requested_seconds':60,'notifications_ready':True},self.one))['job']
+        job=(await self.post('enqueue',{'purpose':'测试预约','cards':1,'requested_seconds':60,'notifications_ready':True},self.one))['job']
         await self.post('unified-avoid-default',{'avoid_slots':[],'confirmed':True},self.one)
         state=await self.state(self.one)
         self.assertEqual(state['default_avoid_slots'],[])
